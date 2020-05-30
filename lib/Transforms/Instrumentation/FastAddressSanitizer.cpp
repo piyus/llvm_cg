@@ -2433,7 +2433,10 @@ bool ModuleFastAddressSanitizer::instrumentModuleNew(Module &M) {
 }
 
 bool ModuleFastAddressSanitizer::instrumentModule(Module &M) {
-#if 0
+	instrumentModuleNew(M);
+	if (!CompileKernel)
+		return false;
+//#if 0
   initializeCallbacks(M);
 
   if (CompileKernel)
@@ -2472,7 +2475,7 @@ bool ModuleFastAddressSanitizer::instrumentModule(Module &M) {
     if (AsanDtorFunction)
       appendToGlobalDtors(M, AsanDtorFunction, Priority);
   }
-#endif
+//#endif
 
   return true;
 }
@@ -2621,12 +2624,52 @@ void FastAddressSanitizer::markEscapedLocalAllocas(Function &F) {
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI) {
+	errs() << "Printing function\n" << F << "\n";
+
+	DenseSet<Value*> UnsafePointers;
+	Value *PtrOperand;
+
+
+  for (auto &BB : F) {
+    for (auto &Inst : BB) {
+			
+  		if (LoadInst *LI = dyn_cast<LoadInst>(&Inst)) {
+    		PtrOperand = LI->getPointerOperand();
+				UnsafePointers.insert(PtrOperand);
+  		} else if (StoreInst *SI = dyn_cast<StoreInst>(&Inst)) {
+    		PtrOperand = SI->getPointerOperand();
+				UnsafePointers.insert(PtrOperand);
+  		} else if (AtomicRMWInst *RMW = dyn_cast<AtomicRMWInst>(&Inst)) {
+    		PtrOperand = RMW->getPointerOperand();
+				UnsafePointers.insert(PtrOperand);
+  		} else if (AtomicCmpXchgInst *XCHG = dyn_cast<AtomicCmpXchgInst>(&Inst)) {
+    		PtrOperand = XCHG->getPointerOperand();
+				UnsafePointers.insert(PtrOperand);
+  		} else if (auto CS = dyn_cast<CallBase>(&Inst)) {
+				if (!Inst.isLifetimeStartOrEnd()) {
+					for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(); ArgIt != End; ++ArgIt) {
+      			Value *A = *ArgIt;
+						if (A->getType()->isPointerTy()) {
+							UnsafePointers.insert(A);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for (auto V : UnsafePointers)
+		errs() << "UP: " << *V << "\n";
+
 	return true;
 }
 
 bool FastAddressSanitizer::instrumentFunction(Function &F,
                                           const TargetLibraryInfo *TLI) {
-#if 0
+	instrumentFunctionNew(F, TLI);
+	if (!CompileKernel)
+		return false;
+
   if (F.getLinkage() == GlobalValue::AvailableExternallyLinkage) return false;
   if (!ClDebugFunc.empty() && ClDebugFunc == F.getName()) return false;
   if (F.getName().startswith("__asan_")) return false;
@@ -2759,8 +2802,6 @@ bool FastAddressSanitizer::instrumentFunction(Function &F,
                     << F << "\n");
 
   return FunctionModified;
-#endif
-	return true;
 }
 
 // Workaround for bug 11395: we don't want to instrument stack in functions
