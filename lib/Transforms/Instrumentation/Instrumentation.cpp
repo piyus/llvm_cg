@@ -104,7 +104,9 @@ Comdat *llvm::GetOrCreateFunctionComdat(Function &F, Triple &T,
 /// library.
 void llvm::initializeInstrumentation(PassRegistry &Registry) {
   initializeAddressSanitizerLegacyPassPass(Registry);
+  initializeFastAddressSanitizerLegacyPassPass(Registry);
   initializeModuleAddressSanitizerLegacyPassPass(Registry);
+  initializeModuleFastAddressSanitizerLegacyPassPass(Registry);
   initializeBoundsCheckingLegacyPassPass(Registry);
   initializeControlHeightReductionLegacyPassPass(Registry);
   initializeGCOVProfilerLegacyPassPass(Registry);
