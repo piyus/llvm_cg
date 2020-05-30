@@ -640,6 +640,7 @@ struct FastAddressSanitizer {
   void instrumentMemIntrinsic(MemIntrinsic *MI);
   Value *memToShadow(Value *Shadow, IRBuilder<> &IRB);
   bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI);
+  bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
   void markEscapedLocalAllocas(Function &F);
@@ -763,6 +764,7 @@ public:
   }
 
   bool instrumentModule(Module &);
+  bool instrumentModuleNew(Module &);
 
 private:
   void initializeCallbacks(Module &M);
@@ -2426,7 +2428,12 @@ int ModuleFastAddressSanitizer::GetAsanVersion(const Module &M) const {
   return Version;
 }
 
+bool ModuleFastAddressSanitizer::instrumentModuleNew(Module &M) {
+	return true;
+}
+
 bool ModuleFastAddressSanitizer::instrumentModule(Module &M) {
+#if 0
   initializeCallbacks(M);
 
   if (CompileKernel)
@@ -2465,6 +2472,7 @@ bool ModuleFastAddressSanitizer::instrumentModule(Module &M) {
     if (AsanDtorFunction)
       appendToGlobalDtors(M, AsanDtorFunction, Priority);
   }
+#endif
 
   return true;
 }
@@ -2611,8 +2619,14 @@ void FastAddressSanitizer::markEscapedLocalAllocas(Function &F) {
   }
 }
 
+bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
+                                                 const TargetLibraryInfo *TLI) {
+	return true;
+}
+
 bool FastAddressSanitizer::instrumentFunction(Function &F,
                                           const TargetLibraryInfo *TLI) {
+#if 0
   if (F.getLinkage() == GlobalValue::AvailableExternallyLinkage) return false;
   if (!ClDebugFunc.empty() && ClDebugFunc == F.getName()) return false;
   if (F.getName().startswith("__asan_")) return false;
@@ -2745,6 +2759,8 @@ bool FastAddressSanitizer::instrumentFunction(Function &F,
                     << F << "\n");
 
   return FunctionModified;
+#endif
+	return true;
 }
 
 // Workaround for bug 11395: we don't want to instrument stack in functions
