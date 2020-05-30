@@ -40,6 +40,7 @@
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalValue.h"
@@ -2628,6 +2629,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	DenseSet<Value*> UnsafePointers;
 	Value *PtrOperand;
+  const DataLayout &DL = F.getParent()->getDataLayout();
 
 
   for (auto &BB : F) {
@@ -2658,8 +2660,17 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
-	for (auto V : UnsafePointers)
+	DominatorTree DT(F);
+	LoopInfo LI(DT);
+
+	for (auto V : UnsafePointers) {
+		SmallVector<const Value *, 2> Objects;
+		GetUnderlyingObjects(V, Objects, DL, &LI, 0);
 		errs() << "UP: " << *V << "\n";
+		for (auto Res: Objects) {
+			errs() << "Base: " << *Res << "\n";
+		}
+	}
 
 	return true;
 }
