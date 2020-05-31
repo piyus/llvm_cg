@@ -593,6 +593,9 @@ struct FastAddressSanitizer {
     C = &(M.getContext());
     LongSize = M.getDataLayout().getPointerSizeInBits();
     IntptrTy = Type::getIntNTy(*C, LongSize);
+		Int32Ty = Type::getInt32Ty(*C);
+		Int32PtrTy = Type::getInt32PtrTy(*C);
+		VoidTy = Type::getVoidTy(*C);
     TargetTriple = Triple(M.getTargetTriple());
 
     Mapping = getShadowMapping(TargetTriple, LongSize, this->CompileKernel);
@@ -656,6 +659,9 @@ private:
   bool isSafeAccess(ObjectSizeOffsetVisitor &ObjSizeVis, Value *Addr,
                     uint64_t TypeSize) const;
 
+	uint64_t getObjSize(Value *V, const DataLayout &DL);
+	Value *getBaseSize(Function &F, const Value *V, const DataLayout &DL);
+
   /// Helper to cleanup per-function state.
   struct FunctionStateRAII {
     FastAddressSanitizer *Pass;
@@ -679,6 +685,9 @@ private:
   bool Recover;
   bool UseAfterScope;
   Type *IntptrTy;
+	Type *Int32Ty;
+	Type *Int32PtrTy;
+	Type *VoidTy;
   ShadowMapping Mapping;
   FunctionCallee AsanHandleNoReturnFunc;
   FunctionCallee AsanPtrCmpFunction, AsanPtrSubFunction;
@@ -2624,6 +2633,39 @@ void FastAddressSanitizer::markEscapedLocalAllocas(Function &F) {
   }
 }
 
+uint64_t FastAddressSanitizer::getObjSize(Value *V, const DataLayout &DL) {
+	auto AI = dyn_cast<AllocaInst>(V);
+	if (AI) {
+		return getAllocaSizeInBytes(*AI);
+	}
+	return DL.getTypeAllocSize(V->getType());
+}
+
+Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL)
+{
+	Value *V = const_cast<Value*>(V1);
+	auto AI = dyn_cast<AllocaInst>(V);
+	if (AI) {
+		uint64_t Sz = getAllocaSizeInBytes(*AI);
+		return ConstantInt::get(Int32Ty, (int)Sz);
+	}
+
+	auto InstPt = dyn_cast<Instruction>(V);
+	if (InstPt == NULL) {
+		assert(isa<Argument>(V));
+		InstPt = &*F.begin()->getFirstInsertionPt();
+	}
+	else {
+		InstPt = InstPt->getNextNode();
+	}
+	IRBuilder<> IRB(InstPt->getParent());
+	IRB.SetInsertPoint(InstPt);
+	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
+																 IRB.CreateBitCast(V, Int32PtrTy),
+																 ConstantInt::get(Int32Ty, -1));
+	return IRB.CreateLoad(Int32Ty, SizeLoc);
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI) {
 	errs() << "Printing function\n" << F << "\n";
@@ -2666,7 +2708,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			int64_t Offset;
 			Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
 			if (Base == Objects[0]) {
-				uint64_t BaseSize = DL.getTypeStoreSize(Base->getType());
+				uint64_t BaseSize = getObjSize(Base, DL);
 				Offset += TypeSize;
 				assert(Offset >= 0 && "negative offset!");
 				if (Offset > (int64_t)BaseSize) {
@@ -2688,9 +2730,14 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	for (auto &It : UnsafeMap) {
-		auto Ptr = It.first;
-		auto Base = It.second;
+		Value* Ptr = It.first;
+		Value* Base = const_cast<Value*>(It.second);
 		errs() << "PTR: " << *Ptr << " BASE: " << *Base << "\n";
+		auto Size = getBaseSize(F, Base, DL);
+		auto InstPtr = dyn_cast<Instruction>(Ptr);
+		assert(InstPtr && "Invalid Ptr");
+		IRBuilder<> IRB(InstPtr);
+		IRB.CreateIntrinsic(Intrinsic::sbounds, {Base->getType(), Ptr->getType(), Int32Ty}, {Base, Ptr, Size}, nullptr, "");
 	}
 
 	return true;

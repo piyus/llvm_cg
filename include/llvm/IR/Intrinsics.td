@@ -810,7 +810,10 @@ let IntrProperties = [IntrNoMem, IntrSpeculatable, IntrWillReturn] in {
   def int_dbg_label        : Intrinsic<[],
                                        [llvm_metadata_ty]>;
 
-	def int_bounds					 : Intrinsic<[], [llvm_anyptr_ty, llvm_anyptr_ty, llvm_i64_ty]>;
+	def int_sbounds					 : Intrinsic<[],
+	                                     [llvm_anyptr_ty,
+																			  llvm_anyptr_ty, 
+																				llvm_i32_ty]>;
 }
 
 //===------------------ Exception Handling Intrinsics----------------------===//
