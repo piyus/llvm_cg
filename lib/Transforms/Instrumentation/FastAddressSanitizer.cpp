@@ -1322,11 +1322,12 @@ void FastAddressSanitizer::instrumentMemIntrinsic(MemIntrinsic *MI) {
 
 /// Check if we want (and can) handle this alloca.
 bool FastAddressSanitizer::isInterestingAlloca(const AllocaInst &AI) {
+#if 0
   auto PreviouslySeenAllocaInfo = ProcessedAllocas.find(&AI);
 
   if (PreviouslySeenAllocaInfo != ProcessedAllocas.end())
     return PreviouslySeenAllocaInfo->getSecond();
-
+#endif
   bool IsInteresting =
       (AI.getAllocatedType()->isSized() &&
        // alloca() may be called with 0 size, ignore it.
@@ -1340,7 +1341,7 @@ bool FastAddressSanitizer::isInterestingAlloca(const AllocaInst &AI) {
        // swifterror allocas are register promoted by ISel
        !AI.isSwiftError());
 
-  ProcessedAllocas[&AI] = IsInteresting;
+//  ProcessedAllocas[&AI] = IsInteresting;
   return IsInteresting;
 }
 
@@ -1350,11 +1351,11 @@ Value *FastAddressSanitizer::isInterestingMemoryAccess(Instruction *I,
                                                    unsigned *Alignment,
                                                    Value **MaybeMask) {
   // Skip memory accesses inserted by another instrumentation.
-  if (I->hasMetadata("nosanitize")) return nullptr;
+  //if (I->hasMetadata("nosanitize")) return nullptr;
 
   // Do not instrument the load fetching the dynamic shadow address.
-  if (LocalDynamicShadow == I)
-    return nullptr;
+  //if (LocalDynamicShadow == I)
+    //return nullptr;
 
   Value *PtrOperand = nullptr;
   const DataLayout &DL = I->getModule()->getDataLayout();
@@ -2627,48 +2628,37 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI) {
 	errs() << "Printing function\n" << F << "\n";
 
-	DenseSet<Value*> UnsafePointers;
-	Value *PtrOperand;
+	DenseSet<std::pair<Value*, uint64_t>> UnsafePointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
 	DenseMap<Value*, const Value*> UnsafeMap;
 	DenseMap<const Value*, Value*> BaseToSizeMap;
-
+	bool IsWrite = false;
+  unsigned Alignment = 0;
+  uint64_t TypeSize = 0;
+  Value *MaybeMask = nullptr;
+  Value *Addr;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
-			
-  		if (LoadInst *LI = dyn_cast<LoadInst>(&Inst)) {
-    		PtrOperand = LI->getPointerOperand();
-				UnsafePointers.insert(PtrOperand);
-  		} else if (StoreInst *SI = dyn_cast<StoreInst>(&Inst)) {
-    		PtrOperand = SI->getPointerOperand();
-				UnsafePointers.insert(PtrOperand);
-  		} else if (AtomicRMWInst *RMW = dyn_cast<AtomicRMWInst>(&Inst)) {
-    		PtrOperand = RMW->getPointerOperand();
-				UnsafePointers.insert(PtrOperand);
-  		} else if (AtomicCmpXchgInst *XCHG = dyn_cast<AtomicCmpXchgInst>(&Inst)) {
-    		PtrOperand = XCHG->getPointerOperand();
-				UnsafePointers.insert(PtrOperand);
-  		} else if (auto CS = dyn_cast<CallBase>(&Inst)) {
-				if (!Inst.isLifetimeStartOrEnd()) {
-					for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(); ArgIt != End; ++ArgIt) {
-      			Value *A = *ArgIt;
-						if (A->getType()->isPointerTy()) {
-							UnsafePointers.insert(A);
-						}
-					}
-				}
+			Addr = isInterestingMemoryAccess(&Inst, &IsWrite, &TypeSize, &Alignment, &MaybeMask);
+			if (Addr) {
+				UnsafePointers.insert(std::make_pair(Addr, TypeSize/8));
 			}
-
 		}
+	}
+
+	if (!UnsafePointers.size()) {
+		return true;
 	}
 
 	DominatorTree DT(F);
 	LoopInfo LI(DT);
-	Value *Base;
 
-	for (auto V : UnsafePointers) {
+	for (auto It : UnsafePointers) {
+		Value *V = It.first;
+		uint64_t TypeSize = It.second;
 		SmallVector<const Value *, 2> Objects;
+
 		GetUnderlyingObjects(V, Objects, DL, &LI, 0);
 
 		if (Objects.size() == 1) {
@@ -2676,10 +2666,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			int64_t Offset;
 			Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
 			if (Base == Objects[0]) {
-				int64_t BaseSize = DL.getTypeAllocSize(Base->getType());
-				Offset += DL.getTypeAllocSize(V->getType());
+				uint64_t BaseSize = DL.getTypeStoreSize(Base->getType());
+				Offset += TypeSize;
 				assert(Offset >= 0 && "negative offset!");
-				if (Offset > BaseSize) {
+				if (Offset > (int64_t)BaseSize) {
 					UnsafeMap[V] = Base;
 				}
 			}
@@ -2698,7 +2688,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	for (auto &It : UnsafeMap) {
-		errs() << "PTR: " << *It.first << " BASE: " << *It.second << "\n";
+		auto Ptr = It.first;
+		auto Base = It.second;
+		errs() << "PTR: " << *Ptr << " BASE: " << *Base << "\n";
 	}
 
 	return true;
