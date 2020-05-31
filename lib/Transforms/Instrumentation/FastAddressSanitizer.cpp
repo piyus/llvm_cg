@@ -2630,6 +2630,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Value*> UnsafePointers;
 	Value *PtrOperand;
   const DataLayout &DL = F.getParent()->getDataLayout();
+	DenseMap<Value*, const Value*> UnsafeMap;
+	DenseMap<const Value*, Value*> BaseToSizeMap;
 
 
   for (auto &BB : F) {
@@ -2657,19 +2659,46 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 					}
 				}
 			}
+
 		}
 	}
 
 	DominatorTree DT(F);
 	LoopInfo LI(DT);
+	Value *Base;
 
 	for (auto V : UnsafePointers) {
 		SmallVector<const Value *, 2> Objects;
 		GetUnderlyingObjects(V, Objects, DL, &LI, 0);
-		errs() << "UP: " << *V << "\n";
-		for (auto Res: Objects) {
-			errs() << "Base: " << *Res << "\n";
+
+		if (Objects.size() == 1) {
+			assert(!isa<PHINode>(Objects[0]) && !isa<SelectInst>(Objects[0]));
+			int64_t Offset;
+			Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
+			if (Base == Objects[0]) {
+				int64_t BaseSize = DL.getTypeAllocSize(Base->getType());
+				Offset += DL.getTypeAllocSize(V->getType());
+				assert(Offset >= 0 && "negative offset!");
+				if (Offset > BaseSize) {
+					UnsafeMap[V] = Base;
+				}
+			}
+			else {
+				UnsafeMap[V] = Objects[0];
+			}
 		}
+		else {
+			errs() << "Multiple Base\n";
+			errs() << "VAL: " << *V << "\n";
+			for (auto Res: Objects) {
+				errs() << "Base: " << *Res << "\n";
+			}
+			assert(0 && "multiple bases");
+		}
+	}
+
+	for (auto &It : UnsafeMap) {
+		errs() << "PTR: " << *It.first << " BASE: " << *It.second << "\n";
 	}
 
 	return true;
