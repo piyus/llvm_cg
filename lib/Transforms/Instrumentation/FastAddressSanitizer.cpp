@@ -645,6 +645,7 @@ struct FastAddressSanitizer {
   Value *memToShadow(Value *Shadow, IRBuilder<> &IRB);
   bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI);
   bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI);
+	bool IsSafeAlloca(const Value *AllocaPtr);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
   void markEscapedLocalAllocas(Function &F);
@@ -2668,6 +2669,64 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	return IRB.CreateLoad(Int32Ty, SizeLoc);
 }
 
+bool FastAddressSanitizer::IsSafeAlloca(const Value *AllocaPtr) {
+  SmallPtrSet<const Value *, 16> Visited;
+  SmallVector<const Value *, 8> WorkList;
+  WorkList.push_back(AllocaPtr);
+
+  // A DFS search through all uses of the alloca in bitcasts/PHI/GEPs/etc.
+  while (!WorkList.empty()) {
+    const Value *V = WorkList.pop_back_val();
+    for (const Use &UI : V->uses()) {
+      auto I = cast<const Instruction>(UI.getUser());
+      assert(V == UI.get());
+
+      switch (I->getOpcode()) {
+			case Instruction::Load:
+				break;
+			case Instruction::VAArg:
+				break;
+
+      case Instruction::Store:
+        if (V == I->getOperand(0)) {
+					return false;
+        }
+        break;
+
+      case Instruction::Ret:
+        return false;
+
+      case Instruction::Call:
+      case Instruction::Invoke: {
+        ImmutableCallSite CS(I);
+
+        if (I->isLifetimeStartOrEnd())
+          continue;
+        if (const MemIntrinsic *MI = dyn_cast<MemIntrinsic>(I)) {
+        	return false;
+        }
+
+        ImmutableCallSite::arg_iterator B = CS.arg_begin(), E = CS.arg_end();
+        for (ImmutableCallSite::arg_iterator A = B; A != E; ++A)
+          if (A->get() == V)
+            if (!(CS.doesNotCapture(A - B) && (CS.doesNotAccessMemory(A - B) ||
+                                               CS.doesNotAccessMemory()))) {
+              return false;
+            }
+        continue;
+      }
+
+      default:
+        if (Visited.insert(I).second)
+          WorkList.push_back(cast<const Instruction>(I));
+      }
+    }
+  }
+
+  // All uses of the alloca are safe, we can place it on the safe stack.
+  return true;
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI) {
 	errs() << "Printing function\n" << F << "\n";
@@ -2680,12 +2739,38 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
   uint64_t TypeSize = 0;
   Value *MaybeMask = nullptr;
   Value *Addr;
+	bool Static;
+	DenseSet<Value*> CallSites;
+	DenseSet<Value*> Stores;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			Addr = isInterestingMemoryAccess(&Inst, &IsWrite, &TypeSize, &Alignment, &MaybeMask);
 			if (Addr) {
 				UnsafePointers[Addr] = TypeSize/8;
+			}
+			else {
+				if (auto CS = dyn_cast<CallBase>(&Inst)) {
+        	if (!Inst.isLifetimeStartOrEnd()) {
+          	for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
+							if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
+                                               CS->doesNotAccessMemory()))) {
+            		Value *A = *ArgIt;
+              	if (A->getType()->isPointerTy()) {
+              		UnsafePointers[A] = getObjSize(A, DL, Static);
+									CallSites.insert(CS);
+              	}
+							}
+            }
+          }
+				}
+				else if (auto SI = dyn_cast<StoreInst>(&Inst)) {
+					auto V = SI->getValueOperand();
+					if (V->getType()->isPointerTy()) {
+          	UnsafePointers[V] = getObjSize(V, DL, Static);
+						Stores.insert(SI);
+					}
+				}
 			}
 		}
 	}
@@ -2709,7 +2794,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			int64_t Offset;
 			Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
 			if (Base == Objects[0]) {
-				bool Static;
 				uint64_t BaseSize = getObjSize(Base, DL, Static);
 				Offset += TypeSize;
 				assert(Offset >= 0 && "negative offset!");
