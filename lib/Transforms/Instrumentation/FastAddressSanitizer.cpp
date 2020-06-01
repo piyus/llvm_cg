@@ -2885,6 +2885,17 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
+	for (auto RI : RetSites) {
+		auto V = RI->getReturnValue();
+		assert(V && "return value null!");
+		if (InteriorPointers.count(V)) {
+			IRBuilder<> IRB(RI->getParent());
+			IRB.SetInsertPoint(RI);
+			auto Interior = IRB.CreateIntrinsic(Intrinsic::make_interior, {V->getType(), V->getType()}, {V});
+			RI->setOperand(0, Interior);
+		}
+	}
+
 	for (auto CS : CallSites) {
     for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
 			if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
