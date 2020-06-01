@@ -2727,6 +2727,19 @@ bool FastAddressSanitizer::IsSafeAlloca(const Value *AllocaPtr) {
   return true;
 }
 
+static void addUnsafePointer(DenseMap<Value*, uint64_t> &Map, Value *V, uint64_t Size)
+{
+	if (Map.count(V)) {
+		uint64_t PrevSize = Map[V];
+		if (Size > PrevSize) {
+			Map[V] = Size;
+		}
+	}
+	else {
+		Map[V] = Size;
+	}
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI) {
 	errs() << "Printing function\n" << F << "\n";
@@ -2748,7 +2761,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     for (auto &Inst : BB) {
 			Addr = isInterestingMemoryAccess(&Inst, &IsWrite, &TypeSize, &Alignment, &MaybeMask);
 			if (Addr) {
-				UnsafePointers[Addr] = TypeSize/8;
+				addUnsafePointer(UnsafePointers, Addr, TypeSize/8);
 			}
 			else {
 				if (auto CS = dyn_cast<CallBase>(&Inst)) {
@@ -2758,7 +2771,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                CS->doesNotAccessMemory()))) {
             		Value *A = *ArgIt;
               	if (A->getType()->isPointerTy()) {
-              		UnsafePointers[A] = getObjSize(A, DL, Static);
+              		uint64_t Sz = getObjSize(A, DL, Static);
+									addUnsafePointer(UnsafePointers, A, Sz);
 									CallSites.insert(CS);
               	}
 							}
@@ -2768,7 +2782,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				else if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
 					Value *RetVal = Ret->getReturnValue();
           if (RetVal->getType()->isPointerTy()) {
-          	UnsafePointers[RetVal] = getObjSize(RetVal, DL, Static);
+          	uint64_t Sz = getObjSize(RetVal, DL, Static);
+						addUnsafePointer(UnsafePointers, RetVal, Sz);
 						RetSites.insert(Ret);
           }
 				}
@@ -2777,7 +2792,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			if (auto SI = dyn_cast<StoreInst>(&Inst)) {
 				auto V = SI->getValueOperand();
 				if (V->getType()->isPointerTy()) {
-        	UnsafePointers[V] = getObjSize(V, DL, Static);
+        	uint64_t Sz = getObjSize(V, DL, Static);
+					addUnsafePointer(UnsafePointers, V, Sz);
 					Stores.insert(SI);
 				}
 			}
