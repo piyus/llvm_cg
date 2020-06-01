@@ -2741,6 +2741,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
   Value *Addr;
 	bool Static;
 	DenseSet<Value*> CallSites;
+	DenseSet<Value*> RetSites;
 	DenseSet<Value*> Stores;
 
   for (auto &BB : F) {
@@ -2764,6 +2765,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
             }
           }
 				}
+				else if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
+					Value *RetVal = Ret->getReturnValue();
+          if (RetVal->getType()->isPointerTy()) {
+          	UnsafePointers[RetVal] = getObjSize(RetVal, DL, Static);
+						RetSites.insert(Ret);
+          }
+				}
 			}
 
 			if (auto SI = dyn_cast<StoreInst>(&Inst)) {
@@ -2777,7 +2785,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
-	if (!UnsafePointers.size()) {
+	if (UnsafePointers.empty()) {
 		return true;
 	}
 
