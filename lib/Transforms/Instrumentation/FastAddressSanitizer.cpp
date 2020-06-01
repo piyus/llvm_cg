@@ -2640,7 +2640,7 @@ uint64_t FastAddressSanitizer::getObjSize(Value *V, const DataLayout &DL, bool &
 		return getAllocaSizeInBytes(*AI);
 	}
 	Static = false;
-	return DL.getTypeAllocSize(V->getType());
+	return DL.getTypeAllocSize(V->getType()->getPointerElementType());
 }
 
 Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL)
@@ -2672,10 +2672,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI) {
 	errs() << "Printing function\n" << F << "\n";
 
-	DenseSet<std::pair<Value*, uint64_t>> UnsafePointers;
+	DenseMap<Value*, uint64_t> UnsafePointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
 	DenseMap<Value*, const Value*> UnsafeMap;
-	DenseMap<const Value*, Value*> BaseToSizeMap;
 	bool IsWrite = false;
   unsigned Alignment = 0;
   uint64_t TypeSize = 0;
@@ -2686,7 +2685,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     for (auto &Inst : BB) {
 			Addr = isInterestingMemoryAccess(&Inst, &IsWrite, &TypeSize, &Alignment, &MaybeMask);
 			if (Addr) {
-				UnsafePointers.insert(std::make_pair(Addr, TypeSize/8));
+				UnsafePointers[Addr] = TypeSize/8;
 			}
 		}
 	}
@@ -2714,6 +2713,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				uint64_t BaseSize = getObjSize(Base, DL, Static);
 				Offset += TypeSize;
 				assert(Offset >= 0 && "negative offset!");
+				//errs() << "Offset: " << Offset << " BaseSize: " << BaseSize << "\n";
 				if (Offset > (int64_t)BaseSize) {
 					if (Static) {
 						errs() << "Out of bound array access\n";
@@ -2739,12 +2739,14 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	for (auto &It : UnsafeMap) {
 		Value* Ptr = It.first;
 		Value* Base = const_cast<Value*>(It.second);
+		uint64_t TypeSize = UnsafePointers[Ptr];
+		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
 		errs() << "PTR: " << *Ptr << " BASE: " << *Base << "\n";
 		auto Size = getBaseSize(F, Base, DL);
 		auto InstPtr = dyn_cast<Instruction>(Ptr);
 		assert(InstPtr && "Invalid Ptr");
 		IRBuilder<> IRB(InstPtr);
-		IRB.CreateIntrinsic(Intrinsic::sbounds, {Base->getType(), Ptr->getType(), Int32Ty}, {Base, Ptr, Size}, nullptr, "");
+		IRB.CreateIntrinsic(Intrinsic::sbounds, {Base->getType(), Ptr->getType(), Int32Ty, Int32Ty}, {Base, Ptr, Size, TySize}, nullptr, "");
 	}
 
 	return true;

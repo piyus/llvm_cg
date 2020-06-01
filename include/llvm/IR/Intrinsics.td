@@ -813,6 +813,7 @@ let IntrProperties = [IntrNoMem, IntrSpeculatable, IntrWillReturn] in {
 	def int_sbounds					 : Intrinsic<[],
 	                                     [llvm_anyptr_ty,
 																			  llvm_anyptr_ty, 
+																				llvm_i32_ty,
 																				llvm_i32_ty]>;
 }
 
