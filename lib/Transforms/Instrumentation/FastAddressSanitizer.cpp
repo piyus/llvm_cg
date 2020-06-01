@@ -659,7 +659,7 @@ private:
   bool isSafeAccess(ObjectSizeOffsetVisitor &ObjSizeVis, Value *Addr,
                     uint64_t TypeSize) const;
 
-	uint64_t getObjSize(Value *V, const DataLayout &DL);
+	uint64_t getObjSize(Value *V, const DataLayout &DL, bool &Static);
 	Value *getBaseSize(Function &F, const Value *V, const DataLayout &DL);
 
   /// Helper to cleanup per-function state.
@@ -2633,11 +2633,13 @@ void FastAddressSanitizer::markEscapedLocalAllocas(Function &F) {
   }
 }
 
-uint64_t FastAddressSanitizer::getObjSize(Value *V, const DataLayout &DL) {
+uint64_t FastAddressSanitizer::getObjSize(Value *V, const DataLayout &DL, bool &Static) {
 	auto AI = dyn_cast<AllocaInst>(V);
 	if (AI) {
+		Static = true;
 		return getAllocaSizeInBytes(*AI);
 	}
+	Static = false;
 	return DL.getTypeAllocSize(V->getType());
 }
 
@@ -2708,10 +2710,15 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			int64_t Offset;
 			Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
 			if (Base == Objects[0]) {
-				uint64_t BaseSize = getObjSize(Base, DL);
+				bool Static;
+				uint64_t BaseSize = getObjSize(Base, DL, Static);
 				Offset += TypeSize;
 				assert(Offset >= 0 && "negative offset!");
 				if (Offset > (int64_t)BaseSize) {
+					if (Static) {
+						errs() << "Out of bound array access\n";
+						exit(0);
+					}
 					UnsafeMap[V] = Base;
 				}
 			}
