@@ -594,8 +594,10 @@ struct FastAddressSanitizer {
     LongSize = M.getDataLayout().getPointerSizeInBits();
     IntptrTy = Type::getIntNTy(*C, LongSize);
 		Int32Ty = Type::getInt32Ty(*C);
+		Int64Ty = Type::getInt64Ty(*C);
+		Int8Ty = Type::getInt8Ty(*C);
 		Int32PtrTy = Type::getInt32PtrTy(*C);
-		VoidTy = Type::getVoidTy(*C);
+		Int64PtrTy = Type::getInt64PtrTy(*C);
     TargetTriple = Triple(M.getTargetTriple());
 
     Mapping = getShadowMapping(TargetTriple, LongSize, this->CompileKernel);
@@ -645,7 +647,7 @@ struct FastAddressSanitizer {
   Value *memToShadow(Value *Shadow, IRBuilder<> &IRB);
   bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI);
   bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI);
-	bool IsSafeAlloca(const Value *AllocaPtr);
+	bool isSafeAlloca(const Value *AllocaPtr);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
   void markEscapedLocalAllocas(Function &F);
@@ -687,8 +689,10 @@ private:
   bool UseAfterScope;
   Type *IntptrTy;
 	Type *Int32Ty;
+	Type *Int64Ty;
+	Type *Int8Ty;
 	Type *Int32PtrTy;
-	Type *VoidTy;
+	Type *Int64PtrTy;
   ShadowMapping Mapping;
   FunctionCallee AsanHandleNoReturnFunc;
   FunctionCallee AsanPtrCmpFunction, AsanPtrSubFunction;
@@ -2669,7 +2673,7 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	return IRB.CreateLoad(Int32Ty, SizeLoc);
 }
 
-bool FastAddressSanitizer::IsSafeAlloca(const Value *AllocaPtr) {
+bool FastAddressSanitizer::isSafeAlloca(const Value *AllocaPtr) {
   SmallPtrSet<const Value *, 16> Visited;
   SmallVector<const Value *, 8> WorkList;
   WorkList.push_back(AllocaPtr);
@@ -2702,7 +2706,7 @@ bool FastAddressSanitizer::IsSafeAlloca(const Value *AllocaPtr) {
 
         if (I->isLifetimeStartOrEnd())
           continue;
-        if (const MemIntrinsic *MI = dyn_cast<MemIntrinsic>(I)) {
+        if (dyn_cast<MemIntrinsic>(I)) {
         	return false;
         }
 
@@ -2756,6 +2760,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Value*> CallSites;
 	DenseSet<Value*> RetSites;
 	DenseSet<Value*> Stores;
+	DenseSet<AllocaInst*> UnsafeAllocas;
 	DenseSet<Value*> InteriorPointers;
 
   for (auto &BB : F) {
@@ -2796,6 +2801,12 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
         	uint64_t Sz = getObjSize(V, DL, Static);
 					addUnsafePointer(UnsafePointers, V, Sz);
 					Stores.insert(SI);
+				}
+			}
+
+			if (auto AI = dyn_cast<AllocaInst>(&Inst)) {
+				if (!isSafeAlloca(AI)) {
+					UnsafeAllocas.insert(AI);
 				}
 			}
 
@@ -2862,6 +2873,34 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		assert(InstPtr && "Invalid Ptr");
 		IRBuilder<> IRB(InstPtr);
 		IRB.CreateIntrinsic(Intrinsic::sbounds, {Base->getType(), Ptr->getType(), Int32Ty, Int32Ty}, {Base, Ptr, Size, TySize}, nullptr, "");
+	}
+
+	for (auto AI : UnsafeAllocas) {
+		uint64_t Size = getAllocaSizeInBytes(*AI);
+		uint64_t HeaderVal = (0xdeadfaceULL << 32) | Size;
+    uint64_t Padding = alignTo(8, AI->getAlignment());
+
+		Type *AllocatedType = AI->getAllocatedType();
+    if (AI->isArrayAllocation()) {
+      uint64_t ArraySize =
+          cast<ConstantInt>(AI->getArraySize())->getZExtValue();
+      AllocatedType = ArrayType::get(AllocatedType, ArraySize);
+    }
+
+    Type *TypeWithPadding = StructType::get(
+        ArrayType::get(Int8Ty, Padding), AllocatedType);
+    auto *NewAI = new AllocaInst(
+        TypeWithPadding, AI->getType()->getAddressSpace(), nullptr, "", AI);
+    NewAI->takeName(AI);
+    NewAI->setAlignment(MaybeAlign(AI->getAlignment()));
+    NewAI->setUsedWithInAlloca(AI->isUsedWithInAlloca());
+    NewAI->setSwiftError(AI->isSwiftError());
+    NewAI->copyMetadata(*AI);
+		IRBuilder<> Builder(AI);
+    auto Field = Builder.CreateGEP(NewAI, {ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1)});
+		Builder.CreateStore(ConstantInt::get(Int64Ty, HeaderVal), Builder.CreateBitCast(NewAI, Int64PtrTy));
+    AI->replaceAllUsesWith(Field);
+		AI->eraseFromParent();
 	}
 
 	return true;
