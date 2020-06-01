@@ -2764,14 +2764,16 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
             }
           }
 				}
-				else if (auto SI = dyn_cast<StoreInst>(&Inst)) {
-					auto V = SI->getValueOperand();
-					if (V->getType()->isPointerTy()) {
-          	UnsafePointers[V] = getObjSize(V, DL, Static);
-						Stores.insert(SI);
-					}
+			}
+
+			if (auto SI = dyn_cast<StoreInst>(&Inst)) {
+				auto V = SI->getValueOperand();
+				if (V->getType()->isPointerTy()) {
+        	UnsafePointers[V] = getObjSize(V, DL, Static);
+					Stores.insert(SI);
 				}
 			}
+
 		}
 	}
 
