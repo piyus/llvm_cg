@@ -2781,7 +2781,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				}
 				else if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
 					Value *RetVal = Ret->getReturnValue();
-          if (RetVal->getType()->isPointerTy()) {
+          if (RetVal && RetVal->getType()->isPointerTy()) {
           	uint64_t Sz = getObjSize(RetVal, DL, Static);
 						addUnsafePointer(UnsafePointers, RetVal, Sz);
 						RetSites.insert(Ret);
