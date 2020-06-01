@@ -2832,6 +2832,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			int64_t Offset;
 			Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
 			if (Base == Objects[0]) {
+				if (Offset) {
+					InteriorPointers.insert(V);
+				}
 				uint64_t BaseSize = getObjSize(Base, DL, Static);
 				Offset += TypeSize;
 				assert(Offset >= 0 && "negative offset!");
@@ -2842,9 +2845,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 						exit(0);
 					}
 					UnsafeMap[V] = Base;
-				}
-				if (Offset) {
-					InteriorPointers.insert(V);
 				}
 			}
 			else {
@@ -2884,6 +2884,22 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			SI->setOperand(0, Interior);
 		}
 	}
+
+	for (auto CS : CallSites) {
+    for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
+			if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
+                                       CS->doesNotAccessMemory()))) {
+    		Value *A = *ArgIt;
+      	if (A->getType()->isPointerTy() && InteriorPointers.count(A)) {
+					IRBuilder<> IRB(CS->getParent());
+					IRB.SetInsertPoint(CS);
+					auto Interior = IRB.CreateIntrinsic(Intrinsic::make_interior, {A->getType(), A->getType()}, {A});
+					CS->setArgOperand(ArgIt- Start, Interior);
+      	}
+			}
+		}
+	}
+
 
 	for (auto AI : UnsafeAllocas) {
 		uint64_t Size = getAllocaSizeInBytes(*AI);
