@@ -815,6 +815,8 @@ let IntrProperties = [IntrNoMem, IntrSpeculatable, IntrWillReturn] in {
 																			  llvm_anyptr_ty, 
 																				llvm_i32_ty,
 																				llvm_i32_ty]>;
+	def int_make_interior    : Intrinsic<[llvm_anyptr_ty],
+	                                     [llvm_anyptr_ty]>;
 }
 
 //===------------------ Exception Handling Intrinsics----------------------===//

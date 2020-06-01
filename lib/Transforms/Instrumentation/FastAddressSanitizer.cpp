@@ -2757,9 +2757,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
   Value *MaybeMask = nullptr;
   Value *Addr;
 	bool Static;
-	DenseSet<Value*> CallSites;
-	DenseSet<Value*> RetSites;
-	DenseSet<Value*> Stores;
+	DenseSet<CallBase*> CallSites;
+	DenseSet<ReturnInst*> RetSites;
+	DenseSet<StoreInst*> Stores;
 	DenseSet<AllocaInst*> UnsafeAllocas;
 	DenseSet<Value*> InteriorPointers;
 
@@ -2872,7 +2872,17 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		auto InstPtr = dyn_cast<Instruction>(Ptr);
 		assert(InstPtr && "Invalid Ptr");
 		IRBuilder<> IRB(InstPtr);
-		IRB.CreateIntrinsic(Intrinsic::sbounds, {Base->getType(), Ptr->getType(), Int32Ty, Int32Ty}, {Base, Ptr, Size, TySize}, nullptr, "");
+		IRB.CreateIntrinsic(Intrinsic::sbounds, {Base->getType(), Ptr->getType(), Int32Ty, Int32Ty}, {Base, Ptr, Size, TySize});
+	}
+
+	for (auto SI : Stores) {
+		auto V = SI->getValueOperand();
+		if (InteriorPointers.count(V)) {
+			IRBuilder<> IRB(SI->getParent());
+			IRB.SetInsertPoint(SI);
+			auto Interior = IRB.CreateIntrinsic(Intrinsic::make_interior, {V->getType(), V->getType()}, {V});
+			SI->setOperand(0, Interior);
+		}
 	}
 
 	for (auto AI : UnsafeAllocas) {
