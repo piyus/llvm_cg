@@ -2756,6 +2756,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Value*> CallSites;
 	DenseSet<Value*> RetSites;
 	DenseSet<Value*> Stores;
+	DenseSet<Value*> InteriorPointers;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -2831,9 +2832,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 					}
 					UnsafeMap[V] = Base;
 				}
+				if (Offset) {
+					InteriorPointers.insert(V);
+				}
 			}
 			else {
 				UnsafeMap[V] = Objects[0];
+				InteriorPointers.insert(V);
 			}
 		}
 		else {
