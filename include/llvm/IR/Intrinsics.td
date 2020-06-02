@@ -348,9 +348,6 @@ def int_gcwrite : Intrinsic<[],
                             [llvm_ptr_ty, llvm_ptr_ty, llvm_ptrptr_ty],
                             [IntrArgMemOnly, NoCapture<1>, NoCapture<2>]>;
 
-def int_slen  :   Intrinsic<[llvm_i64_ty],
-                            [llvm_ptr_ty],
-                            [IntrReadMem, IntrArgMemOnly]>;
 
 //===------------------- ObjC ARC runtime Intrinsics --------------------===//
 //
@@ -821,6 +818,8 @@ let IntrProperties = [IntrNoMem, IntrSpeculatable, IntrWillReturn] in {
 																				llvm_i32_ty]>;
 	def int_make_interior    : Intrinsic<[llvm_anyptr_ty],
 	                                     [llvm_anyptr_ty]>;
+	def int_slen             : Intrinsic<[llvm_i64_ty],
+                                       [llvm_ptr_ty]>;
 }
 
 //===------------------ Exception Handling Intrinsics----------------------===//
