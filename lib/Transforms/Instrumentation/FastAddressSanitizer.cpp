@@ -596,6 +596,7 @@ struct FastAddressSanitizer {
 		Int32Ty = Type::getInt32Ty(*C);
 		Int64Ty = Type::getInt64Ty(*C);
 		Int8Ty = Type::getInt8Ty(*C);
+		Int8PtrTy = Type::getInt8PtrTy(*C);
 		Int32PtrTy = Type::getInt32PtrTy(*C);
 		Int64PtrTy = Type::getInt64PtrTy(*C);
     TargetTriple = Triple(M.getTargetTriple());
@@ -691,6 +692,7 @@ private:
 	Type *Int32Ty;
 	Type *Int64Ty;
 	Type *Int8Ty;
+	Type *Int8PtrTy;
 	Type *Int32PtrTy;
 	Type *Int64PtrTy;
   ShadowMapping Mapping;
@@ -2654,7 +2656,7 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	auto AI = dyn_cast<AllocaInst>(V);
 	if (AI) {
 		uint64_t Sz = getAllocaSizeInBytes(*AI);
-		return ConstantInt::get(Int32Ty, (int)Sz);
+		return ConstantInt::get(Int64Ty, (int)Sz);
 	}
 
 	auto InstPt = dyn_cast<Instruction>(V);
@@ -2667,10 +2669,15 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	}
 	IRBuilder<> IRB(InstPt->getParent());
 	IRB.SetInsertPoint(InstPt);
+	auto Base8 = IRB.CreateBitCast(V, Int8PtrTy);
+	return IRB.CreateIntrinsic(Intrinsic::slen, {Int64Ty, Int8PtrTy}, {Base8});
+
+#if 0
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(V, Int32PtrTy),
 																 ConstantInt::get(Int32Ty, -1));
 	return IRB.CreateLoad(Int32Ty, SizeLoc);
+#endif
 }
 
 bool FastAddressSanitizer::isSafeAlloca(const Value *AllocaPtr) {
