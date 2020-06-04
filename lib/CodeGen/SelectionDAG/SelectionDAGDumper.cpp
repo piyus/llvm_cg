@@ -448,6 +448,9 @@ std::string SDNode::getOperationName(const SelectionDAG *G) const {
   case ISD::VECREDUCE_UMIN:             return "vecreduce_umin";
   case ISD::VECREDUCE_FMAX:             return "vecreduce_fmax";
   case ISD::VECREDUCE_FMIN:             return "vecreduce_fmin";
+	case ISD::GET_OBJ_LEN:                return "get_obj_len";
+	case ISD::BOUNDS_CHECK:               return "bounds_check";
+	case ISD::MAKE_INTERIOR:              return "make_interior";
   }
 }
 

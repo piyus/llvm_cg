@@ -938,6 +938,10 @@ namespace ISD {
     VECREDUCE_AND, VECREDUCE_OR, VECREDUCE_XOR,
     VECREDUCE_SMAX, VECREDUCE_SMIN, VECREDUCE_UMAX, VECREDUCE_UMIN,
 
+		GET_OBJ_LEN,
+		BOUNDS_CHECK,
+		MAKE_INTERIOR,
+
     /// BUILTIN_OP_END - This must be the last enum value in this list.
     /// The target-specific pre-isel opcode values start here.
     BUILTIN_OP_END

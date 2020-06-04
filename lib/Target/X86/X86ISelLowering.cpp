@@ -28306,6 +28306,35 @@ static SDValue LowerMSCATTER(SDValue Op, const X86Subtarget &Subtarget,
   return SDValue(NewScatter.getNode(), 1);
 }
 
+static SDValue LowerGetObjLen(SDValue Op, const X86Subtarget &Subtarget,
+                              SelectionDAG &DAG) {
+	errs() << "LowerGetObjLen\n";
+	return SDValue();
+}
+
+static SDValue LowerBoundsCheck(SDValue Op, const X86Subtarget &Subtarget,
+                                SelectionDAG &DAG) {
+	errs() << "LowerBoundsCheck\n";
+	return SDValue();
+  SDLoc dl(Op);
+  SDValue Base = DAG.getBitcast(MVT::i64, Op.getOperand(0));
+  SDValue Ptr = DAG.getBitcast(MVT::i64, Op.getOperand(1));
+  SDValue Len = DAG.getBitcast(MVT::i64, Op.getOperand(2));
+  SDValue AccessSz = DAG.getBitcast(MVT::i64, Op.getOperand(3));
+	EmitCmp(Ptr, Base, X86::COND_S, dl, DAG, Subtarget, SDValue(), false);
+	SDValue End = DAG.getNode(ISD::ADD, dl, MVT::i64, Base, Len);
+	SDValue Cur = DAG.getNode(ISD::ADD, dl, MVT::i64, Ptr, AccessSz);
+	auto Res = EmitCmp(End, Cur, X86::COND_S, dl, DAG, Subtarget, SDValue(), false);
+	return Res.first;
+}
+
+static SDValue LowerMakeInterior(SDValue Op, const X86Subtarget &Subtarget,
+                                 SelectionDAG &DAG) {
+	errs() << "LowerMakeInt\n";
+	return SDValue();
+}
+
+
 static SDValue LowerMLOAD(SDValue Op, const X86Subtarget &Subtarget,
                           SelectionDAG &DAG) {
 
@@ -28658,6 +28687,9 @@ SDValue X86TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::GC_TRANSITION_END:  return LowerGC_TRANSITION(Op, DAG);
   case ISD::ADDRSPACECAST:
     return LowerADDRSPACECAST(Op, DAG);
+	case ISD::BOUNDS_CHECK:				return LowerBoundsCheck(Op, Subtarget, DAG);
+	case ISD::GET_OBJ_LEN:        return LowerGetObjLen(Op, Subtarget, DAG);
+	case ISD::MAKE_INTERIOR:      return LowerMakeInterior(Op, Subtarget, DAG);
   }
 }
 

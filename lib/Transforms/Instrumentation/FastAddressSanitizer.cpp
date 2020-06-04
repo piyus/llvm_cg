@@ -53,6 +53,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Metadata.h"
@@ -2878,7 +2879,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		auto Size = getBaseSize(F, Base, DL);
 		auto InstPtr = dyn_cast<Instruction>(Ptr);
 		assert(InstPtr && "Invalid Ptr");
-		IRBuilder<> IRB(InstPtr);
+		IRBuilder<> IRB(InstPtr->getParent());
+		IRB.SetInsertPoint(InstPtr->getNextNode());
 		IRB.CreateIntrinsic(Intrinsic::sbounds, {Base->getType(), Ptr->getType(), Int32Ty, Int32Ty}, {Base, Ptr, Size, TySize});
 	}
 
@@ -2946,6 +2948,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     AI->replaceAllUsesWith(Field);
 		AI->eraseFromParent();
 	}
+	if (verifyFunction(F, &errs())) {
+    F.dump();
+    report_fatal_error("verification of newFunction failed!");
+  }
 
 	return true;
 }

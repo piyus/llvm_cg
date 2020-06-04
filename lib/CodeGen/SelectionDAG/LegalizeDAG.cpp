@@ -1278,6 +1278,10 @@ void SelectionDAGLegalize::LegalizeOp(SDNode *Node) {
     return LegalizeLoadOps(Node);
   case ISD::STORE:
     return LegalizeStoreOps(Node);
+	case ISD::GET_OBJ_LEN:
+	case ISD::BOUNDS_CHECK:
+	case ISD::MAKE_INTERIOR:
+		break;
   }
 }
 
