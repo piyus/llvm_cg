@@ -5798,6 +5798,34 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     // By default, turn this into a target intrinsic node.
     visitTargetIntrinsic(I, Intrinsic);
     return;
+
+	case Intrinsic::sbounds:
+		setValue(&I, DAG.getNode(ISD::BOUNDS_CHECK, sdl,
+                             MVT::Other,
+                             getValue(I.getArgOperand(0)),
+                             getValue(I.getArgOperand(1)),
+                             getValue(I.getArgOperand(2)),
+                             getValue(I.getArgOperand(3))
+														));
+		return;
+
+	case Intrinsic::make_interior: {
+		auto PtrTy = TLI.getPointerTy(DAG.getDataLayout());
+		setValue(&I, DAG.getNode(ISD::OR, sdl,
+                             PtrTy,
+                             getValue(I.getArgOperand(0)),
+														 DAG.getConstant((1ULL<<63), sdl, PtrTy)
+														));
+		return;
+	}
+
+	case Intrinsic::slen:
+		setValue(&I, DAG.getNode(ISD::GET_OBJ_LEN, sdl,
+														 MVT::i64,
+                             getValue(I.getArgOperand(0))
+														));
+		return;
+
   case Intrinsic::vastart:  visitVAStart(I); return;
   case Intrinsic::vaend:    visitVAEnd(I); return;
   case Intrinsic::vacopy:   visitVACopy(I); return;
