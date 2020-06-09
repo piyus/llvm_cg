@@ -2780,10 +2780,27 @@ void FastAddressSanitizer::addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
 	IRBuilder<> IRB(InstPtr->getParent());
 	IRB.SetInsertPoint(InstPtr->getNextNode());
 
-	Function *TheFn =
-     Intrinsic::getDeclaration(F.getParent(), Intrinsic::sbounds);
-	IRB.CreateCall(TheFn, {IRB.CreateBitCast(Base, Int8PtrTy), 
-		IRB.CreateBitCast(Ptr, Int8PtrTy), Size, TySize});
+	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
+
+
+	Value *Limit = IRB.CreateGEP(Int8Ty, Base8, Size);
+	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
+
+	
+	auto Cmp1 = IRB.CreateICmpULT(Ptr8, Base8);
+	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
+	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
+	auto CmpInst = dyn_cast<Instruction>(Cmp);
+	assert(CmpInst && "no cmp inst");
+
+	Instruction *Then =
+        SplitBlockAndInsertIfThen(Cmp, CmpInst->getNextNode(), false,
+                                  MDBuilder(*C).createBranchWeights(1, 100000));
+	IRBuilder<> IRB1(Then->getParent());
+	IRB1.SetInsertPoint(Then);
+	auto Fn = F.getParent()->getOrInsertFunction("abort2", IRB1.getVoidTy(), Int8PtrTy, Int8PtrTy);
+	IRB1.CreateCall(Fn, {Base8, Ptr8});
 }
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
