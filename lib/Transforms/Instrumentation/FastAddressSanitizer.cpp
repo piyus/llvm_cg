@@ -2678,18 +2678,20 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	}
 	IRBuilder<> IRB(InstPt->getParent());
 	IRB.SetInsertPoint(InstPt);
+#if 0
 	auto Base8 = IRB.CreateBitCast(V, Int8PtrTy);
 	Function *TheFn =
       Intrinsic::getDeclaration(F.getParent(), Intrinsic::get_obj_len);
 	return IRB.CreateCall(TheFn, {Base8});
 	//return IRB.CreateIntrinsic(Intrinsic::get_obj_len, {Int8PtrTy, Int64Ty}, {Base8});
+#endif
 
-#if 0
+//#if 0
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(V, Int32PtrTy),
 																 ConstantInt::get(Int32Ty, -1));
 	return IRB.CreateLoad(Int32Ty, SizeLoc);
-#endif
+//#endif
 }
 
 bool FastAddressSanitizer::isSafeAlloca(const Value *AllocaPtr) {
