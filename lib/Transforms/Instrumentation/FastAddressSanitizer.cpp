@@ -23,6 +23,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -647,8 +648,8 @@ struct FastAddressSanitizer {
                                  Value *SizeArgument, uint32_t Exp);
   void instrumentMemIntrinsic(MemIntrinsic *MI);
   Value *memToShadow(Value *Shadow, IRBuilder<> &IRB);
-  bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI);
-  bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI);
+  bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
+  bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
 	bool isSafeAlloca(const Value *AllocaPtr);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
@@ -735,6 +736,7 @@ public:
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<ASanFastGlobalsMetadataWrapperPass>();
     AU.addRequired<TargetLibraryInfoWrapperPass>();
+		AU.addRequiredTransitive<AAResultsWrapperPass>();
   }
 
   bool runOnFunction(Function &F) override {
@@ -744,7 +746,8 @@ public:
         &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F);
     FastAddressSanitizer ASan(*F.getParent(), &GlobalsMD, CompileKernel, Recover,
                           UseAfterScope);
-    return ASan.instrumentFunction(F, TLI);
+		AAResults *AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
+    return ASan.instrumentFunction(F, TLI, AA);
   }
 
 private:
@@ -1192,8 +1195,10 @@ PreservedAnalyses FastAddressSanitizerPass::run(Function &F,
   Module &M = *F.getParent();
   if (auto *R = MAM.getCachedResult<ASanFastGlobalsMetadataAnalysis>(M)) {
     const TargetLibraryInfo *TLI = &AM.getResult<TargetLibraryAnalysis>(F);
+		auto *AA = &AM.getResult<AAManager>(F);
+
     FastAddressSanitizer Sanitizer(M, R, CompileKernel, Recover, UseAfterScope);
-    if (Sanitizer.instrumentFunction(F, TLI))
+    if (Sanitizer.instrumentFunction(F, TLI, AA))
       return PreservedAnalyses::none();
     return PreservedAnalyses::all();
   }
@@ -1234,6 +1239,7 @@ INITIALIZE_PASS_BEGIN(
     false)
 INITIALIZE_PASS_DEPENDENCY(ASanFastGlobalsMetadataWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
 INITIALIZE_PASS_END(
     FastAddressSanitizerLegacyPass, "asan",
     "FastAddressSanitizer: detects use-after-free and out-of-bounds bugs.", false,
@@ -2756,7 +2762,8 @@ static void addUnsafePointer(DenseMap<Value*, uint64_t> &Map, Value *V, uint64_t
 }
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
-                                                 const TargetLibraryInfo *TLI) {
+                                                 const TargetLibraryInfo *TLI,
+																								 AAResults *AA) {
 	errs() << "Printing function\n" << F << "\n";
 
 	DenseMap<Value*, uint64_t> UnsafePointers;
@@ -2881,25 +2888,39 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	for (auto itr1 = TmpSet.begin(); itr1 != TmpSet.end(); itr1++) {
 		for (auto itr2 = std::next(itr1); itr2 != TmpSet.end(); itr2++) {
+
 			auto *Ptr1 = dyn_cast<Instruction>(*itr1);
       auto *Ptr2 = dyn_cast<Instruction>(*itr2);
 			assert(Ptr1 && "Ptr1 is not an instruction");
 			assert(Ptr2 && "Ptr2 is not an instruction");
-			auto *Ptr1Base = UnsafeMap[Ptr1].first;
-			auto *Ptr2Base = UnsafeMap[Ptr2].first;
-			if (Ptr1Base == Ptr2Base) {
-				auto Ptr1Off = UnsafeMap[Ptr1].second;
-				auto Ptr2Off = UnsafeMap[Ptr2].second;
-				assert(Ptr1Off != Ptr2Off && "two defs with same offset");
-				if (Ptr1Off > 0 && Ptr2Off > 0) {
-					auto Ptr1DominatesPtr2 = DT.dominates(Ptr1, Ptr2);
-					auto Ptr2DominatesPtr1 = DT.dominates(Ptr2, Ptr1);
-					if (Ptr1DominatesPtr2 || Ptr2DominatesPtr1) {
-						if (Ptr1Off > Ptr2Off && Ptr1DominatesPtr2) {
-							UnsafeMap.erase(Ptr2);
-						}
-						else if (Ptr2Off > Ptr1Off && Ptr2DominatesPtr1) {
-							UnsafeMap.erase(Ptr1);
+
+			auto AR = AA->alias(MemoryLocation(Ptr1), MemoryLocation(Ptr2));
+
+			if (AR == MustAlias) {
+				if (DT.dominates(Ptr1, Ptr2)) {
+					UnsafeMap.erase(Ptr2);
+				}
+				else if (DT.dominates(Ptr2, Ptr1)) {
+					UnsafeMap.erase(Ptr1);
+				}
+			}
+			else {
+				auto *Ptr1Base = UnsafeMap[Ptr1].first;
+				auto *Ptr2Base = UnsafeMap[Ptr2].first;
+				if (Ptr1Base == Ptr2Base) {
+					auto Ptr1Off = UnsafeMap[Ptr1].second;
+					auto Ptr2Off = UnsafeMap[Ptr2].second;
+					assert(Ptr1Off != Ptr2Off && "two defs with same offset");
+					if (Ptr1Off > 0 && Ptr2Off > 0) {
+						auto Ptr1DominatesPtr2 = DT.dominates(Ptr1, Ptr2);
+						auto Ptr2DominatesPtr1 = DT.dominates(Ptr2, Ptr1);
+						if (Ptr1DominatesPtr2 || Ptr2DominatesPtr1) {
+							if (Ptr1Off > Ptr2Off && Ptr1DominatesPtr2) {
+								UnsafeMap.erase(Ptr2);
+							}
+							else if (Ptr2Off > Ptr1Off && Ptr2DominatesPtr1) {
+								UnsafeMap.erase(Ptr1);
+							}
 						}
 					}
 				}
@@ -3005,8 +3026,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 }
 
 bool FastAddressSanitizer::instrumentFunction(Function &F,
-                                          const TargetLibraryInfo *TLI) {
-	instrumentFunctionNew(F, TLI);
+                                          const TargetLibraryInfo *TLI,
+																					AAResults *AA) {
+	instrumentFunctionNew(F, TLI, AA);
 	if (!CompileKernel)
 		return false;
 
