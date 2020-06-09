@@ -2768,8 +2768,10 @@ Value* FastAddressSanitizer::getInterior(Function &F, Instruction *I, Value *V)
 {
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
-	Function *TheFn =	Intrinsic::getDeclaration(F.getParent(), Intrinsic::make_interior);
-	auto Interior = IRB.CreateCall(TheFn, {IRB.CreateBitCast(V, Int8PtrTy)});
+
+	auto Interior = IRB.CreateGEP(Int8Ty, IRB.CreateBitCast(V, Int8PtrTy), ConstantInt::get(Int64Ty, (1ULL << 63)));
+	//Function *TheFn =	Intrinsic::getDeclaration(F.getParent(), Intrinsic::make_interior);
+	//auto Interior = IRB.CreateCall(TheFn, {IRB.CreateBitCast(V, Int8PtrTy)});
 	return IRB.CreateBitCast(Interior, V->getType());
 }
 
