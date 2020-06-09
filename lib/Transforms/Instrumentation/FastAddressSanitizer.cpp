@@ -2761,13 +2761,14 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	DenseMap<Value*, uint64_t> UnsafePointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
-	DenseMap<Value*, const Value*> UnsafeMap;
+	DenseMap<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
 	bool IsWrite = false;
   unsigned Alignment = 0;
   uint64_t TypeSize = 0;
   Value *MaybeMask = nullptr;
   Value *Addr;
 	bool Static;
+	DenseSet<Value*> TmpSet;
 	DenseSet<CallBase*> CallSites;
 	DenseSet<ReturnInst*> RetSites;
 	DenseSet<StoreInst*> Stores;
@@ -2855,11 +2856,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 						errs() << "Out of bound array access\n";
 						exit(0);
 					}
-					UnsafeMap[V] = Base;
+					UnsafeMap[V] = std::make_pair(Base, Offset);
+					TmpSet.insert(V);
 				}
 			}
 			else {
-				UnsafeMap[V] = Objects[0];
+				UnsafeMap[V] = std::make_pair(Objects[0], 0);
+				TmpSet.insert(V);
 				InteriorPointers.insert(V);
 			}
 		}
@@ -2873,9 +2876,40 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
+	// FIXME: remove duplicates
+	// FIXME: remove constant offset base
+
+	for (auto itr1 = TmpSet.begin(); itr1 != TmpSet.end(); itr1++) {
+		for (auto itr2 = std::next(itr1); itr2 != TmpSet.end(); itr2++) {
+			auto *Ptr1 = dyn_cast<Instruction>(*itr1);
+      auto *Ptr2 = dyn_cast<Instruction>(*itr2);
+			assert(Ptr1 && "Ptr1 is not an instruction");
+			assert(Ptr2 && "Ptr2 is not an instruction");
+			auto *Ptr1Base = UnsafeMap[Ptr1].first;
+			auto *Ptr2Base = UnsafeMap[Ptr2].first;
+			if (Ptr1Base == Ptr2Base) {
+				auto Ptr1Off = UnsafeMap[Ptr1].second;
+				auto Ptr2Off = UnsafeMap[Ptr2].second;
+				assert(Ptr1Off != Ptr2Off && "two defs with same offset");
+				if (Ptr1Off > 0 && Ptr2Off > 0) {
+					auto Ptr1DominatesPtr2 = DT.dominates(Ptr1, Ptr2);
+					auto Ptr2DominatesPtr1 = DT.dominates(Ptr2, Ptr1);
+					if (Ptr1DominatesPtr2 || Ptr2DominatesPtr1) {
+						if (Ptr1Off > Ptr2Off && Ptr1DominatesPtr2) {
+							UnsafeMap.erase(Ptr2);
+						}
+						else if (Ptr2Off > Ptr1Off && Ptr2DominatesPtr1) {
+							UnsafeMap.erase(Ptr1);
+						}
+					}
+				}
+			}
+		}
+	}
+
 	for (auto &It : UnsafeMap) {
 		Value* Ptr = It.first;
-		Value* Base = const_cast<Value*>(It.second);
+		Value* Base = const_cast<Value*>((It.second).first);
 		uint64_t TypeSize = UnsafePointers[Ptr];
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
 		errs() << "PTR: " << *Ptr << " BASE: " << *Base << "\n";
