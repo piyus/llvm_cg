@@ -5819,7 +5819,7 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
 		return;
 	}
 
-	case Intrinsic::slen:
+	case Intrinsic::get_obj_len:
 		setValue(&I, DAG.getNode(ISD::GET_OBJ_LEN, sdl,
 														 MVT::i64,
                              getValue(I.getArgOperand(0))

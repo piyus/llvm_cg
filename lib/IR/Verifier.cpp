@@ -4298,11 +4298,11 @@ void Verifier::visitIntrinsicCall(Intrinsic::ID ID, CallBase &Call) {
   // usual means.  This allows us to verify the mangling of argument types into
   // the name.
   const std::string ExpectedName = Intrinsic::getName(ID, ArgTys);
-  /*Assert(ExpectedName == IF->getName(),
+  Assert(ExpectedName == IF->getName(),
          "Intrinsic name not mangled correctly for type arguments! "
          "Should be: " +
              ExpectedName,
-         IF);*/
+         IF);
 
   // If the intrinsic takes MDNode arguments, verify that they are either global
   // or are local to *this* function.

@@ -2671,7 +2671,10 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	IRBuilder<> IRB(InstPt->getParent());
 	IRB.SetInsertPoint(InstPt);
 	auto Base8 = IRB.CreateBitCast(V, Int8PtrTy);
-	return IRB.CreateIntrinsic(Intrinsic::slen, {Int64Ty, Int8PtrTy}, {Base8});
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::get_obj_len);
+	return IRB.CreateCall(TheFn, {Base8});
+	//return IRB.CreateIntrinsic(Intrinsic::get_obj_len, {Int8PtrTy, Int64Ty}, {Base8});
 
 #if 0
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
@@ -2881,7 +2884,12 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		assert(InstPtr && "Invalid Ptr");
 		IRBuilder<> IRB(InstPtr->getParent());
 		IRB.SetInsertPoint(InstPtr->getNextNode());
-		IRB.CreateIntrinsic(Intrinsic::sbounds, {Base->getType(), Ptr->getType(), Int32Ty, Int32Ty}, {Base, Ptr, Size, TySize});
+		Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::sbounds);
+		IRB.CreateCall(TheFn, {IRB.CreateBitCast(Base, Int8PtrTy),
+       IRB.CreateBitCast(Ptr, Int8PtrTy), Size, TySize});
+		IRB.CreateCall(TheFn, {IRB.CreateBitCast(Base, Int8PtrTy),
+       IRB.CreateBitCast(Ptr, Int8PtrTy), Size, TySize});
 	}
 
 	for (auto SI : Stores) {
@@ -2889,8 +2897,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (InteriorPointers.count(V)) {
 			IRBuilder<> IRB(SI->getParent());
 			IRB.SetInsertPoint(SI);
-			auto Interior = IRB.CreateIntrinsic(Intrinsic::make_interior, {V->getType(), V->getType()}, {V});
-			SI->setOperand(0, Interior);
+			Function *TheFn =
+      	Intrinsic::getDeclaration(F.getParent(), Intrinsic::make_interior);
+			auto Interior = IRB.CreateCall(TheFn, {IRB.CreateBitCast(V, Int8PtrTy)});
+			SI->setOperand(0, IRB.CreateBitCast(Interior, V->getType()));
 		}
 	}
 
@@ -2900,8 +2910,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (InteriorPointers.count(V)) {
 			IRBuilder<> IRB(RI->getParent());
 			IRB.SetInsertPoint(RI);
-			auto Interior = IRB.CreateIntrinsic(Intrinsic::make_interior, {V->getType(), V->getType()}, {V});
-			RI->setOperand(0, Interior);
+			Function *TheFn =
+      	Intrinsic::getDeclaration(F.getParent(), Intrinsic::make_interior);
+			auto Interior = IRB.CreateCall(TheFn, {IRB.CreateBitCast(V, Int8PtrTy)});
+			RI->setOperand(0, IRB.CreateBitCast(Interior, V->getType()));
 		}
 	}
 
@@ -2913,8 +2925,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
       	if (A->getType()->isPointerTy() && InteriorPointers.count(A)) {
 					IRBuilder<> IRB(CS->getParent());
 					IRB.SetInsertPoint(CS);
-					auto Interior = IRB.CreateIntrinsic(Intrinsic::make_interior, {A->getType(), A->getType()}, {A});
-					CS->setArgOperand(ArgIt- Start, Interior);
+					Function *TheFn =
+      			Intrinsic::getDeclaration(F.getParent(), Intrinsic::make_interior);
+					auto Interior = IRB.CreateCall(TheFn, {IRB.CreateBitCast(A, Int8PtrTy)});
+					CS->setArgOperand(ArgIt- Start, IRB.CreateBitCast(Interior, A->getType()));
       	}
 			}
 		}
