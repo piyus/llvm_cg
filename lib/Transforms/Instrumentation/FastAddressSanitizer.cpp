@@ -1390,24 +1390,28 @@ Value *FastAddressSanitizer::isInterestingMemoryAccess(Instruction *I,
     *TypeSize = DL.getTypeStoreSizeInBits(LI->getType());
     *Alignment = LI->getAlignment();
     PtrOperand = LI->getPointerOperand();
+			//errs() << "li " << *PtrOperand << "\n";
   } else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
     if (!ClInstrumentWrites) return nullptr;
     *IsWrite = true;
     *TypeSize = DL.getTypeStoreSizeInBits(SI->getValueOperand()->getType());
     *Alignment = SI->getAlignment();
     PtrOperand = SI->getPointerOperand();
+			//errs() << "si " << *PtrOperand << "\n";
   } else if (AtomicRMWInst *RMW = dyn_cast<AtomicRMWInst>(I)) {
     if (!ClInstrumentAtomics) return nullptr;
     *IsWrite = true;
     *TypeSize = DL.getTypeStoreSizeInBits(RMW->getValOperand()->getType());
     *Alignment = 0;
     PtrOperand = RMW->getPointerOperand();
+			//errs() << "rmw " << *PtrOperand << "\n";
   } else if (AtomicCmpXchgInst *XCHG = dyn_cast<AtomicCmpXchgInst>(I)) {
     if (!ClInstrumentAtomics) return nullptr;
     *IsWrite = true;
     *TypeSize = DL.getTypeStoreSizeInBits(XCHG->getCompareOperand()->getType());
     *Alignment = 0;
     PtrOperand = XCHG->getPointerOperand();
+			//errs() << "xchg " << *PtrOperand << "\n";
   } else if (auto CI = dyn_cast<CallInst>(I)) {
     auto *F = dyn_cast<Function>(CI->getCalledValue());
     if (F && (F->getName().startswith("llvm.masked.load.") ||
@@ -1436,6 +1440,7 @@ Value *FastAddressSanitizer::isInterestingMemoryAccess(Instruction *I,
       if (MaybeMask)
         *MaybeMask = CI->getOperand(2 + OpOffset);
       PtrOperand = BasePtr;
+			//errs() << "masked load " << *PtrOperand << "\n";
     }
   }
 
@@ -2678,8 +2683,8 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	}
 	IRBuilder<> IRB(InstPt->getParent());
 	IRB.SetInsertPoint(InstPt);
-#if 0
 	auto Base8 = IRB.CreateBitCast(V, Int8PtrTy);
+#if 0
 	Function *TheFn =
       Intrinsic::getDeclaration(F.getParent(), Intrinsic::get_obj_len);
 	return IRB.CreateCall(TheFn, {Base8});
@@ -2817,6 +2822,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseMap<Value*, uint64_t> UnsafePointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
 	DenseMap<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
+	DenseMap<Value*, Value*> BaseToLenMap;
 	bool IsWrite = false;
   unsigned Alignment = 0;
   uint64_t TypeSize = 0;
@@ -2835,10 +2841,11 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			Addr = isInterestingMemoryAccess(&Inst, &IsWrite, &TypeSize, &Alignment, &MaybeMask);
 			if (Addr) {
 				addUnsafePointer(UnsafePointers, Addr, TypeSize/8);
+				errs() << "non-Call-Unsafe: " << *Addr << "\n";
 			}
 			else {
 				if (auto CS = dyn_cast<CallBase>(&Inst)) {
-        	if (!Inst.isLifetimeStartOrEnd()) {
+        	if (!Inst.isLifetimeStartOrEnd() && !isa<DbgInfoIntrinsic>(Inst)) {
           	for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
 							if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
                                                CS->doesNotAccessMemory()))) {
@@ -2846,6 +2853,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
               	if (A->getType()->isPointerTy()) {
               		uint64_t Sz = getObjSize(A, DL, Static);
 									addUnsafePointer(UnsafePointers, A, Sz);
+									errs() << "Call-Unsafe: " << *A << "\n";
 									CallSites.insert(CS);
               	}
 							}
@@ -2982,7 +2990,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		uint64_t TypeSize = UnsafePointers[Ptr];
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
 		errs() << "PTR: " << *Ptr << " BASE: " << *Base << "\n";
-		auto Size = getBaseSize(F, Base, DL);
+		if (!BaseToLenMap.count(Base)) {
+			BaseToLenMap[Base] = getBaseSize(F, Base, DL);
+		}
+		auto Size = BaseToLenMap[Base];
 		addBoundsCheck(F, Base, Ptr, Size, TySize);
 	}
 
@@ -3044,6 +3055,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     AI->replaceAllUsesWith(Field);
 		AI->eraseFromParent();
 	}
+    F.dump();
 	if (verifyFunction(F, &errs())) {
     F.dump();
     report_fatal_error("verification of newFunction failed!");

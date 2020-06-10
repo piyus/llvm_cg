@@ -5069,6 +5069,14 @@ static Value *simplifyUnaryIntrinsic(Function *F, Value *Op0,
       return Op0;
     break;
   }
+	case Intrinsic::get_obj_len: {
+  	Type *Int32Ty = Type::getInt32Ty(F->getContext());
+  	Type *Int64Ty = Type::getInt64Ty(F->getContext());
+  	Type *Int32PtrTy = Int32Ty->getPointerTo();
+		auto GEP = GetElementPtrInst::Create(Int32Ty, new BitCastInst(Op0, Int32PtrTy), ConstantInt::get(Int32Ty, -1));
+		auto Load = new LoadInst(Int32Ty, GEP);
+		return new SExtInst(Load, Int64Ty);
+	}
   default:
     break;
   }
