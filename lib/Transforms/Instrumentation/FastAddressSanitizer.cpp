@@ -2803,8 +2803,10 @@ void FastAddressSanitizer::addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
                                   MDBuilder(*C).createBranchWeights(1, 100000));
 	IRBuilder<> IRB1(Then->getParent());
 	IRB1.SetInsertPoint(Then);
-	auto Fn = F.getParent()->getOrInsertFunction("abort2", IRB1.getVoidTy(), Int8PtrTy, Int8PtrTy);
+	auto Fn = F.getParent()->getOrInsertFunction("san_abort2", IRB1.getVoidTy(), Int8PtrTy, Int8PtrTy);
 	IRB1.CreateCall(Fn, {Base8, Ptr8});
+	//auto Fn = F.getParent()->getOrInsertFunction("abort", IRB1.getVoidTy());
+	//IRB1.CreateCall(Fn, {});
 }
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
