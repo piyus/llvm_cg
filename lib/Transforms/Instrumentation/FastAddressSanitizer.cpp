@@ -2834,7 +2834,7 @@ void FastAddressSanitizer::addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
-	errs() << "Printing function\n" << F << "\n";
+	//errs() << "Printing function\n" << F << "\n";
 
 	DenseMap<Value*, uint64_t> UnsafePointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
@@ -2858,7 +2858,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			Addr = isInterestingMemoryAccess(&Inst, &IsWrite, &TypeSize, &Alignment, &MaybeMask);
 			if (Addr) {
 				addUnsafePointer(UnsafePointers, Addr, TypeSize/8);
-				errs() << "non-Call-Unsafe: " << *Addr << "\n";
+				//errs() << "non-Call-Unsafe: " << *Addr << "\n";
 			}
 			else {
 				if (auto CS = dyn_cast<CallBase>(&Inst)) {
@@ -2870,7 +2870,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
               	if (A->getType()->isPointerTy()) {
           				uint64_t Sz = DL.getTypeAllocSize(A->getType()->getPointerElementType());
 									addUnsafePointer(UnsafePointers, A, Sz);
-									errs() << "Call-Unsafe: " << *A << "\n";
+									//errs() << "Call-Unsafe: " << *A << "\n";
 									CallSites.insert(CS);
               	}
 							}
@@ -2983,8 +2983,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				if (Ptr1Base == Ptr2Base) {
 					auto Ptr1Off = UnsafeMap[Ptr1].second;
 					auto Ptr2Off = UnsafeMap[Ptr2].second;
-					assert(Ptr1Off != Ptr2Off && "two defs with same offset");
 					if (Ptr1Off > 0 && Ptr2Off > 0) {
+						assert(Ptr1Off != Ptr2Off && "two defs with same offset");
 						auto Ptr1DominatesPtr2 = DT.dominates(Ptr1, Ptr2);
 						auto Ptr2DominatesPtr1 = DT.dominates(Ptr2, Ptr1);
 						if (Ptr1DominatesPtr2 || Ptr2DominatesPtr1) {
@@ -3006,7 +3006,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Value* Base = const_cast<Value*>((It.second).first);
 		uint64_t TypeSize = UnsafePointers[Ptr];
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
-		errs() << "PTR: " << *Ptr << " BASE: " << *Base << "\n";
+		//errs() << "PTR: " << *Ptr << " BASE: " << *Base << "\n";
 		if (!BaseToLenMap.count(Base)) {
 			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI);
 		}
@@ -3072,7 +3072,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     AI->replaceAllUsesWith(Field);
 		AI->eraseFromParent();
 	}
-    F.dump();
 	if (verifyFunction(F, &errs())) {
     F.dump();
     report_fatal_error("verification of newFunction failed!");
