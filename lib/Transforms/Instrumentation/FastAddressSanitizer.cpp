@@ -2675,6 +2675,11 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	if (Static) {
 		return ConstantInt::get(Int64Ty, Size);
 	}
+	if (auto CI = dyn_cast<CallInst>(V)) {
+		if (isMallocLikeFn(CI, TLI)) {
+			return CI->getArgOperand(0);
+		}
+	}
 
 	auto InstPt = dyn_cast<Instruction>(V);
 	if (InstPt == NULL) {
@@ -2827,7 +2832,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	DenseMap<Value*, uint64_t> UnsafePointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
-	DenseMap<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
+	//DenseMap<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
+	std::map<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
 	DenseMap<Value*, Value*> BaseToLenMap;
 	bool IsWrite = false;
   unsigned Alignment = 0;
@@ -2926,11 +2932,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 						exit(0);
 					}
 					UnsafeMap[V] = std::make_pair(Base, Offset);
+					errs() << "adding map " << V << " base: " << Base << "\n"; 
 					TmpSet.insert(V);
 				}
 			}
 			else {
 				UnsafeMap[V] = std::make_pair(Objects[0], 0);
+				errs() << "adding map1 " << V << " base: " << Base << "\n"; 
 				TmpSet.insert(V);
 				InteriorPointers.insert(V);
 			}
@@ -2941,7 +2949,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			for (auto Res: Objects) {
 				errs() << "Base: " << *Res << "\n";
 			}
-			assert(0 && "multiple bases");
+			//assert(0 && "multiple bases");
 		}
 	}
 
@@ -2960,10 +2968,16 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 			if (AR == MustAlias) {
 				if (DT.dominates(Ptr1, Ptr2)) {
-					UnsafeMap.erase(Ptr2);
+					auto Ret = UnsafeMap.erase(Ptr2);
+					assert(Ret == 1 && "unable to erase");
+					assert(!UnsafeMap.count(Ptr2) && "still exists in map");
+					errs() << "removing map " << Ptr2 << "\n"; 
 				}
 				else if (DT.dominates(Ptr2, Ptr1)) {
-					UnsafeMap.erase(Ptr1);
+					auto Ret = UnsafeMap.erase(Ptr1);
+					assert(Ret == 1 && "unable to erase");
+					assert(!UnsafeMap.count(Ptr1) && "still exists in map");
+					errs() << "removing map " << Ptr1 << "\n"; 
 				}
 			}
 			else {
@@ -2978,10 +2992,16 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 						auto Ptr2DominatesPtr1 = DT.dominates(Ptr2, Ptr1);
 						if (Ptr1DominatesPtr2 || Ptr2DominatesPtr1) {
 							if (Ptr1Off > Ptr2Off && Ptr1DominatesPtr2) {
-								UnsafeMap.erase(Ptr2);
+								auto Ret = UnsafeMap.erase(Ptr2);
+								errs() << "removing map " << Ptr2 << "\n"; 
+								assert(Ret == 1 && "unable to erase");
+								assert(!UnsafeMap.count(Ptr2) && "still exists in map");
 							}
 							else if (Ptr2Off > Ptr1Off && Ptr2DominatesPtr1) {
-								UnsafeMap.erase(Ptr1);
+								auto Ret = UnsafeMap.erase(Ptr1);
+								errs() << "removing map " << Ptr1 << "\n"; 
+								assert(Ret == 1 && "unable to erase");
+								assert(!UnsafeMap.count(Ptr1) && "still exists in map");
 							}
 						}
 					}
@@ -2993,10 +3013,14 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	for (auto &It : UnsafeMap) {
 		Value* Ptr = It.first;
 		Value* Base = const_cast<Value*>((It.second).first);
+		if (!Base) {
+			continue;
+		}
 		uint64_t TypeSize = UnsafePointers[Ptr];
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
-		//errs() << "PTR: " << *Ptr << " BASE: " << *Base << "\n";
+		errs() << "PTR: " << Ptr << " BASE: " << Base << " BASEVAL: " << *Base << "\n";
 		if (!BaseToLenMap.count(Base)) {
+			errs() << "getBaseSize1\n";
 			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI);
 		}
 		auto Size = BaseToLenMap[Base];
