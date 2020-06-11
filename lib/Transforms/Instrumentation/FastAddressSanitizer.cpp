@@ -668,7 +668,7 @@ private:
                     uint64_t TypeSize) const;
 
 	uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI);
-	Value *getBaseSize(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI);
+	Value *getBaseSize(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *V1);
 
   /// Helper to cleanup per-function state.
   struct FunctionStateRAII {
@@ -2667,7 +2667,7 @@ uint64_t FastAddressSanitizer::getKnownObjSize(Value *V, const DataLayout &DL, b
 	return DL.getTypeAllocSize(V->getType()->getPointerElementType());
 }
 
-Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI)
+Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *Ptr)
 {
 	Value *V = const_cast<Value*>(V1);
 	bool Static;
@@ -2798,7 +2798,15 @@ void FastAddressSanitizer::addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
 	auto InstPtr = dyn_cast<Instruction>(Ptr);
 	assert(InstPtr && "Invalid Ptr");
 	IRBuilder<> IRB(InstPtr->getParent());
-	IRB.SetInsertPoint(InstPtr->getNextNode());
+
+	if (isa<PHINode>(Ptr)) {
+		IRB.SetInsertPoint(InstPtr->getParent()->getFirstNonPHI());
+	}
+	else {
+		IRB.SetInsertPoint(InstPtr->getNextNode());
+	}
+
+
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
@@ -2863,10 +2871,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                CS->doesNotAccessMemory()))) {
             		Value *A = *ArgIt;
               	if (A->getType()->isPointerTy()) {
-          				uint64_t Sz = DL.getTypeAllocSize(A->getType()->getPointerElementType());
-									addUnsafePointer(UnsafePointers, A, Sz);
-									//errs() << "Call-Unsafe: " << *A << "\n";
-									CallSites.insert(CS);
+									auto ElemTy = A->getType()->getPointerElementType();
+									if (ElemTy->isSized()) {
+          					uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+										addUnsafePointer(UnsafePointers, A, Sz);
+										//errs() << "Call-Unsafe: " << *A << "\n";
+										CallSites.insert(CS);
+									}
               	}
 							}
             }
@@ -2875,6 +2886,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				else if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
 					Value *RetVal = Ret->getReturnValue();
           if (RetVal && RetVal->getType()->isPointerTy()) {
+						//errs() << "Ret: " << *RetVal << "\n";
           	uint64_t Sz = DL.getTypeAllocSize(RetVal->getType()->getPointerElementType());
 						addUnsafePointer(UnsafePointers, RetVal, Sz);
 						RetSites.insert(Ret);
@@ -2885,6 +2897,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			if (auto SI = dyn_cast<StoreInst>(&Inst)) {
 				auto V = SI->getValueOperand();
 				if (V->getType()->isPointerTy()) {
+					//errs() << "SI: " << *V << "\n";
           uint64_t Sz = DL.getTypeAllocSize(V->getType()->getPointerElementType());
 					addUnsafePointer(UnsafePointers, V, Sz);
 					Stores.insert(SI);
@@ -2912,7 +2925,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		uint64_t TypeSize = It.second;
 		SmallVector<const Value *, 2> Objects;
 
-		GetUnderlyingObjects(V, Objects, DL, &LI, 0);
+		GetUnderlyingObjects(V, Objects, DL, NULL, 0);
 
 		if (Objects.size() == 1) {
 			assert(!isa<PHINode>(Objects[0]) && !isa<SelectInst>(Objects[0]));
@@ -2932,13 +2945,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 						exit(0);
 					}
 					UnsafeMap[V] = std::make_pair(Base, Offset);
-					//errs() << "adding map " << V << " base: " << Base << "\n"; 
+					//errs() << "adding map " << *V << " base: " << *Base << "\n"; 
 					TmpSet.insert(V);
 				}
 			}
 			else {
 				UnsafeMap[V] = std::make_pair(Objects[0], 0);
-				//errs() << "adding map1 " << V << " base: " << Base << "\n"; 
+				//errs() << "adding map1 " << *V << " base: " << *Objects[0] << "\n"; 
 				TmpSet.insert(V);
 				InteriorPointers.insert(V);
 			}
@@ -3020,7 +3033,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
 		//errs() << "PTR: " << Ptr << " BASE: " << Base << " BASEVAL: " << *Base << "\n";
 		if (!BaseToLenMap.count(Base)) {
-			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI);
+			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, Ptr);
 		}
 		auto Size = BaseToLenMap[Base];
 		addBoundsCheck(F, Base, Ptr, Size, TySize);
