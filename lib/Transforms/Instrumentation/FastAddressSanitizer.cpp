@@ -667,7 +667,7 @@ private:
   bool isSafeAccess(ObjectSizeOffsetVisitor &ObjSizeVis, Value *Addr,
                     uint64_t TypeSize) const;
 
-	uint64_t getObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI);
+	uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI);
 	Value *getBaseSize(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI);
 
   /// Helper to cleanup per-function state.
@@ -2654,20 +2654,14 @@ void FastAddressSanitizer::markEscapedLocalAllocas(Function &F) {
   }
 }
 
-uint64_t FastAddressSanitizer::getObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI) {
-	auto AI = dyn_cast<AllocaInst>(V);
-	if (AI) {
+uint64_t FastAddressSanitizer::getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI) {
+	uint64_t Size;
+  ObjectSizeOpts Opts;
+  Opts.RoundToAlign = true;
+  Opts.NullIsUnknownSize = true;
+  if (getObjectSize(V, Size, DL, TLI, Opts)) {
 		Static = true;
-		return getAllocaSizeInBytes(*AI);
-	}
-	if (auto CI = dyn_cast<CallInst>(V)) {
-		if (isMallocLikeFn(CI, TLI)) {
-			auto Val = CI->getArgOperand(0);
-			if (isa<ConstantInt>(Val)) {
-				Static = true;
-				return dyn_cast<ConstantInt>(Val)->getSExtValue();
-			}
-		}
+    return Size;
 	}
 	Static = false;
 	return DL.getTypeAllocSize(V->getType()->getPointerElementType());
@@ -2927,7 +2921,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				if (Offset) {
 					InteriorPointers.insert(V);
 				}
-				uint64_t BaseSize = getObjSize(Base, DL, Static, TLI);
+				uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
 				Offset += TypeSize;
 				assert(Offset >= 0 && "negative offset!");
 				//errs() << "Offset: " << Offset << " BaseSize: " << BaseSize << "\n";
