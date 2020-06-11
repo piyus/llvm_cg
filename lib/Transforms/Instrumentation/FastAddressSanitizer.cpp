@@ -2670,10 +2670,10 @@ uint64_t FastAddressSanitizer::getKnownObjSize(Value *V, const DataLayout &DL, b
 Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI)
 {
 	Value *V = const_cast<Value*>(V1);
-	auto AI = dyn_cast<AllocaInst>(V);
-	if (AI) {
-		uint64_t Sz = getAllocaSizeInBytes(*AI);
-		return ConstantInt::get(Int64Ty, (int)Sz);
+	bool Static;
+	uint64_t Size = getKnownObjSize(V, DL, Static, TLI);
+	if (Static) {
+		return ConstantInt::get(Int64Ty, Size);
 	}
 
 	auto InstPt = dyn_cast<Instruction>(V);
@@ -2688,12 +2688,7 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	IRBuilder<> IRB(InstPt->getParent());
 	IRB.SetInsertPoint(InstPt);
 
-	if (auto CI = dyn_cast<CallInst>(V)) {
-		if (isMallocLikeFn(CI, TLI)) {
-			return CI->getArgOperand(0);
-			//return IRB.CreateBitCast(CI->getArgOperand(0), Int32Ty);
-		}
-	}
+
 	//auto Base8 = IRB.CreateBitCast(V, Int8PtrTy);
 #if 0
 	Function *TheFn =
