@@ -2856,6 +2856,11 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<AllocaInst*> UnsafeAllocas;
 	DenseSet<Value*> InteriorPointers;
 
+
+	if (1 || F.getName() == "interconnects__inner") {
+		//errs() << "Before San\n" << F << "\n";
+	}
+
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			Addr = isInterestingMemoryAccess(&Inst, &IsWrite, &TypeSize, &Alignment, &MaybeMask);
@@ -3031,7 +3036,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 		uint64_t TypeSize = UnsafePointers[Ptr];
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
-		//errs() << "PTR: " << Ptr << " BASE: " << Base << " BASEVAL: " << *Base << "\n";
+		if (1 || F.getName() == "interconnects__inner") {
+			//errs() << "PTR: " << *Ptr << " BASEVAL: " << *Base << "\n";
+		}
 		if (!BaseToLenMap.count(Base)) {
 			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, Ptr);
 		}
@@ -3097,6 +3104,11 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     AI->replaceAllUsesWith(Field);
 		AI->eraseFromParent();
 	}
+
+	if (1 || F.getName() == "interconnects__inner") {
+		//errs() << "After San\n" << F << "\n";
+	}
+
 	if (verifyFunction(F, &errs())) {
     F.dump();
     report_fatal_error("verification of newFunction failed!");
