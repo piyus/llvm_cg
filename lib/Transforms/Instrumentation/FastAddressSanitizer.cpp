@@ -2856,6 +2856,16 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<AllocaInst*> UnsafeAllocas;
 	DenseSet<Value*> InteriorPointers;
 
+	if (F.getName() == "main" && F.arg_size() > 0) {
+		assert(F.arg_size() == 2);
+		auto argc = F.getArg(0);
+		auto argv = F.getArg(1);
+		auto Fn = F.getParent()->getOrInsertFunction("san_copy_argv", argv->getType(), argc->getType(), argv->getType());
+  	Instruction *Entry = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+		auto Call = CallInst::Create(Fn, {argc, argv}, "", Entry);
+    argv->replaceAllUsesWith(Call);
+		Call->setArgOperand(1, argv);
+	}
 
 	if (1 || F.getName() == "interconnects__inner") {
 		//errs() << "Before San\n" << F << "\n";
