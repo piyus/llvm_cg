@@ -2819,7 +2819,12 @@ abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value
 	IRBuilder<> IRB(Then->getParent());
 	IRB.SetInsertPoint(Then);
 	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy);
-	IRB.CreateCall(Fn, {Base8, Ptr8});
+	auto Call = IRB.CreateCall(Fn, {Base8, Ptr8});
+	if (F.getSubprogram()) {
+    if (auto DL = InsertPt->getDebugLoc()) {
+      Call->setDebugLoc(DL);
+		}
+  }
 }
 
 static void
