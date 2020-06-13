@@ -651,7 +651,8 @@ struct FastAddressSanitizer {
   bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
   bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
 	Value* getInterior(Function &F, Instruction *I, Value *V);
-	void addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size, Value *TySize);
+	void addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
+		Value *Size, Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses);
 	bool isSafeAlloca(const Value *AllocaPtr);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
@@ -2793,7 +2794,47 @@ Value* FastAddressSanitizer::getInterior(Function &F, Instruction *I, Value *V)
 	return IRB.CreateBitCast(Interior, V->getType());
 }
 
-void FastAddressSanitizer::addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size, Value *TySize)
+static bool 
+postDominatesAnyUse(Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses)
+{
+	for (const Use &UI : Ptr->uses()) {
+	  auto I = cast<const Instruction>(UI.getUser());
+		if (UnsafeUses.count(I) && PDT.dominates(I, Ptr)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void
+abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value *Ptr8)
+{
+	auto Int8PtrTy = Base8->getType();
+	auto M = F.getParent();
+  auto &C = M->getContext();
+
+	Instruction *Then =
+        SplitBlockAndInsertIfThen(Cond, InsertPt, false,
+                                  MDBuilder(C).createBranchWeights(1, 100000));
+	IRBuilder<> IRB(Then->getParent());
+	IRB.SetInsertPoint(Then);
+	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy);
+	IRB.CreateCall(Fn, {Base8, Ptr8});
+}
+
+static void
+instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, Value *Cmp, Value *Base8, Value *Ptr8) {
+	for (const Use &UI : Ptr->uses()) {
+	  auto I = cast<Instruction>(UI.getUser());
+		if (UnsafeUses.count(I)) {
+			abortIfTrue(F, Cmp, I, Base8, Ptr8);
+		}
+	}
+}
+
+void FastAddressSanitizer::
+addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size, 
+	Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses)
 {
 	auto InstPtr = dyn_cast<Instruction>(Ptr);
 	assert(InstPtr && "Invalid Ptr");
@@ -2806,11 +2847,8 @@ void FastAddressSanitizer::addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
 		IRB.SetInsertPoint(InstPtr->getNextNode());
 	}
 
-
-
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
-
 
 	Value *Limit = IRB.CreateGEP(Int8Ty, Base8, Size);
 	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
@@ -2822,15 +2860,13 @@ void FastAddressSanitizer::addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
 	assert(CmpInst && "no cmp inst");
 
-	Instruction *Then =
-        SplitBlockAndInsertIfThen(Cmp, CmpInst->getNextNode(), false,
-                                  MDBuilder(*C).createBranchWeights(1, 100000));
-	IRBuilder<> IRB1(Then->getParent());
-	IRB1.SetInsertPoint(Then);
-	auto Fn = F.getParent()->getOrInsertFunction("san_abort2", IRB1.getVoidTy(), Int8PtrTy, Int8PtrTy);
-	IRB1.CreateCall(Fn, {Base8, Ptr8});
-	//auto Fn = F.getParent()->getOrInsertFunction("abort", IRB1.getVoidTy());
-	//IRB1.CreateCall(Fn, {});
+	bool Ret = postDominatesAnyUse(InstPtr, PDT, UnsafeUses);
+	if (Ret) {
+		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8);
+	}
+	else {
+		instrumentAllUses(F, InstPtr, UnsafeUses, Cmp, Base8, Ptr8);
+	}
 }
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
@@ -2838,6 +2874,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 																								 AAResults *AA) {
 	//errs() << "Printing function\n" << F << "\n";
 
+	DenseSet<Value*> UnsafeUses;
 	DenseMap<Value*, uint64_t> UnsafePointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
 	//DenseMap<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
@@ -2876,6 +2913,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			Addr = isInterestingMemoryAccess(&Inst, &IsWrite, &TypeSize, &Alignment, &MaybeMask);
 			if (Addr) {
 				addUnsafePointer(UnsafePointers, Addr, TypeSize/8);
+				UnsafeUses.insert(&Inst);
 				//errs() << "non-Call-Unsafe: " << *Addr << "\n";
 			}
 			else {
@@ -2892,6 +2930,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 										addUnsafePointer(UnsafePointers, A, Sz);
 										//errs() << "Call-Unsafe: " << *A << "\n";
 										CallSites.insert(CS);
+										UnsafeUses.insert(CS);
 									}
               	}
 							}
@@ -2905,6 +2944,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
           	uint64_t Sz = DL.getTypeAllocSize(RetVal->getType()->getPointerElementType());
 						addUnsafePointer(UnsafePointers, RetVal, Sz);
 						RetSites.insert(Ret);
+						UnsafeUses.insert(Ret);
           }
 				}
 			}
@@ -2916,6 +2956,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
           uint64_t Sz = DL.getTypeAllocSize(V->getType()->getPointerElementType());
 					addUnsafePointer(UnsafePointers, V, Sz);
 					Stores.insert(SI);
+					UnsafeUses.insert(SI);
 				}
 			}
 
@@ -3038,6 +3079,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
+	PostDominatorTree PDT(F);
+
 	for (auto &It : UnsafeMap) {
 		Value* Ptr = It.first;
 		Value* Base = const_cast<Value*>((It.second).first);
@@ -3053,7 +3096,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, Ptr);
 		}
 		auto Size = BaseToLenMap[Base];
-		addBoundsCheck(F, Base, Ptr, Size, TySize);
+		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses);
 	}
 
 	for (auto SI : Stores) {
