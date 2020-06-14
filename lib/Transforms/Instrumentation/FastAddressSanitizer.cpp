@@ -652,7 +652,7 @@ struct FastAddressSanitizer {
   bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
 	Value* getInterior(Function &F, Instruction *I, Value *V);
 	void addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
-		Value *Size, Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses);
+		Value *Size, Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, int &callsites);
 	bool isSafeAlloca(const Value *AllocaPtr);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
@@ -2677,8 +2677,20 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 		return ConstantInt::get(Int64Ty, Size);
 	}
 	if (auto CI = dyn_cast<CallInst>(V)) {
-		if (isMallocLikeFn(CI, TLI)) {
-			return CI->getArgOperand(0);
+		LibFunc Func;
+		if (TLI->getLibFunc(ImmutableCallSite(CI), Func)) {
+			auto Name = CI->getCalledFunction()->getName();
+			if (Name == "malloc") {
+				return CI->getArgOperand(0);
+			}
+			else if (Name == "calloc") {
+				IRBuilder<> IRB(CI->getParent());
+				IRB.SetInsertPoint(CI->getNextNode());
+				return IRB.CreateMul(CI->getArgOperand(0), CI->getArgOperand(1));
+			}
+			else if (Name == "realloc") {
+				return CI->getArgOperand(1);
+			}
 		}
 	}
 
@@ -2807,7 +2819,7 @@ postDominatesAnyUse(Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &
 }
 
 static void
-abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value *Ptr8)
+abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value *Ptr8, Value *Limit, Value *PtrLimit, Value *Size, Value *Callsite)
 {
 	auto Int8PtrTy = Base8->getType();
 	auto M = F.getParent();
@@ -2818,8 +2830,8 @@ abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value
                                   MDBuilder(C).createBranchWeights(1, 100000));
 	IRBuilder<> IRB(Then->getParent());
 	IRB.SetInsertPoint(Then);
-	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy);
-	auto Call = IRB.CreateCall(Fn, {Base8, Ptr8});
+	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Size->getType(), Callsite->getType());
+	auto Call = IRB.CreateCall(Fn, {Base8, Ptr8, Limit, PtrLimit, Size, Callsite});
 	if (F.getSubprogram()) {
     if (auto DL = InsertPt->getDebugLoc()) {
       Call->setDebugLoc(DL);
@@ -2828,18 +2840,18 @@ abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value
 }
 
 static void
-instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, Value *Cmp, Value *Base8, Value *Ptr8) {
+instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, Value *Cmp, Value *Base8, Value *Ptr8, Value *Limit, Value *PtrLimit, Value *Size, Value *Callsite) {
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
-			abortIfTrue(F, Cmp, I, Base8, Ptr8);
+			abortIfTrue(F, Cmp, I, Base8, Ptr8, Limit, PtrLimit, Size, Callsite);
 		}
 	}
 }
 
 void FastAddressSanitizer::
 addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size, 
-	Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses)
+	Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, int &callsites)
 {
 	auto InstPtr = dyn_cast<Instruction>(Ptr);
 	assert(InstPtr && "Invalid Ptr");
@@ -2867,11 +2879,12 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 
 	bool Ret = postDominatesAnyUse(InstPtr, PDT, UnsafeUses);
 	if (Ret) {
-		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8);
+		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
 	}
 	else {
-		instrumentAllUses(F, InstPtr, UnsafeUses, Cmp, Base8, Ptr8);
+		instrumentAllUses(F, InstPtr, UnsafeUses, Cmp, Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
 	}
+	callsites++;
 }
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
@@ -2881,6 +2894,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	DenseSet<Value*> UnsafeUses;
 	DenseMap<Value*, uint64_t> UnsafePointers;
+	DenseMap<Value*, uint64_t> UnsafeOtherPointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
 	//DenseMap<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
 	std::map<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
@@ -2897,6 +2911,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<StoreInst*> Stores;
 	DenseSet<AllocaInst*> UnsafeAllocas;
 	DenseSet<Value*> InteriorPointers;
+	int callsites = 0;
 
 	if (F.getName() == "main" && F.arg_size() > 0) {
 		assert(F.arg_size() == 2);
@@ -2909,8 +2924,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Call->setArgOperand(1, argv);
 	}
 
-	if (1 || F.getName() == "interconnects__inner") {
-		//errs() << "Before San\n" << F << "\n";
+	if (F.getName() == "primal_bea_mpp") {
+		errs() << "Before San\n" << F << "\n";
 	}
 
   for (auto &BB : F) {
@@ -2932,10 +2947,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 									auto ElemTy = A->getType()->getPointerElementType();
 									if (ElemTy->isSized()) {
           					uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-										addUnsafePointer(UnsafePointers, A, Sz);
+										addUnsafePointer(UnsafeOtherPointers, A, Sz);
 										//errs() << "Call-Unsafe: " << *A << "\n";
 										CallSites.insert(CS);
-										UnsafeUses.insert(CS);
+										//UnsafeUses.insert(CS);
 									}
               	}
 							}
@@ -2947,9 +2962,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
           if (RetVal && RetVal->getType()->isPointerTy()) {
 						//errs() << "Ret: " << *RetVal << "\n";
           	uint64_t Sz = DL.getTypeAllocSize(RetVal->getType()->getPointerElementType());
-						addUnsafePointer(UnsafePointers, RetVal, Sz);
+						addUnsafePointer(UnsafeOtherPointers, RetVal, Sz);
 						RetSites.insert(Ret);
-						UnsafeUses.insert(Ret);
+						//UnsafeUses.insert(Ret);
           }
 				}
 			}
@@ -2959,9 +2974,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				if (V->getType()->isPointerTy()) {
 					//errs() << "SI: " << *V << "\n";
           uint64_t Sz = DL.getTypeAllocSize(V->getType()->getPointerElementType());
-					addUnsafePointer(UnsafePointers, V, Sz);
+					addUnsafePointer(UnsafeOtherPointers, V, Sz);
 					Stores.insert(SI);
-					UnsafeUses.insert(SI);
+					//UnsafeUses.insert(SI);
 				}
 			}
 
@@ -3101,7 +3116,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, Ptr);
 		}
 		auto Size = BaseToLenMap[Base];
-		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses);
+		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
 	}
 
 	for (auto SI : Stores) {
@@ -3163,8 +3178,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		AI->eraseFromParent();
 	}
 
-	if (1 || F.getName() == "interconnects__inner") {
-		//errs() << "After San\n" << F << "\n";
+	if (F.getName() == "primal_bea_mpp") {
+		errs() << "After San\n" << F << "\n";
 	}
 
 	if (verifyFunction(F, &errs())) {
