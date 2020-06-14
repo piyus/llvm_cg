@@ -3152,7 +3152,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	for (auto AI : UnsafeAllocas) {
 		uint64_t Size = getAllocaSizeInBytes(*AI);
-		uint64_t HeaderVal = (0xdeadfaceULL << 32) | Size;
+		uint64_t HeaderVal = 0xdeadfaceULL | (Size << 32);
     uint64_t Padding = alignTo(8, AI->getAlignment());
 
 		Type *AllocatedType = AI->getAllocatedType();
@@ -3173,7 +3173,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     NewAI->copyMetadata(*AI);
 		IRBuilder<> Builder(AI);
     auto Field = Builder.CreateGEP(NewAI, {ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1)});
-		Builder.CreateStore(ConstantInt::get(Int64Ty, HeaderVal), Builder.CreateBitCast(NewAI, Int64PtrTy));
+		auto SizeField = Builder.CreateGEP(Builder.CreateBitCast(Field, Int64PtrTy), ConstantInt::get(Int32Ty, -1));
+		Builder.CreateStore(ConstantInt::get(Int64Ty, HeaderVal), SizeField);
     AI->replaceAllUsesWith(Field);
 		AI->eraseFromParent();
 	}
