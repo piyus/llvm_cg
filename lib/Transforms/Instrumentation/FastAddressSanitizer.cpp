@@ -73,6 +73,7 @@
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Instrumentation.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ASanStackFrameLayout.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -648,6 +649,7 @@ struct FastAddressSanitizer {
                                  Value *SizeArgument, uint32_t Exp);
   void instrumentMemIntrinsic(MemIntrinsic *MI);
   Value *memToShadow(Value *Shadow, IRBuilder<> &IRB);
+	void passingInteriorPointers(Function *F);
   bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
   bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
 	Value* getInterior(Function &F, Instruction *I, Value *V);
@@ -2887,11 +2889,76 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 	callsites++;
 }
 
+void FastAddressSanitizer::passingInteriorPointers(Function *F) {
+
+	auto Name = F->getName();
+	if (Name.startswith("san.interior") || Name == "main") {
+		return;
+	}
+
+	ValueToValueMapTy VMap;
+	std::vector<Type*> ArgTypes;
+	std::vector<Type*> NewArgs;
+
+  // The user might be deleting arguments to the function by specifying them in
+  // the VMap.  If so, we need to not add the arguments to the arg ty vector
+  //
+  for (const Argument &I : F->args()) {
+    if (VMap.count(&I) == 0) {
+      ArgTypes.push_back(I.getType());
+			if (I.getType()->isPointerTy()) {
+				NewArgs.push_back(I.getType());
+			}
+		}
+	}
+
+	if (NewArgs.empty()) {
+		return;
+	}
+
+	for (auto Ty : NewArgs) {
+		ArgTypes.push_back(Ty);
+	}
+
+  // Create a new function type...
+  FunctionType *FTy = FunctionType::get(F->getFunctionType()->getReturnType(),
+                                    ArgTypes, F->getFunctionType()->isVarArg());
+
+  // Create the new function...
+  Function *NewF = Function::Create(FTy, F->getLinkage(), F->getAddressSpace(),
+                                    "san.interior." + F->getName(), F->getParent());
+
+  // Loop over the arguments, copying the names of the mapped arguments over...
+  Function::arg_iterator DestI = NewF->arg_begin();
+  for (const Argument & I : F->args()) {
+    if (VMap.count(&I) == 0) {     // Is this argument preserved?
+      DestI->setName(I.getName()); // Copy the name over...
+      VMap[&I] = &*DestI++;        // Add mapping to VMap
+    }
+	}
+
+
+  SmallVector<ReturnInst*, 8> Returns;  // Ignore returns cloned.
+  CloneFunctionInto(NewF, F, VMap, F->getSubprogram() != nullptr, Returns);
+
+
+	char Buf[128];
+	int i = 0;
+	while (DestI != NewF->arg_end()) {
+		snprintf(Buf, 128, "__interior%d", i++);
+		DestI->setName(Buf);
+		DestI->addAttr(Attribute::ReadNone);
+		DestI->addAttr(Attribute::NoCapture);
+	  DestI++;
+	}
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
 	//errs() << "Printing function\n" << F << "\n";
 
+	passingInteriorPointers(&F);
 	DenseSet<Value*> UnsafeUses;
 	DenseMap<Value*, uint64_t> UnsafePointers;
 	DenseMap<Value*, uint64_t> UnsafeOtherPointers;
@@ -2924,7 +2991,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Call->setArgOperand(1, argv);
 	}
 
-	if (F.getName() == "primal_bea_mpp") {
+	if (F.getName() == "spec_qsort") {
 		errs() << "Before San\n" << F << "\n";
 	}
 
@@ -3179,7 +3246,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		AI->eraseFromParent();
 	}
 
-	if (F.getName() == "primal_bea_mpp") {
+	if (F.getName() == "spec_qsort") {
 		errs() << "After San\n" << F << "\n";
 	}
 
