@@ -2935,8 +2935,9 @@ static FunctionType *getInteriorType(Function *F)
 	return FTy;
 }
 
-static Value *createInteriorCall(CallInst *CI, DenseMap<Value*, Value*> Interiors) {
+static void createInteriorCall(CallBase *CB, DenseMap<Value*, Value*> Interiors) {
 
+	CallInst *CI = dyn_cast<CallInst>(CB);
 	Function *F = CI->getCalledFunction();
 	FunctionType *FTy = getInteriorType(F);
 	assert(FTy);
@@ -2954,13 +2955,26 @@ static Value *createInteriorCall(CallInst *CI, DenseMap<Value*, Value*> Interior
 		Args.push_back(param);
 		if (param->getType()->isPointerTy()) {
 			if (Interiors.count(param)) {
-				AdditionalArgs.push_back(Interiors[param]);
+				auto Base = Interiors[param];
+				if (Base->getType() == param->getType()) {
+					AdditionalArgs.push_back(Base);
+				}
+				else {
+					auto NewBase = new BitCastInst(Base, param->getType(), "", CI);
+					AdditionalArgs.push_back(NewBase);
+				}
 			}
 			else {
 				AdditionalArgs.push_back(param);
 			}
 		}
 	}
+
+	for (auto arg : AdditionalArgs) {
+		Args.push_back(arg);
+	}
+
+
 
 	auto *NewCall = CallInst::Create(NF, Args, "", CI);
   NewCall->setDebugLoc(CI->getDebugLoc());
@@ -3316,12 +3330,16 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
                                        CS->doesNotAccessMemory()))) {
     		Value *A = *ArgIt;
-      	if (A->getType()->isPointerTy() && InteriorPointers.count(A)) {
-					//InteriorToBase
-					auto Interior = getInterior(F, CS, A);
-					CS->setArgOperand(ArgIt- Start, Interior);
+      	if (A->getType()->isPointerTy()) {
+					Value *Base = getBaseIfInterior(A, DL);
+					if (Base) {
+						InteriorToBase[A] = Base;
+					}
       	}
 			}
+		}
+		if (!InteriorToBase.empty()) {
+			createInteriorCall(CS, InteriorToBase);
 		}
 	}
 
