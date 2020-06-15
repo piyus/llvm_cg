@@ -649,7 +649,7 @@ struct FastAddressSanitizer {
                                  Value *SizeArgument, uint32_t Exp);
   void instrumentMemIntrinsic(MemIntrinsic *MI);
   Value *memToShadow(Value *Shadow, IRBuilder<> &IRB);
-	void passingInteriorPointers(Function *F);
+	void createInteriorFn(Function *F);
   bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
   bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
 	Value* getInterior(Function &F, Instruction *I, Value *V);
@@ -2811,13 +2811,26 @@ Value* FastAddressSanitizer::getInterior(Function &F, Instruction *I, Value *V)
 static bool 
 postDominatesAnyUse(Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses)
 {
+	bool Ret = true;
+	bool PostDominateSomeUse = false;
+
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<const Instruction>(UI.getUser());
-		if (UnsafeUses.count(I) && PDT.dominates(I, Ptr)) {
-			return true;
+		if (UnsafeUses.count(I)) {
+			if (PDT.dominates(I, Ptr)) {
+				PostDominateSomeUse = true;
+			}
+			if (isa<ReturnInst>(I) || isa<CallInst>(I)) {
+				Ret = false;
+			}
+			else if (auto SI = dyn_cast<StoreInst>(I)) {
+				if (Ptr == SI->getValueOperand()) {
+					Ret = false;
+				}
+			}
 		}
 	}
-	return false;
+	return Ret & PostDominateSomeUse;
 }
 
 static void
@@ -2889,14 +2902,8 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 	callsites++;
 }
 
-void FastAddressSanitizer::passingInteriorPointers(Function *F) {
-
-	auto Name = F->getName();
-	if (Name.startswith("san.interior") || Name == "main") {
-		return;
-	}
-
-	ValueToValueMapTy VMap;
+static FunctionType *getInteriorType(Function *F)
+{
 	std::vector<Type*> ArgTypes;
 	std::vector<Type*> NewArgs;
 
@@ -2904,16 +2911,14 @@ void FastAddressSanitizer::passingInteriorPointers(Function *F) {
   // the VMap.  If so, we need to not add the arguments to the arg ty vector
   //
   for (const Argument &I : F->args()) {
-    if (VMap.count(&I) == 0) {
-      ArgTypes.push_back(I.getType());
-			if (I.getType()->isPointerTy()) {
-				NewArgs.push_back(I.getType());
-			}
+  	ArgTypes.push_back(I.getType());
+		if (I.getType()->isPointerTy()) {
+			NewArgs.push_back(I.getType());
 		}
 	}
 
 	if (NewArgs.empty()) {
-		return;
+		return NULL;
 	}
 
 	for (auto Ty : NewArgs) {
@@ -2923,7 +2928,58 @@ void FastAddressSanitizer::passingInteriorPointers(Function *F) {
   // Create a new function type...
   FunctionType *FTy = FunctionType::get(F->getFunctionType()->getReturnType(),
                                     ArgTypes, F->getFunctionType()->isVarArg());
+	return FTy;
+}
 
+static Value *createInteriorCall(CallInst *CI, DenseMap<Value*, Value*> Interiors) {
+
+	Function *F = CI->getCalledFunction();
+	FunctionType *FTy = getInteriorType(F);
+	assert(FTy);
+
+	assert(!F->getName().startswith("san.interior"));
+
+	char Buf[128];
+	snprintf(Buf, 128, "san.interior.%s", F->getName().data());
+
+	auto NF = F->getParent()->getOrInsertFunction(Buf, FTy);
+
+	std::vector<Value*> Args;
+	std::vector<Value*> AdditionalArgs;
+	for (auto &param : CI->args()) {
+		Args.push_back(param);
+		if (param->getType()->isPointerTy()) {
+			if (Interiors.count(param)) {
+				AdditionalArgs.push_back(Interiors[param]);
+			}
+			else {
+				AdditionalArgs.push_back(param);
+			}
+		}
+	}
+
+	auto *NewCall = CallInst::Create(NF, Args, "", CI);
+  NewCall->setDebugLoc(CI->getDebugLoc());
+
+  if (!CI->use_empty()) {
+    CI->replaceAllUsesWith(NewCall);
+    NewCall->takeName(CI);
+  }
+
+  CI->eraseFromParent();
+}
+
+void FastAddressSanitizer::createInteriorFn(Function *F) {
+
+	ValueToValueMapTy VMap;
+	auto Name = F->getName();
+	if (Name.startswith("san.interior") || Name == "main") {
+		return;
+	}
+	FunctionType *FTy = getInteriorType(F);
+	if (FTy == NULL) {
+		return;
+	}
   // Create the new function...
   Function *NewF = Function::Create(FTy, F->getLinkage(), F->getAddressSpace(),
                                     "san.interior." + F->getName(), F->getParent());
@@ -2985,7 +3041,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 																								 AAResults *AA) {
 	//errs() << "Printing function\n" << F << "\n";
 
-	passingInteriorPointers(&F);
+	createInteriorFn(&F);
 	DenseSet<Value*> UnsafeUses;
 	DenseMap<Value*, uint64_t> UnsafePointers;
 	DenseMap<Value*, uint64_t> UnsafeOtherPointers;
@@ -3044,10 +3100,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 									auto ElemTy = A->getType()->getPointerElementType();
 									if (ElemTy->isSized()) {
           					uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-										addUnsafePointer(UnsafeOtherPointers, A, Sz);
+										addUnsafePointer(UnsafePointers, A, Sz);
 										//errs() << "Call-Unsafe: " << *A << "\n";
 										CallSites.insert(CS);
-										//UnsafeUses.insert(CS);
+										UnsafeUses.insert(CS);
 									}
               	}
 							}
@@ -3059,9 +3115,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
           if (RetVal && RetVal->getType()->isPointerTy()) {
 						//errs() << "Ret: " << *RetVal << "\n";
           	uint64_t Sz = DL.getTypeAllocSize(RetVal->getType()->getPointerElementType());
-						addUnsafePointer(UnsafeOtherPointers, RetVal, Sz);
+						addUnsafePointer(UnsafePointers, RetVal, Sz);
 						RetSites.insert(Ret);
-						//UnsafeUses.insert(Ret);
+						UnsafeUses.insert(Ret);
           }
 				}
 			}
@@ -3071,9 +3127,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				if (V->getType()->isPointerTy()) {
 					//errs() << "SI: " << *V << "\n";
           uint64_t Sz = DL.getTypeAllocSize(V->getType()->getPointerElementType());
-					addUnsafePointer(UnsafeOtherPointers, V, Sz);
+					addUnsafePointer(UnsafePointers, V, Sz);
 					Stores.insert(SI);
-					//UnsafeUses.insert(SI);
+					UnsafeUses.insert(SI);
 				}
 			}
 
