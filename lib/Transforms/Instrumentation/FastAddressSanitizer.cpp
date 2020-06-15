@@ -3040,6 +3040,34 @@ static void createReplacementMap(Function *F, DenseMap<Value*, Value*> &Replacem
 	}
 }
 
+static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayout &DL) {
+	Value *Ret = NULL;
+	SmallVector<const Value *, 2> Objects;
+
+	GetUnderlyingObjects(V, Objects, DL, NULL, 0);
+	if (Objects.size() == 1) {
+		Ret = const_cast<Value*>(Objects[0]);
+		assert(!isa<PHINode>(Ret) && !isa<SelectInst>(Ret));
+		Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
+		assert(Offset >= 0 && "negative Offset");
+		if (Base != Ret) {
+			Offset = -1;
+		}
+	}
+	return Ret;
+}
+
+static Value* getBaseIfInterior(Value *V, const DataLayout &DL) {
+	int64_t Offset;
+	Value *Base = tryGettingBaseAndOffset(V, Offset, DL);
+	assert(Base);
+	if (Offset != 0) {
+		assert(Base != V);
+		return Base;
+	}
+	return NULL;
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
@@ -3156,46 +3184,30 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	for (auto It : UnsafePointers) {
 		Value *V = It.first;
 		uint64_t TypeSize = It.second;
-		SmallVector<const Value *, 2> Objects;
+		int64_t Offset;
 
-		GetUnderlyingObjects(V, Objects, DL, NULL, 0);
+		Value *Base = tryGettingBaseAndOffset(V, Offset, DL);
 
-		if (Objects.size() == 1) {
-			assert(!isa<PHINode>(Objects[0]) && !isa<SelectInst>(Objects[0]));
-			int64_t Offset;
-			Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
-			if (Base == Objects[0]) {
-				if (Offset) {
-					InteriorPointers.insert(V);
-				}
+		if (Base) {
+			if (Offset >= 0) {
 				uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
 				Offset += TypeSize;
-				assert(Offset >= 0 && "negative offset!");
-				//errs() << "Offset: " << Offset << " BaseSize: " << BaseSize << "\n";
 				if (Offset > (int64_t)BaseSize) {
 					if (Static) {
 						errs() << "Out of bound array access\n";
 						exit(0);
 					}
 					UnsafeMap[V] = std::make_pair(Base, Offset);
-					//errs() << "adding map " << *V << " base: " << *Base << "\n"; 
 					TmpSet.insert(V);
 				}
 			}
 			else {
-				UnsafeMap[V] = std::make_pair(Objects[0], 0);
-				//errs() << "adding map1 " << *V << " base: " << *Objects[0] << "\n"; 
+				UnsafeMap[V] = std::make_pair(Base, 0);
 				TmpSet.insert(V);
-				InteriorPointers.insert(V);
 			}
 		}
 		else {
 			errs() << "Multiple Base\n";
-			errs() << "VAL: " << *V << "\n";
-			for (auto Res: Objects) {
-				errs() << "Base: " << *Res << "\n";
-			}
-			//assert(0 && "multiple bases");
 		}
 	}
 
@@ -3279,6 +3291,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
 	}
 
+#if 0
 	for (auto SI : Stores) {
 		auto V = SI->getValueOperand();
 		if (InteriorPointers.count(V)) {
@@ -3295,13 +3308,16 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			RI->setOperand(0, Interior);
 		}
 	}
+#endif
 
 	for (auto CS : CallSites) {
+		DenseMap<Value*, Value*> InteriorToBase;
     for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
 			if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
                                        CS->doesNotAccessMemory()))) {
     		Value *A = *ArgIt;
       	if (A->getType()->isPointerTy() && InteriorPointers.count(A)) {
+					//InteriorToBase
 					auto Interior = getInterior(F, CS, A);
 					CS->setArgOperand(ArgIt- Start, Interior);
       	}
