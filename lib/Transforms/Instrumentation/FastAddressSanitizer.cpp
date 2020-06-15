@@ -2953,6 +2953,33 @@ void FastAddressSanitizer::passingInteriorPointers(Function *F) {
 	}
 }
 
+static void createReplacementMap(Function *F, DenseMap<Value*, Value*> &ReplacementMap)
+{
+	auto Name = F->getName();
+	if (!Name.startswith("san.interior")) {
+		return;
+	}
+	
+  Function::arg_iterator DestI = F->arg_begin();
+	while (DestI != F->arg_end()) {
+		if (DestI->getName().startswith("__interior")) {
+			break;
+		}
+		DestI++;
+	}
+
+	assert(DestI != F->arg_end());
+	auto InteriorBegin = DestI;
+  Function::arg_iterator It = F->arg_begin();
+
+	for (; It != InteriorBegin; It++) {
+		if (It->getType()->isPointerTy()) {
+			assert(DestI != F->arg_end());
+			ReplacementMap[&*It] = &*DestI++;
+		}
+	}
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
@@ -2979,6 +3006,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<AllocaInst*> UnsafeAllocas;
 	DenseSet<Value*> InteriorPointers;
 	int callsites = 0;
+	DenseMap<Value*, Value*> ReplacementMap;
+
+	createReplacementMap(&F, ReplacementMap);
 
 	if (F.getName() == "main" && F.arg_size() > 0) {
 		assert(F.arg_size() == 2);
@@ -3173,6 +3203,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Value* Base = const_cast<Value*>((It.second).first);
 		if (!Base) {
 			continue;
+		}
+		if (ReplacementMap.count(Base)) {
+			Base = ReplacementMap[Base];
 		}
 		uint64_t TypeSize = UnsafePointers[Ptr];
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
