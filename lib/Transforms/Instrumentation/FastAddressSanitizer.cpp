@@ -2808,29 +2808,31 @@ Value* FastAddressSanitizer::getInterior(Function &F, Instruction *I, Value *V)
 	return IRB.CreateBitCast(Interior, V->getType());
 }
 
+static bool
+isNonAccessInst(const Instruction *I, Value *Ptr) {
+	if (isa<ReturnInst>(I) || isa<CallInst>(I)) {
+		return true;
+	}
+	else if (auto SI = dyn_cast<StoreInst>(I)) {
+		if (Ptr == SI->getValueOperand()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool 
 postDominatesAnyUse(Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses)
 {
-	bool Ret = true;
-	bool PostDominateSomeUse = false;
-
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<const Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
-			if (PDT.dominates(I, Ptr)) {
-				PostDominateSomeUse = true;
-			}
-			if (isa<ReturnInst>(I) || isa<CallInst>(I)) {
-				Ret = false;
-			}
-			else if (auto SI = dyn_cast<StoreInst>(I)) {
-				if (Ptr == SI->getValueOperand()) {
-					Ret = false;
-				}
+			if (!isNonAccessInst(I, Ptr) && PDT.dominates(I, Ptr)) {
+				return true;
 			}
 		}
 	}
-	return Ret & PostDominateSomeUse;
+	return false;
 }
 
 static void
@@ -2859,7 +2861,9 @@ instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, V
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
-			abortIfTrue(F, Cmp, I, Base8, Ptr8, Limit, PtrLimit, Size, Callsite);
+			if (!isNonAccessInst(I, Ptr)) {
+				abortIfTrue(F, Cmp, I, Base8, Ptr8, Limit, PtrLimit, Size, Callsite);
+			}
 		}
 	}
 }
