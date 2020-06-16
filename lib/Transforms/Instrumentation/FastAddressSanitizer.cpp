@@ -3054,7 +3054,7 @@ static void createReplacementMap(Function *F, DenseMap<Value*, Value*> &Replacem
 	}
 }
 
-static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayout &DL) {
+static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayout &DL, DenseMap<Value*, Value*> &ReplacementMap) {
 	Value *Ret = NULL;
 	SmallVector<const Value *, 2> Objects;
 
@@ -3067,16 +3067,18 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 		if (Base != Ret) {
 			Offset = -1;
 		}
+		if (ReplacementMap.count(Ret)) {
+			Ret = ReplacementMap[Ret];
+		}
 	}
 	return Ret;
 }
 
-static Value* getBaseIfInterior(Value *V, const DataLayout &DL) {
+static Value* getBaseIfInterior(Value *V, const DataLayout &DL, DenseMap<Value*, Value*> &ReplacementMap) {
 	int64_t Offset;
-	Value *Base = tryGettingBaseAndOffset(V, Offset, DL);
+	Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
 	assert(Base);
 	if (Offset != 0) {
-		assert(Base != V);
 		return Base;
 	}
 	return NULL;
@@ -3200,7 +3202,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		uint64_t TypeSize = It.second;
 		int64_t Offset;
 
-		Value *Base = tryGettingBaseAndOffset(V, Offset, DL);
+		Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
 
 		if (Base) {
 			if (Offset >= 0) {
@@ -3290,9 +3292,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (!Base) {
 			continue;
 		}
-		if (ReplacementMap.count(Base)) {
-			Base = ReplacementMap[Base];
-		}
 		uint64_t TypeSize = UnsafePointers[Ptr];
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
 		if (1 || F.getName() == "interconnects__inner") {
@@ -3331,7 +3330,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                        CS->doesNotAccessMemory()))) {
     		Value *A = *ArgIt;
       	if (A->getType()->isPointerTy()) {
-					Value *Base = getBaseIfInterior(A, DL);
+					Value *Base = getBaseIfInterior(A, DL, ReplacementMap);
 					if (Base) {
 						InteriorToBase[A] = Base;
 					}
