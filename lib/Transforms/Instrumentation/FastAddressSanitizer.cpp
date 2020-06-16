@@ -2939,8 +2939,16 @@ static void createInteriorCall(CallBase *CB, DenseMap<Value*, Value*> Interiors)
 
 	CallInst *CI = dyn_cast<CallInst>(CB);
 	Function *F = CI->getCalledFunction();
+	
+	if (!F) {
+		errs() << "CI: " << *CI << "\n";
+	}
+
+	assert(F && "not a valid function");
+
 	FunctionType *FTy = getInteriorType(F);
 	assert(FTy);
+
 
 	assert(!F->getName().startswith("san.interior"));
 
@@ -3074,9 +3082,15 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 	return Ret;
 }
 
-static Value* getBaseIfInterior(Value *V, const DataLayout &DL, DenseMap<Value*, Value*> &ReplacementMap) {
+static Value* getBaseIfInterior(Function &F, Value *V, const DataLayout &DL, DenseMap<Value*, Value*> &ReplacementMap) {
 	int64_t Offset;
 	Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
+	if (Base == NULL) {
+		Base = GetUnderlyingObject(V, DL, 0);
+		Offset = -1;
+		//errs() << "PARAM: " << *V << "\n";
+		//errs() << F << "\n";
+	}
 	assert(Base);
 	if (Offset != 0) {
 		return Base;
@@ -3126,7 +3140,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	if (F.getName() == "spec_qsort") {
-		errs() << "Before San\n" << F << "\n";
+		//errs() << "Before San\n" << F << "\n";
 	}
 
   for (auto &BB : F) {
@@ -3223,7 +3237,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			}
 		}
 		else {
-			errs() << "Multiple Base\n";
+			//errs() << "Multiple Base\n";
 		}
 	}
 
@@ -3324,13 +3338,23 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 #endif
 
 	for (auto CS : CallSites) {
+		LibFunc Func;
+		if (isa<IntrinsicInst>(CS)) {
+			continue;
+		}
+    if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
+			continue;
+		}
+		if (CS->isIndirectCall()) {
+			continue;
+		}
 		DenseMap<Value*, Value*> InteriorToBase;
     for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
 			if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
                                        CS->doesNotAccessMemory()))) {
     		Value *A = *ArgIt;
       	if (A->getType()->isPointerTy()) {
-					Value *Base = getBaseIfInterior(A, DL, ReplacementMap);
+					Value *Base = getBaseIfInterior(F, A, DL, ReplacementMap);
 					if (Base) {
 						InteriorToBase[A] = Base;
 					}
@@ -3373,7 +3397,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	if (F.getName() == "spec_qsort") {
-		errs() << "After San\n" << F << "\n";
+		//errs() << "After San\n" << F << "\n";
 	}
 
 	if (verifyFunction(F, &errs())) {
