@@ -3318,7 +3318,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
 	}
 
-#if 0
+//#if 0
 	for (auto SI : Stores) {
 		auto V = SI->getValueOperand();
 		if (InteriorPointers.count(V)) {
@@ -3335,17 +3335,15 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			RI->setOperand(0, Interior);
 		}
 	}
-#endif
+//#endif
 
 	for (auto CS : CallSites) {
 		LibFunc Func;
+		bool isIndirect = CS->isIndirectCall();
 		if (isa<IntrinsicInst>(CS)) {
 			continue;
 		}
     if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
-			continue;
-		}
-		if (CS->isIndirectCall()) {
 			continue;
 		}
 		DenseMap<Value*, Value*> InteriorToBase;
@@ -3356,7 +3354,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
       	if (A->getType()->isPointerTy()) {
 					Value *Base = getBaseIfInterior(F, A, DL, ReplacementMap);
 					if (Base) {
-						InteriorToBase[A] = Base;
+						if (isIndirect) {
+							auto Interior = getInterior(F, CS, A);
+							CS->setArgOperand(ArgIt - Start, Interior);
+						}
+						else {
+							InteriorToBase[A] = Base;
+						}
 					}
       	}
 			}
