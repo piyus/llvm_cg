@@ -3098,6 +3098,44 @@ static Value* getBaseIfInterior(Function &F, Value *V, const DataLayout &DL, Den
 	return NULL;
 }
 
+static Value* addHandler(Function &F, Instruction *I, Value *V) {
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+	auto Fn = F.getParent()->getOrInsertFunction("san_page_fault", V->getType(), V->getType());
+	auto Call = IRB.CreateCall(Fn, {V});
+	if (F.getSubprogram()) {
+    if (auto DL = I->getDebugLoc()) {
+      Call->setDebugLoc(DL);
+		}
+  }
+	return Call;
+}
+
+static void instrumentPageFaultHandler(Function &F) {
+  for (auto &BB : F) {
+    for (auto &Inst : BB) {
+			Instruction *I = &Inst;
+			Value *Ret;
+			if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
+				Ret = addHandler(F, I, LI->getPointerOperand());
+				LI->setOperand(0, Ret);
+			}
+			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
+				Ret = addHandler(F, I, SI->getPointerOperand());
+				SI->setOperand(1, Ret);
+			}
+			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
+				Ret = addHandler(F, I, AI->getPointerOperand());
+				AI->setOperand(0, Ret);
+			}
+			else if (auto *AI = dyn_cast<AtomicCmpXchgInst>(I)) {
+				Ret = addHandler(F, I, AI->getPointerOperand());
+				AI->setOperand(0, Ret);
+			}
+		}
+	}
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
@@ -3318,7 +3356,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
 	}
 
-//#if 0
+#if 0
 	for (auto SI : Stores) {
 		auto V = SI->getValueOperand();
 		if (InteriorPointers.count(V)) {
@@ -3335,8 +3373,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			RI->setOperand(0, Interior);
 		}
 	}
-//#endif
+#endif
 
+#if 0
 	for (auto CS : CallSites) {
 		LibFunc Func;
 		bool isIndirect = CS->isIndirectCall();
@@ -3369,6 +3408,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			createInteriorCall(CS, InteriorToBase);
 		}
 	}
+#endif
 
 
 	for (auto AI : UnsafeAllocas) {
@@ -3403,6 +3443,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	if (F.getName() == "spec_qsort") {
 		//errs() << "After San\n" << F << "\n";
 	}
+
+	instrumentPageFaultHandler(F);
 
 	if (verifyFunction(F, &errs())) {
     F.dump();
