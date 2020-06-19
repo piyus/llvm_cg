@@ -2847,10 +2847,10 @@ abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value
                                   //MDBuilder(C).createBranchWeights(1, 100000));
 	IRBuilder<> IRB(Then->getParent());
 	IRB.SetInsertPoint(Then);
-	//auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Size->getType(), Callsite->getType());
-	//auto Call = IRB.CreateCall(Fn, {Base8, Ptr8, Limit, PtrLimit, Size, Callsite});
-	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy());
-	auto Call = IRB.CreateCall(Fn, {});
+	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Size->getType(), Callsite->getType());
+	auto Call = IRB.CreateCall(Fn, {Base8, Ptr8, Limit, PtrLimit, Size, Callsite});
+	//auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy());
+	//auto Call = IRB.CreateCall(Fn, {});
 	//Call->addAttribute(AttributeList::FunctionIndex, Attribute::Cold);
 	if (F.getSubprogram()) {
     if (auto DL = InsertPt->getDebugLoc()) {
@@ -3445,10 +3445,11 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
 	}
 
-#if 0
+//#if 0
 	for (auto SI : Stores) {
 		auto V = SI->getValueOperand();
-		if (InteriorPointers.count(V)) {
+		Value *Base = getBaseIfInterior(F, V, DL, ReplacementMap);
+		if (Base) {
 			auto Interior = getInterior(F, SI, V);
 			SI->setOperand(0, Interior);
 		}
@@ -3457,12 +3458,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	for (auto RI : RetSites) {
 		auto V = RI->getReturnValue();
 		assert(V && "return value null!");
-		if (InteriorPointers.count(V)) {
+		Value *Base = getBaseIfInterior(F, V, DL, ReplacementMap);
+		if (Base) {
 			auto Interior = getInterior(F, RI, V);
 			RI->setOperand(0, Interior);
 		}
 	}
-#endif
+//#endif
 
 //#if 0
 	for (auto CS : CallSites) {
@@ -3484,7 +3486,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 					if (Base) {
 						if (isIndirect) {
 							auto Interior = getInterior(F, CS, A);
-							//CS->setArgOperand(ArgIt - Start, Interior);
+							CS->setArgOperand(ArgIt - Start, Interior);
 						}
 						else {
 							InteriorToBase[A] = Base;
@@ -3538,7 +3540,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		//errs() << "After San\n" << F << "\n";
 	}
 
-	//instrumentPageFaultHandler(F, GetLengths);
+	instrumentPageFaultHandler(F, GetLengths);
 	instrumentOtherPointerUsage(F, DL);
 
 	if (verifyFunction(F, &errs())) {
