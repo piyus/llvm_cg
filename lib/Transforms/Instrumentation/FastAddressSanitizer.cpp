@@ -3120,6 +3120,52 @@ static Value* addHandler(Function &F, Instruction *I, Value *V, DenseSet<Value*>
 	return Call;
 }
 
+static void instrumentOtherPointerUsage(Function &F, const DataLayout &DL) {
+  for (auto &BB : F) {
+    for (auto &Inst : BB) {
+			Instruction *I = &Inst;
+			ICmpInst *IC = dyn_cast<ICmpInst>(I);
+			BinaryOperator *BO = dyn_cast<BinaryOperator>(I);
+
+			if (IC || (BO && BO->getOpcode() == Instruction::Sub)) {
+				Value *Op1 = I->getOperand(0);
+				Value *Op2 = I->getOperand(1);
+
+				if (Op1->getType()->isPointerTy() && Op2->getType()->isPointerTy()) {
+					if (!isa<AllocaInst>(Op1)) {
+						Value *Base1 = GetUnderlyingObject(Op1, DL, 0);
+						if (!isa<AllocaInst>(Base1)) {
+							IRBuilder<> IRB(I->getParent());
+							IRB.SetInsertPoint(I);
+							auto OpInt = IRB.CreatePointerCast(Op1, IRB.getInt64Ty());
+							//errs() << "OpINt: " << *OpInt << "\n";
+							//auto NV = IRB.CreateIntCast(IRB.CreateLShr(IRB.CreateShl(OpInt, 1), 1), Op1->getType(), false);
+							auto NV = IRB.CreateLShr(IRB.CreateShl(OpInt, 1), 1);
+							I->setOperand(0, NV);
+						}
+					}
+
+					if (!isa<AllocaInst>(Op2)) {
+						Value *Base2 = GetUnderlyingObject(Op2, DL, 0);
+						if (!isa<AllocaInst>(Base2)) {
+							IRBuilder<> IRB(I->getParent());
+							IRB.SetInsertPoint(I);
+							auto OpInt = IRB.CreatePointerCast(Op2, IRB.getInt64Ty());
+							//errs() << "OpINt: " << *OpInt << "\n";
+							//auto NV = IRB.CreateIntCast(IRB.CreateLShr(IRB.CreateShl(OpInt, 1), 1), Op2->getType(), false);
+							auto NV = IRB.CreateLShr(IRB.CreateShl(OpInt, 1), 1);
+							I->setOperand(1, NV);
+						}
+					}
+
+				}
+
+
+			}
+		}
+	}
+}
+ 
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths) {
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -3493,6 +3539,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	//instrumentPageFaultHandler(F, GetLengths);
+	instrumentOtherPointerUsage(F, DL);
 
 	if (verifyFunction(F, &errs())) {
     F.dump();
