@@ -3098,10 +3098,16 @@ static Value* getBaseIfInterior(Function &F, Value *V, const DataLayout &DL, Den
 	return NULL;
 }
 
-static Value* addHandler(Function &F, Instruction *I, Value *V) {
+static Value* addHandler(Function &F, Instruction *I, Value *V, DenseSet<Value*> &GetLengths) {
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
-	auto Fn = F.getParent()->getOrInsertFunction("san_page_fault", V->getType(), V->getType());
+	FunctionCallee Fn;
+	if (GetLengths.count(I)) {
+		Fn = F.getParent()->getOrInsertFunction("san_page_fault_len", V->getType(), V->getType());
+	}
+	else {
+		Fn = F.getParent()->getOrInsertFunction("san_page_fault", V->getType(), V->getType());
+	}
 	auto Call = IRB.CreateCall(Fn, {V});
 	if (F.getSubprogram()) {
     if (auto DL = I->getDebugLoc()) {
@@ -3111,26 +3117,58 @@ static Value* addHandler(Function &F, Instruction *I, Value *V) {
 	return Call;
 }
 
-static void instrumentPageFaultHandler(Function &F) {
+static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths) {
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			Instruction *I = &Inst;
 			Value *Ret;
 			if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
-				Ret = addHandler(F, I, LI->getPointerOperand());
+				Ret = addHandler(F, I, LI->getPointerOperand(), GetLengths);
 				LI->setOperand(0, Ret);
 			}
 			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
-				Ret = addHandler(F, I, SI->getPointerOperand());
+				Ret = addHandler(F, I, SI->getPointerOperand(), GetLengths);
 				SI->setOperand(1, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
-				Ret = addHandler(F, I, AI->getPointerOperand());
+				Ret = addHandler(F, I, AI->getPointerOperand(), GetLengths);
 				AI->setOperand(0, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-				Ret = addHandler(F, I, AI->getPointerOperand());
+				Ret = addHandler(F, I, AI->getPointerOperand(), GetLengths);
 				AI->setOperand(0, Ret);
+			}
+		}
+	}
+}
+
+
+static void recordStackPointer(Function *F, Instruction *I)
+{
+	auto M = F->getParent();
+	auto RetTy = Type::getVoidTy(M->getContext());
+	auto Fn = M->getOrInsertFunction("san_record_stack_pointer", RetTy, I->getType());
+	CallInst::Create(Fn, {I}, "", I->getNextNode());
+}
+
+static void enterScope(Function *F)
+{
+	auto M = F->getParent();
+	auto RetTy = Type::getVoidTy(M->getContext());
+  Instruction *Entry = dyn_cast<Instruction>(F->begin()->getFirstInsertionPt());
+	auto Fn = M->getOrInsertFunction("san_enter_scope", RetTy);
+	CallInst::Create(Fn, {}, "", Entry);
+}
+
+static void exitScope(Function *F)
+{
+	auto M = F->getParent();
+	auto RetTy = Type::getVoidTy(M->getContext());
+	auto Fn = M->getOrInsertFunction("san_exit_scope", RetTy);
+  for (auto &BB : *F) {
+    for (auto &Inst : BB) {
+			if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
+				CallInst::Create(Fn, {}, "", Ret);
 			}
 		}
 	}
@@ -3163,6 +3201,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Value*> InteriorPointers;
 	int callsites = 0;
 	DenseMap<Value*, Value*> ReplacementMap;
+	DenseSet<Value*> GetLengths;
 
 	createReplacementMap(&F, ReplacementMap);
 
@@ -3351,6 +3390,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 		if (!BaseToLenMap.count(Base)) {
 			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, Ptr);
+			GetLengths.insert(BaseToLenMap[Base]);
 		}
 		auto Size = BaseToLenMap[Base];
 		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
@@ -3410,6 +3450,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 #endif
 
+	if (!UnsafeAllocas.empty()) {
+		enterScope(&F);
+		exitScope(&F);
+	}
 
 	for (auto AI : UnsafeAllocas) {
 		uint64_t Size = getAllocaSizeInBytes(*AI);
@@ -3438,13 +3482,14 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Builder.CreateStore(ConstantInt::get(Int64Ty, HeaderVal), SizeField);
     AI->replaceAllUsesWith(Field);
 		AI->eraseFromParent();
+		recordStackPointer(&F, cast<Instruction>(Field));
 	}
 
 	if (F.getName() == "spec_qsort") {
 		//errs() << "After San\n" << F << "\n";
 	}
 
-	instrumentPageFaultHandler(F);
+	instrumentPageFaultHandler(F, GetLengths);
 
 	if (verifyFunction(F, &errs())) {
     F.dump();
