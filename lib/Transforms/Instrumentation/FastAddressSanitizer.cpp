@@ -2843,12 +2843,15 @@ abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value
   auto &C = M->getContext();
 
 	Instruction *Then =
-        SplitBlockAndInsertIfThen(Cond, InsertPt, false,
-                                  MDBuilder(C).createBranchWeights(1, 100000));
+        SplitBlockAndInsertIfThen(Cond, InsertPt, false);    //,
+                                  //MDBuilder(C).createBranchWeights(1, 100000));
 	IRBuilder<> IRB(Then->getParent());
 	IRB.SetInsertPoint(Then);
-	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Size->getType(), Callsite->getType());
-	auto Call = IRB.CreateCall(Fn, {Base8, Ptr8, Limit, PtrLimit, Size, Callsite});
+	//auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Size->getType(), Callsite->getType());
+	//auto Call = IRB.CreateCall(Fn, {Base8, Ptr8, Limit, PtrLimit, Size, Callsite});
+	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy());
+	auto Call = IRB.CreateCall(Fn, {});
+	//Call->addAttribute(AttributeList::FunctionIndex, Attribute::Cold);
 	if (F.getSubprogram()) {
     if (auto DL = InsertPt->getDebugLoc()) {
       Call->setDebugLoc(DL);
@@ -3415,7 +3418,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 #endif
 
-#if 0
+//#if 0
 	for (auto CS : CallSites) {
 		LibFunc Func;
 		bool isIndirect = CS->isIndirectCall();
@@ -3435,7 +3438,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 					if (Base) {
 						if (isIndirect) {
 							auto Interior = getInterior(F, CS, A);
-							CS->setArgOperand(ArgIt - Start, Interior);
+							//CS->setArgOperand(ArgIt - Start, Interior);
 						}
 						else {
 							InteriorToBase[A] = Base;
@@ -3448,7 +3451,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			createInteriorCall(CS, InteriorToBase);
 		}
 	}
-#endif
+//#endif
 
 	if (!UnsafeAllocas.empty()) {
 		enterScope(&F);
@@ -3489,7 +3492,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		//errs() << "After San\n" << F << "\n";
 	}
 
-	instrumentPageFaultHandler(F, GetLengths);
+	//instrumentPageFaultHandler(F, GetLengths);
 
 	if (verifyFunction(F, &errs())) {
     F.dump();
