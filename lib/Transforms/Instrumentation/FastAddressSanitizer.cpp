@@ -3101,17 +3101,46 @@ static Value* getBaseIfInterior(Function &F, Value *V, const DataLayout &DL, Den
 	return NULL;
 }
 
-static Value* addHandler(Function &F, Instruction *I, Value *V, DenseSet<Value*> &GetLengths) {
+static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, DenseSet<Value*> &GetLengths, bool call) {
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 	FunctionCallee Fn;
-	if (GetLengths.count(I)) {
-		Fn = F.getParent()->getOrInsertFunction("san_page_fault_len", V->getType(), V->getType());
+	int LineNum = 0;
+	if (F.getSubprogram() && I->getDebugLoc()) {
+		LineNum = I->getDebugLoc()->getLine();
+	}
+	auto PtrTy = Ptr->getType();
+	auto LineTy = IRB.getInt32Ty(); //Line->getType();
+	auto M = F.getParent();
+	auto Name = IRB.CreateGlobalStringPtr(M->getName());
+	auto NameTy = Name->getType();
+
+	if (call) {
+		assert(Val == NULL);
+		Fn = M->getOrInsertFunction("san_page_fault_call", PtrTy, PtrTy, LineTy, NameTy);
 	}
 	else {
-		Fn = F.getParent()->getOrInsertFunction("san_page_fault", V->getType(), V->getType());
+		if (GetLengths.count(I)) {
+			assert(Val == NULL);
+			Fn = M->getOrInsertFunction("san_page_fault_len", PtrTy, PtrTy, LineTy, NameTy);
+		}
+		else if (!Val) {
+			Fn = M->getOrInsertFunction("san_page_fault", PtrTy, PtrTy, LineTy, NameTy);
+		}
+		else {
+			Fn = M->getOrInsertFunction("san_page_fault_store", PtrTy, PtrTy, Val->getType(), LineTy, NameTy);
+		}
 	}
-	auto Call = IRB.CreateCall(Fn, {V});
+
+	CallInst *Call;
+	auto *Line = ConstantInt::get(LineTy, LineNum);
+
+	if (!Val) {
+		Call = IRB.CreateCall(Fn, {Ptr, Line, Name});
+	}
+	else {
+		Call = IRB.CreateCall(Fn, {Ptr, Val, Line, Name});
+	}
 	if (F.getSubprogram()) {
     if (auto DL = I->getDebugLoc()) {
       Call->setDebugLoc(DL);
@@ -3166,26 +3195,32 @@ static void instrumentOtherPointerUsage(Function &F, const DataLayout &DL) {
 	}
 }
  
-static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths) {
+static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths, DenseSet<StoreInst*> &Stores) {
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			Instruction *I = &Inst;
 			Value *Ret;
 			if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
-				Ret = addHandler(F, I, LI->getPointerOperand(), GetLengths);
+				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false);
 				LI->setOperand(0, Ret);
 			}
 			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
-				Ret = addHandler(F, I, SI->getPointerOperand(), GetLengths);
+				Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
+				Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false);
 				SI->setOperand(1, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
-				Ret = addHandler(F, I, AI->getPointerOperand(), GetLengths);
+				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false);
 				AI->setOperand(0, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-				Ret = addHandler(F, I, AI->getPointerOperand(), GetLengths);
+				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false);
 				AI->setOperand(0, Ret);
+			}
+			else if (auto *CI = dyn_cast<CallBase>(I)) {
+				if (CI->isIndirectCall()) {
+					Ret = addHandler(F, I, CI->getCalledOperand(), NULL, GetLengths, true);
+				}
 			}
 		}
 	}
@@ -3449,7 +3484,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	for (auto SI : Stores) {
 		auto V = SI->getValueOperand();
 		Value *Base = getBaseIfInterior(F, V, DL, ReplacementMap);
-		if (Base) {
+		if (Base || isa<Constant>(V)) {
 			auto Interior = getInterior(F, SI, V);
 			SI->setOperand(0, Interior);
 		}
@@ -3459,7 +3494,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		auto V = RI->getReturnValue();
 		assert(V && "return value null!");
 		Value *Base = getBaseIfInterior(F, V, DL, ReplacementMap);
-		if (Base) {
+		if (Base || isa<Constant>(V)) {
 			auto Interior = getInterior(F, RI, V);
 			RI->setOperand(0, Interior);
 		}
@@ -3483,8 +3518,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     		Value *A = *ArgIt;
       	if (A->getType()->isPointerTy()) {
 					Value *Base = getBaseIfInterior(F, A, DL, ReplacementMap);
-					if (Base) {
-						if (isIndirect) {
+					if (Base /*|| isa<Constant>(A)*/) {
+						if (1 /*isIndirect*/) {
 							auto Interior = getInterior(F, CS, A);
 							CS->setArgOperand(ArgIt - Start, Interior);
 						}
@@ -3540,7 +3575,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		//errs() << "After San\n" << F << "\n";
 	}
 
-	instrumentPageFaultHandler(F, GetLengths);
+	instrumentPageFaultHandler(F, GetLengths, Stores);
 	instrumentOtherPointerUsage(F, DL);
 
 	if (verifyFunction(F, &errs())) {
