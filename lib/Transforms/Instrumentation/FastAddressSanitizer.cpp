@@ -2802,10 +2802,12 @@ Value* FastAddressSanitizer::getInterior(Function &F, Instruction *I, Value *V)
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 
-	auto Interior = IRB.CreateGEP(Int8Ty, IRB.CreateBitCast(V, Int8PtrTy), ConstantInt::get(Int64Ty, (1ULL << 63)));
+	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
+	auto Interior = IRB.CreateOr(VInt, (1ULL << 63));
+	//auto Interior = IRB.CreateGEP(Int8Ty, IRB.CreateBitCast(V, Int8PtrTy), ConstantInt::get(Int64Ty, (1ULL << 63)));
 	//Function *TheFn =	Intrinsic::getDeclaration(F.getParent(), Intrinsic::make_interior);
 	//auto Interior = IRB.CreateCall(TheFn, {IRB.CreateBitCast(V, Int8PtrTy)});
-	return IRB.CreateBitCast(Interior, V->getType());
+	return IRB.CreateIntToPtr(Interior, V->getType());
 }
 
 static bool
@@ -3125,7 +3127,12 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 			Fn = M->getOrInsertFunction("san_page_fault_len", PtrTy, PtrTy, LineTy, NameTy);
 		}
 		else if (!Val) {
-			Fn = M->getOrInsertFunction("san_page_fault", PtrTy, PtrTy, LineTy, NameTy);
+			if (I->getType()->isPointerTy()) {
+				Fn = M->getOrInsertFunction("san_page_fault_load", PtrTy, PtrTy, LineTy, NameTy);
+			}
+			else {
+				Fn = M->getOrInsertFunction("san_page_fault", PtrTy, PtrTy, LineTy, NameTy);
+			}
 		}
 		else {
 			Fn = M->getOrInsertFunction("san_page_fault_store", PtrTy, PtrTy, Val->getType(), LineTy, NameTy);
@@ -3147,6 +3154,28 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 		}
   }
 	return Call;
+}
+
+
+static void addArgument(Function &F, Value *Ptr) {
+  Instruction *I = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+
+	FunctionCallee Fn;
+	int LineNum = 0;
+	if (F.getSubprogram() && I->getDebugLoc()) {
+		LineNum = I->getDebugLoc()->getLine();
+	}
+	auto PtrTy = Ptr->getType();
+	auto LineTy = IRB.getInt32Ty(); //Line->getType();
+	auto M = F.getParent();
+	auto Name = IRB.CreateGlobalStringPtr(F.getName());
+	auto NameTy = Name->getType();
+
+	Fn = M->getOrInsertFunction("san_page_fault_arg", IRB.getVoidTy(), PtrTy, LineTy, NameTy);
+	auto *Line = ConstantInt::get(LineTy, LineNum);
+	IRB.CreateCall(Fn, {Ptr, Line, Name});
 }
 
 static void instrumentOtherPointerUsage(Function &F, const DataLayout &DL) {
@@ -3224,6 +3253,17 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 			}
 		}
 	}
+
+	int NumArgsAdded = 0;
+  for (Argument &Arg : F.args()) {
+		if (Arg.getType()->isPointerTy()) {
+			addArgument(F, &Arg);
+			NumArgsAdded++;
+		}
+	}
+	if (!NumArgsAdded) {
+		addArgument(F, Constant::getNullValue(F.getType()));
+	}
 }
 
 
@@ -3300,8 +3340,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Call->setArgOperand(1, argv);
 	}
 
-	if (F.getName() == "spec_qsort") {
-		//errs() << "Before San\n" << F << "\n";
+	if (F.getName() == "markBaskets") {
+		errs() << "Before San\n" << F << "\n";
 	}
 
   for (auto &BB : F) {
@@ -3404,6 +3444,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	// FIXME: remove duplicates
 	// FIXME: remove constant offset base
+	const Value* NullVal = NULL;
 
 	for (auto itr1 = TmpSet.begin(); itr1 != TmpSet.end(); itr1++) {
 		for (auto itr2 = std::next(itr1); itr2 != TmpSet.end(); itr2++) {
@@ -3417,15 +3458,17 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 			if (AR == MustAlias) {
 				if (DT.dominates(Ptr1, Ptr2)) {
-					auto Ret = UnsafeMap.erase(Ptr2);
-					assert(Ret == 1 && "unable to erase");
-					assert(!UnsafeMap.count(Ptr2) && "still exists in map");
+					//auto Ret = UnsafeMap.erase(Ptr2);
+					//assert(Ret == 1 && "unable to erase");
+					//assert(!UnsafeMap.count(Ptr2) && "still exists in map");
+					UnsafeMap[Ptr2] = std::make_pair(NullVal, 0);
 					//errs() << "removing map " << Ptr2 << "\n"; 
 				}
 				else if (DT.dominates(Ptr2, Ptr1)) {
-					auto Ret = UnsafeMap.erase(Ptr1);
-					assert(Ret == 1 && "unable to erase");
-					assert(!UnsafeMap.count(Ptr1) && "still exists in map");
+					//auto Ret = UnsafeMap.erase(Ptr1);
+					//assert(Ret == 1 && "unable to erase");
+					UnsafeMap[Ptr1] = std::make_pair(NullVal, 0);
+					//assert(!UnsafeMap.count(Ptr1) && "still exists in map");
 					//errs() << "removing map " << Ptr1 << "\n"; 
 				}
 			}
@@ -3441,16 +3484,18 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 						auto Ptr2DominatesPtr1 = DT.dominates(Ptr2, Ptr1);
 						if (Ptr1DominatesPtr2 || Ptr2DominatesPtr1) {
 							if (Ptr1Off > Ptr2Off && Ptr1DominatesPtr2) {
-								auto Ret = UnsafeMap.erase(Ptr2);
+								//auto Ret = UnsafeMap.erase(Ptr2);
 								//errs() << "removing map " << Ptr2 << "\n"; 
-								assert(Ret == 1 && "unable to erase");
-								assert(!UnsafeMap.count(Ptr2) && "still exists in map");
+								//assert(Ret == 1 && "unable to erase");
+								//assert(!UnsafeMap.count(Ptr2) && "still exists in map");
+								UnsafeMap[Ptr2] = std::make_pair(NullVal, 0);
 							}
 							else if (Ptr2Off > Ptr1Off && Ptr2DominatesPtr1) {
-								auto Ret = UnsafeMap.erase(Ptr1);
+								UnsafeMap[Ptr1] = std::make_pair(NullVal, 0);
+								//auto Ret = UnsafeMap.erase(Ptr1);
 								//errs() << "removing map " << Ptr1 << "\n"; 
-								assert(Ret == 1 && "unable to erase");
-								assert(!UnsafeMap.count(Ptr1) && "still exists in map");
+								//assert(Ret == 1 && "unable to erase");
+								//assert(!UnsafeMap.count(Ptr1) && "still exists in map");
 							}
 						}
 					}
@@ -3571,8 +3616,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		recordStackPointer(&F, cast<Instruction>(Field));
 	}
 
-	if (F.getName() == "spec_qsort") {
-		//errs() << "After San\n" << F << "\n";
+	if (F.getName() == "markBaskets") {
+		errs() << "After San\n" << F << "\n";
 	}
 
 	instrumentPageFaultHandler(F, GetLengths, Stores);
