@@ -3558,7 +3558,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		bool isIndirect = CS->isIndirectCall();
 		bool LibCall = false;
 		if (isa<IntrinsicInst>(CS)) {
-			continue;
+			//continue;
+			LibCall = true;
 		}
     if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
 			LibCall = true;
