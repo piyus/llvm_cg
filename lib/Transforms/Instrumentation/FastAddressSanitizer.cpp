@@ -2796,6 +2796,15 @@ static void addUnsafePointer(DenseMap<Value*, uint64_t> &Map, Value *V, uint64_t
 	}
 }
 
+Value* getNoInterior(Function &F, Instruction *I, Value *V)
+{
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+
+	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
+	auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
+	return IRB.CreateIntToPtr(Interior, V->getType());
+}
 
 Value* FastAddressSanitizer::getInterior(Function &F, Instruction *I, Value *V)
 {
@@ -2804,9 +2813,6 @@ Value* FastAddressSanitizer::getInterior(Function &F, Instruction *I, Value *V)
 
 	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
 	auto Interior = IRB.CreateOr(VInt, (1ULL << 63));
-	//auto Interior = IRB.CreateGEP(Int8Ty, IRB.CreateBitCast(V, Int8PtrTy), ConstantInt::get(Int64Ty, (1ULL << 63)));
-	//Function *TheFn =	Intrinsic::getDeclaration(F.getParent(), Intrinsic::make_interior);
-	//auto Interior = IRB.CreateCall(TheFn, {IRB.CreateBitCast(V, Int8PtrTy)});
 	return IRB.CreateIntToPtr(Interior, V->getType());
 }
 
@@ -3340,7 +3346,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Call->setArgOperand(1, argv);
 	}
 
-	if (F.getName() == "markBaskets") {
+	if (F.getName() == "price_out_impl") {
 		errs() << "Before San\n" << F << "\n";
 	}
 
@@ -3550,11 +3556,12 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	for (auto CS : CallSites) {
 		LibFunc Func;
 		bool isIndirect = CS->isIndirectCall();
+		bool LibCall = false;
 		if (isa<IntrinsicInst>(CS)) {
 			continue;
 		}
     if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
-			continue;
+			LibCall = true;
 		}
 		DenseMap<Value*, Value*> InteriorToBase;
     for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
@@ -3562,14 +3569,20 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                        CS->doesNotAccessMemory()))) {
     		Value *A = *ArgIt;
       	if (A->getType()->isPointerTy()) {
-					Value *Base = getBaseIfInterior(F, A, DL, ReplacementMap);
-					if (Base /*|| isa<Constant>(A)*/) {
-						if (1 /*isIndirect*/) {
-							auto Interior = getInterior(F, CS, A);
-							CS->setArgOperand(ArgIt - Start, Interior);
-						}
-						else {
-							InteriorToBase[A] = Base;
+					if (LibCall) {
+						auto Interior = getNoInterior(F, CS, A);
+						CS->setArgOperand(ArgIt - Start, Interior);
+					}
+					else {
+						Value *Base = getBaseIfInterior(F, A, DL, ReplacementMap);
+						if (Base /*|| isa<Constant>(A)*/) {
+							if (1 /*isIndirect*/) {
+								auto Interior = getInterior(F, CS, A);
+								CS->setArgOperand(ArgIt - Start, Interior);
+							}
+							else {
+								InteriorToBase[A] = Base;
+							}
 						}
 					}
       	}
@@ -3616,12 +3629,12 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		recordStackPointer(&F, cast<Instruction>(Field));
 	}
 
-	if (F.getName() == "markBaskets") {
-		errs() << "After San\n" << F << "\n";
-	}
-
 	instrumentPageFaultHandler(F, GetLengths, Stores);
 	instrumentOtherPointerUsage(F, DL);
+
+	if (F.getName() == "price_out_impl") {
+		errs() << "After San\n" << F << "\n";
+	}
 
 	if (verifyFunction(F, &errs())) {
     F.dump();
