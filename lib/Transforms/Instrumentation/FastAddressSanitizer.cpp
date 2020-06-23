@@ -3455,18 +3455,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 			if (AR == MustAlias) {
 				if (DT.dominates(Ptr1, Ptr2)) {
-					//auto Ret = UnsafeMap.erase(Ptr2);
-					//assert(Ret == 1 && "unable to erase");
-					//assert(!UnsafeMap.count(Ptr2) && "still exists in map");
 					UnsafeMap[Ptr2] = std::make_pair(NullVal, 0);
-					//errs() << "removing map " << Ptr2 << "\n"; 
 				}
 				else if (DT.dominates(Ptr2, Ptr1)) {
-					//auto Ret = UnsafeMap.erase(Ptr1);
-					//assert(Ret == 1 && "unable to erase");
 					UnsafeMap[Ptr1] = std::make_pair(NullVal, 0);
-					//assert(!UnsafeMap.count(Ptr1) && "still exists in map");
-					//errs() << "removing map " << Ptr1 << "\n"; 
 				}
 			}
 			else {
@@ -3476,23 +3468,14 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 					auto Ptr1Off = UnsafeMap[Ptr1].second;
 					auto Ptr2Off = UnsafeMap[Ptr2].second;
 					if (Ptr1Off > 0 && Ptr2Off > 0) {
-						assert(Ptr1Off != Ptr2Off && "two defs with same offset");
 						auto Ptr1DominatesPtr2 = DT.dominates(Ptr1, Ptr2);
 						auto Ptr2DominatesPtr1 = DT.dominates(Ptr2, Ptr1);
 						if (Ptr1DominatesPtr2 || Ptr2DominatesPtr1) {
-							if (Ptr1Off > Ptr2Off && Ptr1DominatesPtr2) {
-								//auto Ret = UnsafeMap.erase(Ptr2);
-								//errs() << "removing map " << Ptr2 << "\n"; 
-								//assert(Ret == 1 && "unable to erase");
-								//assert(!UnsafeMap.count(Ptr2) && "still exists in map");
+							if (Ptr1Off >= Ptr2Off && Ptr1DominatesPtr2) {
 								UnsafeMap[Ptr2] = std::make_pair(NullVal, 0);
 							}
-							else if (Ptr2Off > Ptr1Off && Ptr2DominatesPtr1) {
+							else if (Ptr2Off >= Ptr1Off && Ptr2DominatesPtr1) {
 								UnsafeMap[Ptr1] = std::make_pair(NullVal, 0);
-								//auto Ret = UnsafeMap.erase(Ptr1);
-								//errs() << "removing map " << Ptr1 << "\n"; 
-								//assert(Ret == 1 && "unable to erase");
-								//assert(!UnsafeMap.count(Ptr1) && "still exists in map");
 							}
 						}
 					}
