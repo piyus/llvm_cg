@@ -3082,7 +3082,7 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 		Ret = const_cast<Value*>(Objects[0]);
 		assert(!isa<PHINode>(Ret) && !isa<SelectInst>(Ret));
 		Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
-		assert(Offset >= 0 && "negative Offset");
+		assert((Base != Ret || Offset >= 0) && "negative Offset");
 		if (Base != Ret) {
 			Offset = -1;
 		}
