@@ -3330,7 +3330,7 @@ void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI) {
   }
 
   Type *TypeWithPadding = StructType::get(
-      ArrayType::get(Int8Ty, Padding), AI->getType());
+      ArrayType::get(Int8Ty, Padding), AllocatedType);
   auto *NewAI = new AllocaInst(
       TypeWithPadding, AI->getType()->getAddressSpace(), nullptr, "", AI);
   NewAI->takeName(AI);
