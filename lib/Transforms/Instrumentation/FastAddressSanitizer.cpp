@@ -3092,6 +3092,11 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 		Ret = const_cast<Value*>(Objects[0]);
 		assert(!isa<PHINode>(Ret) && !isa<SelectInst>(Ret));
 		Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
+		if (Base == Ret && Offset < 0) {
+			errs() << "Base: " << *Base << " Offset: " << Offset << "\n";
+			errs() << "V: " << *V << "\n";
+			errs() << *cast<Instruction>(V)->getParent()->getParent() << "\n";
+		}
 		assert((Base != Ret || Offset >= 0) && "negative Offset");
 		if (Base != Ret) {
 			Offset = -1;
@@ -3451,10 +3456,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 					Value *RetVal = Ret->getReturnValue();
           if (RetVal && RetVal->getType()->isPointerTy()) {
 						//errs() << "Ret: " << *RetVal << "\n";
-          	uint64_t Sz = DL.getTypeAllocSize(RetVal->getType()->getPointerElementType());
-						addUnsafePointer(UnsafePointers, RetVal, Sz);
-						RetSites.insert(Ret);
-						UnsafeUses.insert(Ret);
+						auto ElemTy = RetVal->getType()->getPointerElementType();
+						if (ElemTy->isSized()) {
+          		uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+							addUnsafePointer(UnsafePointers, RetVal, Sz);
+							RetSites.insert(Ret);
+							UnsafeUses.insert(Ret);
+						}
           }
 				}
 			}
@@ -3463,10 +3471,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				auto V = SI->getValueOperand();
 				if (V->getType()->isPointerTy()) {
 					//errs() << "SI: " << *V << "\n";
-          uint64_t Sz = DL.getTypeAllocSize(V->getType()->getPointerElementType());
-					addUnsafePointer(UnsafePointers, V, Sz);
-					Stores.insert(SI);
-					UnsafeUses.insert(SI);
+					auto ElemTy = V->getType()->getPointerElementType();
+					if (ElemTy->isSized()) {
+          	uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+						addUnsafePointer(UnsafePointers, V, Sz);
+						Stores.insert(SI);
+						UnsafeUses.insert(SI);
+					}
 				}
 			}
 
