@@ -2698,7 +2698,7 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 
 	auto InstPt = dyn_cast<Instruction>(V);
 	if (InstPt == NULL) {
-		assert(isa<Argument>(V));
+		assert(isa<Argument>(V) || isa<GlobalVariable>(V));
 		InstPt = &*F.begin()->getFirstInsertionPt();
 	}
 	else {
