@@ -2796,16 +2796,6 @@ static void addUnsafePointer(DenseMap<Value*, uint64_t> &Map, Value *V, uint64_t
 	}
 }
 
-Value* getNoInterior(Function &F, Instruction *I, Value *V)
-{
-	IRBuilder<> IRB(I->getParent());
-	IRB.SetInsertPoint(I);
-
-	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
-	auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
-	return IRB.CreateIntToPtr(Interior, V->getType());
-}
-
 Value* FastAddressSanitizer::getInterior(Function &F, Instruction *I, Value *V)
 {
 	IRBuilder<> IRB(I->getParent());
@@ -3184,6 +3174,17 @@ static void addArgument(Function &F, Value *Ptr) {
 	IRB.CreateCall(Fn, {Ptr, Line, Name});
 }
 
+static Value* getNoInterior(Function &F, Instruction *I, Value *V)
+{
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+
+	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
+	auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
+	return IRB.CreateIntToPtr(Interior, V->getType());
+}
+
+
 static void instrumentOtherPointerUsage(Function &F, const DataLayout &DL) {
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -3196,29 +3197,19 @@ static void instrumentOtherPointerUsage(Function &F, const DataLayout &DL) {
 				Value *Op2 = I->getOperand(1);
 
 				if (Op1->getType()->isPointerTy() && Op2->getType()->isPointerTy()) {
-					if (!isa<AllocaInst>(Op1)) {
+					if (!isa<AllocaInst>(Op1) && !isa<Constant>(Op1)) {
 						Value *Base1 = GetUnderlyingObject(Op1, DL, 0);
 						if (!isa<AllocaInst>(Base1)) {
-							IRBuilder<> IRB(I->getParent());
-							IRB.SetInsertPoint(I);
-							auto OpInt = IRB.CreatePointerCast(Op1, IRB.getInt64Ty());
-							//errs() << "OpINt: " << *OpInt << "\n";
-							//auto NV = IRB.CreateIntCast(IRB.CreateLShr(IRB.CreateShl(OpInt, 1), 1), Op1->getType(), false);
-							auto NV = IRB.CreateLShr(IRB.CreateShl(OpInt, 1), 1);
-							I->setOperand(0, NV);
+							auto NoInt = getNoInterior(F, I, Op1);
+							I->setOperand(0, NoInt);
 						}
 					}
 
-					if (!isa<AllocaInst>(Op2)) {
+					if (!isa<AllocaInst>(Op2) && !isa<Constant>(Op2)) {
 						Value *Base2 = GetUnderlyingObject(Op2, DL, 0);
 						if (!isa<AllocaInst>(Base2)) {
-							IRBuilder<> IRB(I->getParent());
-							IRB.SetInsertPoint(I);
-							auto OpInt = IRB.CreatePointerCast(Op2, IRB.getInt64Ty());
-							//errs() << "OpINt: " << *OpInt << "\n";
-							//auto NV = IRB.CreateIntCast(IRB.CreateLShr(IRB.CreateShl(OpInt, 1), 1), Op2->getType(), false);
-							auto NV = IRB.CreateLShr(IRB.CreateShl(OpInt, 1), 1);
-							I->setOperand(1, NV);
+							auto NoInt = getNoInterior(F, I, Op2);
+							I->setOperand(1, NoInt);
 						}
 					}
 
