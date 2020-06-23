@@ -652,10 +652,12 @@ struct FastAddressSanitizer {
 	void createInteriorFn(Function *F);
   bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
   bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
+	void patchDynamicAlloca(Function &F, AllocaInst *AI);
+	void patchStaticAlloca(Function &F, AllocaInst *AI);
 	Value* getInterior(Function &F, Instruction *I, Value *V);
 	void addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
 		Value *Size, Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, int &callsites);
-	bool isSafeAlloca(const Value *AllocaPtr);
+	bool isSafeAlloca(const AllocaInst *AllocaPtr);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
   void markEscapedLocalAllocas(Function &F);
@@ -2670,6 +2672,19 @@ uint64_t FastAddressSanitizer::getKnownObjSize(Value *V, const DataLayout &DL, b
 	return DL.getTypeAllocSize(V->getType()->getPointerElementType());
 }
 
+static Value *getAllocaSize(AllocaInst *AI)
+{
+	assert(!AI->isStaticAlloca());
+	Type *Ty = AI->getAllocatedType();
+  uint64_t SizeInBytes = AI->getModule()->getDataLayout().getTypeAllocSize(Ty);
+	auto *I = AI->getNextNode();
+	assert(I);
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+	Value *Sz = IRB.CreateMul(AI->getArraySize(), ConstantInt::get(IRB.getInt64Ty(), SizeInBytes));
+	return Sz;
+}
+
 Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *Ptr)
 {
 	Value *V = const_cast<Value*>(V1);
@@ -2694,6 +2709,11 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 				return CI->getArgOperand(1);
 			}
 		}
+	}
+
+	auto AI = dyn_cast<AllocaInst>(V);
+	if (AI && !AI->isStaticAlloca()) {
+		return getAllocaSize(AI);
 	}
 
 	auto InstPt = dyn_cast<Instruction>(V);
@@ -2725,7 +2745,7 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 //#endif
 }
 
-bool FastAddressSanitizer::isSafeAlloca(const Value *AllocaPtr) {
+bool FastAddressSanitizer::isSafeAlloca(const AllocaInst *AllocaPtr) {
   SmallPtrSet<const Value *, 16> Visited;
   SmallVector<const Value *, 8> WorkList;
   WorkList.push_back(AllocaPtr);
@@ -3295,6 +3315,63 @@ static void exitScope(Function *F)
 	}
 }
 
+
+void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI) {
+	uint64_t Size = getAllocaSizeInBytes(*AI);
+	uint64_t HeaderVal = 0xdeadfaceULL | (Size << 32);
+	auto AllocaSize = ConstantInt::get(Int64Ty, HeaderVal);
+  uint64_t Padding = alignTo(8, AI->getAlignment());
+
+	Type *AllocatedType = AI->getAllocatedType();
+  if (AI->isArrayAllocation()) {
+    uint64_t ArraySize =
+        cast<ConstantInt>(AI->getArraySize())->getZExtValue();
+    AllocatedType = ArrayType::get(AllocatedType, ArraySize);
+  }
+
+  Type *TypeWithPadding = StructType::get(
+      ArrayType::get(Int8Ty, Padding), AI->getType());
+  auto *NewAI = new AllocaInst(
+      TypeWithPadding, AI->getType()->getAddressSpace(), nullptr, "", AI);
+  NewAI->takeName(AI);
+  NewAI->setAlignment(MaybeAlign(AI->getAlignment()));
+  NewAI->setUsedWithInAlloca(AI->isUsedWithInAlloca());
+  NewAI->setSwiftError(AI->isSwiftError());
+  NewAI->copyMetadata(*AI);
+	IRBuilder<> Builder(AI);
+  auto Field = Builder.CreateGEP(NewAI, {ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1)});
+	auto SizeField = Builder.CreateGEP(Builder.CreateBitCast(Field, Int64PtrTy), ConstantInt::get(Int32Ty, -1));
+	Builder.CreateStore(AllocaSize, SizeField);
+  AI->replaceAllUsesWith(Field);
+	AI->eraseFromParent();
+	recordStackPointer(&F, cast<Instruction>(Field));
+}
+
+void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI) {
+
+  uint64_t Padding = alignTo(8, AI->getAlignment());
+  Value *OldSize = getAllocaSize(AI);
+  IRBuilder<> IRB(cast<Instruction>(OldSize)->getNextNode());
+  Value *NewSize = IRB.CreateAdd(OldSize, ConstantInt::get(Int64Ty, Padding));
+	Value *Header = IRB.CreateOr(IRB.CreateShl(OldSize, 32), 0xdeadfaceULL);
+
+  AllocaInst *NewAI = IRB.CreateAlloca(IRB.getInt8Ty(), NewSize);
+  NewAI->takeName(AI);
+  NewAI->setAlignment(MaybeAlign(AI->getAlignment()));
+  NewAI->setUsedWithInAlloca(AI->isUsedWithInAlloca());
+  NewAI->setSwiftError(AI->isSwiftError());
+  NewAI->copyMetadata(*AI);
+
+
+  auto Field = IRB.CreateBitCast(IRB.CreateGEP(NewAI, {ConstantInt::get(Int32Ty, Padding)}), AI->getType());
+	auto SizeField = IRB.CreateGEP(IRB.CreateBitCast(Field, Int64PtrTy), ConstantInt::get(Int32Ty, -1));
+	IRB.CreateStore(Header, SizeField);
+  AI->replaceAllUsesWith(Field);
+	AI->eraseFromParent();
+	recordStackPointer(&F, cast<Instruction>(Field));
+}
+
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
@@ -3575,33 +3652,12 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	for (auto AI : UnsafeAllocas) {
-		uint64_t Size = getAllocaSizeInBytes(*AI);
-		uint64_t HeaderVal = 0xdeadfaceULL | (Size << 32);
-    uint64_t Padding = alignTo(8, AI->getAlignment());
-
-		Type *AllocatedType = AI->getAllocatedType();
-    if (AI->isArrayAllocation()) {
-      uint64_t ArraySize =
-          cast<ConstantInt>(AI->getArraySize())->getZExtValue();
-      AllocatedType = ArrayType::get(AllocatedType, ArraySize);
-    }
-
-    Type *TypeWithPadding = StructType::get(
-        ArrayType::get(Int8Ty, Padding), AllocatedType);
-    auto *NewAI = new AllocaInst(
-        TypeWithPadding, AI->getType()->getAddressSpace(), nullptr, "", AI);
-    NewAI->takeName(AI);
-    NewAI->setAlignment(MaybeAlign(AI->getAlignment()));
-    NewAI->setUsedWithInAlloca(AI->isUsedWithInAlloca());
-    NewAI->setSwiftError(AI->isSwiftError());
-    NewAI->copyMetadata(*AI);
-		IRBuilder<> Builder(AI);
-    auto Field = Builder.CreateGEP(NewAI, {ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1)});
-		auto SizeField = Builder.CreateGEP(Builder.CreateBitCast(Field, Int64PtrTy), ConstantInt::get(Int32Ty, -1));
-		Builder.CreateStore(ConstantInt::get(Int64Ty, HeaderVal), SizeField);
-    AI->replaceAllUsesWith(Field);
-		AI->eraseFromParent();
-		recordStackPointer(&F, cast<Instruction>(Field));
+		if (AI->isStaticAlloca()) {
+			patchStaticAlloca(F, AI);
+		}
+		else {
+			patchDynamicAlloca(F, AI);
+		}
 	}
 
 	instrumentPageFaultHandler(F, GetLengths, Stores);
