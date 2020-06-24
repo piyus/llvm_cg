@@ -3509,6 +3509,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		uint64_t TypeSize = It.second;
 		int64_t Offset;
 
+		if (isa<ConstantExpr>(V)) {
+			continue;
+		}
+
 		Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
 
 		if (Base) {
@@ -3543,6 +3547,16 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 			auto *Ptr1 = dyn_cast<Instruction>(*itr1);
       auto *Ptr2 = dyn_cast<Instruction>(*itr2);
+			if (Ptr1 == NULL) {
+				Value *V = *itr1;
+				errs() << "PTR1: " << *V << "\n";
+				errs() << F << "\n";
+			}
+			if (Ptr2 == NULL) {
+				Value *V = *itr2;
+				errs() << "PTR2: " << *V << "\n";
+				errs() << F << "\n";
+			}
 			assert(Ptr1 && "Ptr1 is not an instruction");
 			assert(Ptr2 && "Ptr2 is not an instruction");
 
