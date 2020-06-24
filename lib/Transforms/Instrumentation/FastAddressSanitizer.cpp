@@ -2679,11 +2679,16 @@ static Value *getAllocaSize(AllocaInst *AI)
 	assert(!AI->isStaticAlloca());
 	Type *Ty = AI->getAllocatedType();
   uint64_t SizeInBytes = AI->getModule()->getDataLayout().getTypeAllocSize(Ty);
-	auto *I = AI->getNextNode();
-	assert(I);
-	IRBuilder<> IRB(I->getParent());
-	IRB.SetInsertPoint(I);
-	Value *Sz = IRB.CreateMul(AI->getArraySize(), ConstantInt::get(IRB.getInt64Ty(), SizeInBytes));
+	IRBuilder<> IRB(AI->getParent());
+	IRB.SetInsertPoint(AI);
+	Value *ArrSz = AI->getArraySize();
+	if (ArrSz->getType()->isPointerTy()) {
+		ArrSz = IRB.CreatePtrToInt(ArrSz, IRB.getInt64Ty());
+	}
+	else if (ArrSz->getType() != IRB.getInt64Ty()) {
+		ArrSz = IRB.CreateZExt(ArrSz, IRB.getInt64Ty());
+	}
+	Value *Sz = IRB.CreateMul(ArrSz, ConstantInt::get(IRB.getInt64Ty(), SizeInBytes));
 	return Sz;
 }
 
@@ -3358,7 +3363,7 @@ void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI) {
 
   uint64_t Padding = alignTo(8, AI->getAlignment());
   Value *OldSize = getAllocaSize(AI);
-  IRBuilder<> IRB(cast<Instruction>(OldSize)->getNextNode());
+  IRBuilder<> IRB(AI);
   Value *NewSize = IRB.CreateAdd(OldSize, ConstantInt::get(Int64Ty, Padding));
 	Value *Header = IRB.CreateOr(IRB.CreateShl(OldSize, 32), 0xdeadfaceULL);
 
