@@ -93,6 +93,7 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "fastasan"
+#define INVALID_OFFSET (-0xFFFFFFFLL)
 
 static const uint64_t kDefaultShadowScale = 3;
 static const uint64_t kDefaultShadowOffset32 = 1ULL << 29;
@@ -2669,7 +2670,8 @@ uint64_t FastAddressSanitizer::getKnownObjSize(Value *V, const DataLayout &DL, b
     return Size;
 	}
 	Static = false;
-	return DL.getTypeAllocSize(V->getType()->getPointerElementType());
+	auto Ty = V->getType()->getPointerElementType();
+	return (Ty->isSized()) ? DL.getTypeAllocSize(Ty) : 0;
 }
 
 static Value *getAllocaSize(AllocaInst *AI)
@@ -3092,14 +3094,14 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 		Ret = const_cast<Value*>(Objects[0]);
 		assert(!isa<PHINode>(Ret) && !isa<SelectInst>(Ret));
 		Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
-		if (Base == Ret && Offset < 0) {
+		/*if (Base == Ret && Offset < 0) {
 			errs() << "Base: " << *Base << " Offset: " << Offset << "\n";
 			errs() << "V: " << *V << "\n";
 			errs() << *cast<Instruction>(V)->getParent()->getParent() << "\n";
 		}
-		assert((Base != Ret || Offset >= 0) && "negative Offset");
+		assert((Base != Ret || Offset >= 0) && "negative Offset");*/
 		if (Base != Ret) {
-			Offset = -1;
+			Offset = INVALID_OFFSET;
 		}
 		if (ReplacementMap.count(Ret)) {
 			Ret = ReplacementMap[Ret];
@@ -3113,7 +3115,7 @@ static Value* getBaseIfInterior(Function &F, Value *V, const DataLayout &DL, Den
 	Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
 	if (Base == NULL) {
 		Base = GetUnderlyingObject(V, DL, 0);
-		Offset = -1;
+		Offset = INVALID_OFFSET;
 		//errs() << "PARAM: " << *V << "\n";
 		//errs() << F << "\n";
 	}
