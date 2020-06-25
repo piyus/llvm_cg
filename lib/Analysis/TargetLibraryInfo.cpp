@@ -644,6 +644,14 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
   unsigned NumParams = FTy.getNumParams();
 
   switch (F) {
+	case LibFunc_obstack_begin:
+		return true;
+	case LibFunc_obstack_free:
+		return true;
+	case LibFunc_obstack_memory_used:
+		return true;
+	case LibFunc_obstack_newchunk:
+		return true;
   case LibFunc_execl:
   case LibFunc_execlp:
   case LibFunc_execle:

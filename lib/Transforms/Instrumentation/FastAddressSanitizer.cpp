@@ -3429,8 +3429,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Call->setArgOperand(1, argv);
 	}
 
-	if (F.getName() == "price_out_impl") {
-		errs() << "Before San\n" << F << "\n";
+	if (1 || F.getName().startswith("_obstack_begin")) {
+		//errs() << "Before San\n" << F << "\n";
 	}
 
   for (auto &BB : F) {
@@ -3698,8 +3698,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	instrumentPageFaultHandler(F, GetLengths, Stores);
 	instrumentOtherPointerUsage(F, DL);
 
-	if (F.getName() == "price_out_impl") {
-		errs() << "After San\n" << F << "\n";
+	if (1 || F.getName().startswith("_obstack_begin")) {
+		//errs() << "After San\n" << F << "\n";
 	}
 
 	if (verifyFunction(F, &errs())) {

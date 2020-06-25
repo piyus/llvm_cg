@@ -121,6 +121,9 @@ TLI_DEFINE_STRING_INTERNAL("_IO_getc")
 /// int _IO_putc(int __c, _IO_FILE * __fp);
 TLI_DEFINE_ENUM_INTERNAL(under_IO_putc)
 TLI_DEFINE_STRING_INTERNAL("_IO_putc")
+
+
+
 /// void operator delete[](void*);
 TLI_DEFINE_ENUM_INTERNAL(ZdaPv)
 TLI_DEFINE_STRING_INTERNAL("_ZdaPv")
@@ -454,6 +457,19 @@ TLI_DEFINE_STRING_INTERNAL("__vsnprintf_chk")
 ///                    va_list ap);
 TLI_DEFINE_ENUM_INTERNAL(vsprintf_chk)
 TLI_DEFINE_STRING_INTERNAL("__vsprintf_chk")
+
+TLI_DEFINE_ENUM_INTERNAL(obstack_begin)
+TLI_DEFINE_STRING_INTERNAL("_obstack_begin")
+
+
+TLI_DEFINE_ENUM_INTERNAL(obstack_memory_used)
+TLI_DEFINE_STRING_INTERNAL("_obstack_memory_used")
+
+TLI_DEFINE_ENUM_INTERNAL(obstack_newchunk)
+TLI_DEFINE_STRING_INTERNAL("_obstack_newchunk")
+
+
+
 /// int abs(int j);
 TLI_DEFINE_ENUM_INTERNAL(abs)
 TLI_DEFINE_STRING_INTERNAL("abs")
@@ -1046,6 +1062,11 @@ TLI_DEFINE_STRING_INTERNAL("ntohl")
 /// uint16_t ntohs(uint16_t netshort);
 TLI_DEFINE_ENUM_INTERNAL(ntohs)
 TLI_DEFINE_STRING_INTERNAL("ntohs")
+
+
+TLI_DEFINE_ENUM_INTERNAL(obstack_free)
+TLI_DEFINE_STRING_INTERNAL("obstack_free")
+
 /// int open(const char *path, int oflag, ... );
 TLI_DEFINE_ENUM_INTERNAL(open)
 TLI_DEFINE_STRING_INTERNAL("open")
@@ -1402,6 +1423,7 @@ TLI_DEFINE_STRING_INTERNAL("wcslen")
 /// ssize_t write(int fildes, const void *buf, size_t nbyte);
 TLI_DEFINE_ENUM_INTERNAL(write)
 TLI_DEFINE_STRING_INTERNAL("write")
+
 
 #undef TLI_DEFINE_ENUM_INTERNAL
 #undef TLI_DEFINE_STRING_INTERNAL
