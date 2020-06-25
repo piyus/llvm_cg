@@ -653,9 +653,13 @@ struct FastAddressSanitizer {
 	void createInteriorFn(Function *F);
   bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
   bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
+	void recordAllUnsafeAccesses(Function &F, DenseSet<Value*> &UnsafeUses,
+		DenseMap<Value*, uint64_t> &UnsafePointers, DenseSet<CallBase*> &CallSites,
+		DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
+		DenseSet<AllocaInst*> &UnsafeAllocas);
 	void patchDynamicAlloca(Function &F, AllocaInst *AI);
 	void patchStaticAlloca(Function &F, AllocaInst *AI);
-	Value* getInterior(Function &F, Instruction *I, Value *V);
+	//Value* getInterior(Function &F, Instruction *I, Value *V);
 	void addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
 		Value *Size, Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, int &callsites);
 	bool isSafeAlloca(const AllocaInst *AllocaPtr);
@@ -673,7 +677,7 @@ private:
   bool isSafeAccess(ObjectSizeOffsetVisitor &ObjSizeVis, Value *Addr,
                     uint64_t TypeSize) const;
 
-	uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI);
+	//uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI);
 	Value *getBaseSize(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *V1);
 
   /// Helper to cleanup per-function state.
@@ -2660,7 +2664,7 @@ void FastAddressSanitizer::markEscapedLocalAllocas(Function &F) {
   }
 }
 
-uint64_t FastAddressSanitizer::getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI) {
+uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI) {
 	uint64_t Size;
   ObjectSizeOpts Opts;
   Opts.RoundToAlign = true;
@@ -2826,7 +2830,7 @@ static void addUnsafePointer(DenseMap<Value*, uint64_t> &Map, Value *V, uint64_t
 	}
 }
 
-Value* FastAddressSanitizer::getInterior(Function &F, Instruction *I, Value *V)
+Value* getInterior(Function &F, Instruction *I, Value *V)
 {
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
@@ -2868,7 +2872,7 @@ abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value
 {
 	auto Int8PtrTy = Base8->getType();
 	auto M = F.getParent();
-  auto &C = M->getContext();
+  //auto &C = M->getContext();
 
 	Instruction *Then =
         SplitBlockAndInsertIfThen(Cond, InsertPt, false);    //,
@@ -3386,38 +3390,8 @@ void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI) {
 	recordStackPointer(&F, cast<Instruction>(Field));
 }
 
-
-bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
-                                                 const TargetLibraryInfo *TLI,
-																								 AAResults *AA) {
-	//errs() << "Printing function\n" << F << "\n";
-
-	createInteriorFn(&F);
-	DenseSet<Value*> UnsafeUses;
-	DenseMap<Value*, uint64_t> UnsafePointers;
-	DenseMap<Value*, uint64_t> UnsafeOtherPointers;
-  const DataLayout &DL = F.getParent()->getDataLayout();
-	//DenseMap<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
-	std::map<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
-	DenseMap<Value*, Value*> BaseToLenMap;
-	bool IsWrite = false;
-  unsigned Alignment = 0;
-  uint64_t TypeSize = 0;
-  Value *MaybeMask = nullptr;
-  Value *Addr;
-	bool Static;
-	DenseSet<Value*> TmpSet;
-	DenseSet<CallBase*> CallSites;
-	DenseSet<ReturnInst*> RetSites;
-	DenseSet<StoreInst*> Stores;
-	DenseSet<AllocaInst*> UnsafeAllocas;
-	DenseSet<Value*> InteriorPointers;
-	int callsites = 0;
-	DenseMap<Value*, Value*> ReplacementMap;
-	DenseSet<Value*> GetLengths;
-
-	createReplacementMap(&F, ReplacementMap);
-
+static void setBoundsForArgv(Function &F)
+{
 	if (F.getName() == "main" && F.arg_size() > 0) {
 		assert(F.arg_size() == 2);
 		auto argc = F.getArg(0);
@@ -3428,10 +3402,19 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     argv->replaceAllUsesWith(Call);
 		Call->setArgOperand(1, argv);
 	}
+}
 
-	if (F.getName().startswith("ggc_alloc_stat")) {
-		errs() << "Before San\n" << F << "\n";
-	}
+void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*> &UnsafeUses,
+	DenseMap<Value*, uint64_t> &UnsafePointers, DenseSet<CallBase*> &CallSites,
+	DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
+	DenseSet<AllocaInst*> &UnsafeAllocas)
+{
+  const DataLayout &DL = F.getParent()->getDataLayout();
+  Value *Addr;
+	bool IsWrite = false;
+  unsigned Alignment = 0;
+  uint64_t TypeSize = 0;
+  Value *MaybeMask = nullptr;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -3499,13 +3482,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 		}
 	}
+}
 
-	if (UnsafePointers.empty()) {
-		return true;
-	}
-
-	DominatorTree DT(F);
-	LoopInfo LI(DT);
+static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &UnsafePointers,
+	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, DenseSet<Value*> &TmpSet,
+	DominatorTree &DT, DenseMap<Value*, Value*> &ReplacementMap, const TargetLibraryInfo *TLI)
+{
+  const DataLayout &DL = F.getParent()->getDataLayout();
 
 	for (auto It : UnsafePointers) {
 		Value *V = It.first;
@@ -3520,6 +3503,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 		if (Base) {
 			if (Offset >= 0) {
+				bool Static = false;
 				uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
 				Offset += TypeSize;
 				if (Offset > (int64_t)BaseSize) {
@@ -3540,9 +3524,12 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			//errs() << "Multiple Base\n";
 		}
 	}
+}
 
-	// FIXME: remove duplicates
-	// FIXME: remove constant offset base
+static void removeRedundentAccesses(Function &F,
+	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, DenseSet<Value*> &TmpSet,
+	DominatorTree &DT, AAResults *AA)
+{
 	const Value* NullVal = NULL;
 
 	for (auto itr1 = TmpSet.begin(); itr1 != TmpSet.end(); itr1++) {
@@ -3595,29 +3582,14 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			}
 		}
 	}
+}
 
-	PostDominatorTree PDT(F);
+static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
+	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
+  const TargetLibraryInfo *TLI)
+{
 
-	for (auto &It : UnsafeMap) {
-		Value* Ptr = It.first;
-		Value* Base = const_cast<Value*>((It.second).first);
-		if (!Base) {
-			continue;
-		}
-		uint64_t TypeSize = UnsafePointers[Ptr];
-		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
-		if (1 || F.getName() == "interconnects__inner") {
-			//errs() << "PTR: " << *Ptr << " BASEVAL: " << *Base << "\n";
-		}
-		if (!BaseToLenMap.count(Base)) {
-			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, Ptr);
-			GetLengths.insert(BaseToLenMap[Base]);
-		}
-		auto Size = BaseToLenMap[Base];
-		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
-	}
-
-//#if 0
+  const DataLayout &DL = F.getParent()->getDataLayout();
 	for (auto SI : Stores) {
 		auto V = SI->getValueOperand();
 		Value *Base = getBaseIfInterior(F, V, DL, ReplacementMap);
@@ -3636,12 +3608,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			RI->setOperand(0, Interior);
 		}
 	}
-//#endif
 
-//#if 0
 	for (auto CS : CallSites) {
 		LibFunc Func;
-		bool isIndirect = CS->isIndirectCall();
+		//bool isIndirect = CS->isIndirectCall();
 		bool LibCall = false;
 		if (isa<IntrinsicInst>(CS)) {
 			//continue;
@@ -3679,7 +3649,74 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			createInteriorCall(CS, InteriorToBase);
 		}
 	}
-//#endif
+}
+
+
+bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
+                                                 const TargetLibraryInfo *TLI,
+																								 AAResults *AA) {
+	//errs() << "Printing function\n" << F << "\n";
+	createInteriorFn(&F);
+
+	DenseSet<Value*> UnsafeUses;
+	DenseMap<Value*, uint64_t> UnsafePointers;
+  const DataLayout &DL = F.getParent()->getDataLayout();
+	std::map<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
+	DenseMap<Value*, Value*> BaseToLenMap;
+	DenseSet<Value*> TmpSet;
+	DenseSet<CallBase*> CallSites;
+	DenseSet<ReturnInst*> RetSites;
+	DenseSet<StoreInst*> Stores;
+	DenseSet<AllocaInst*> UnsafeAllocas;
+	DenseSet<Value*> InteriorPointers;
+	int callsites = 0;
+	DenseMap<Value*, Value*> ReplacementMap;
+	DenseSet<Value*> GetLengths;
+
+	createReplacementMap(&F, ReplacementMap);
+
+	setBoundsForArgv(F);
+
+	if (F.getName().startswith("ggc_alloc_stat")) {
+		errs() << "Before San\n" << F << "\n";
+	}
+
+	recordAllUnsafeAccesses(F, UnsafeUses, UnsafePointers, CallSites,
+		RetSites, Stores, UnsafeAllocas);
+
+	if (UnsafePointers.empty()) {
+		return true;
+	}
+
+	DominatorTree DT(F);
+	//LoopInfo LI(DT);
+
+	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, TmpSet, DT, ReplacementMap, TLI);
+	removeRedundentAccesses(F, UnsafeMap, TmpSet, DT, AA);
+
+
+	PostDominatorTree PDT(F);
+
+	for (auto &It : UnsafeMap) {
+		Value* Ptr = It.first;
+		Value* Base = const_cast<Value*>((It.second).first);
+		if (!Base) {
+			continue;
+		}
+		uint64_t TypeSize = UnsafePointers[Ptr];
+		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
+		if (1 || F.getName() == "interconnects__inner") {
+			//errs() << "PTR: " << *Ptr << " BASEVAL: " << *Base << "\n";
+		}
+		if (!BaseToLenMap.count(Base)) {
+			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, Ptr);
+			GetLengths.insert(BaseToLenMap[Base]);
+		}
+		auto Size = BaseToLenMap[Base];
+		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
+	}
+
+	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, TLI);
 
 	if (!UnsafeAllocas.empty()) {
 		enterScope(&F);
