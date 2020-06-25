@@ -679,6 +679,7 @@ private:
 
 	//uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI);
 	Value *getBaseSize(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *V1);
+	Value* getStaticBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI);
 
   /// Helper to cleanup per-function state.
   struct FunctionStateRAII {
@@ -2696,7 +2697,7 @@ static Value *getAllocaSize(AllocaInst *AI)
 	return Sz;
 }
 
-Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *Ptr)
+Value* FastAddressSanitizer::getStaticBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI)
 {
 	Value *V = const_cast<Value*>(V1);
 	bool Static;
@@ -2727,11 +2728,26 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 		return getAllocaSize(AI);
 	}
 
+	if (isa<GlobalVariable>(V)) {
+		return ConstantInt::get(Int64Ty, 0xFFFFFFFFULL);
+	}
+	return NULL;
+}
+
+Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *Ptr)
+{
+	Value *Ret = getStaticBaseSize(F, V1, DL, TLI);
+	if (Ret) {
+		return Ret;
+	}
+
+	Value *V = const_cast<Value*>(V1);
+
 	auto InstPt = dyn_cast<Instruction>(V);
 	if (InstPt == NULL) {
 		assert(isa<Argument>(V) || isa<GlobalVariable>(V));
 		if (isa<GlobalVariable>(V)) {
-			return ConstantInt::get(Int64Ty, 0xFFFFFFFFULL);
+			assert(0);
 		}
 		InstPt = &*F.begin()->getFirstInsertionPt();
 	}
