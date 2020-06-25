@@ -3429,8 +3429,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Call->setArgOperand(1, argv);
 	}
 
-	if (1 || F.getName().startswith("_obstack_begin")) {
-		//errs() << "Before San\n" << F << "\n";
+	if (F.getName().startswith("ggc_alloc_stat")) {
+		errs() << "Before San\n" << F << "\n";
 	}
 
   for (auto &BB : F) {
@@ -3698,8 +3698,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	instrumentPageFaultHandler(F, GetLengths, Stores);
 	instrumentOtherPointerUsage(F, DL);
 
-	if (1 || F.getName().startswith("_obstack_begin")) {
-		//errs() << "After San\n" << F << "\n";
+	if (F.getName().startswith("ggc_alloc_stat")) {
+		errs() << "After San\n" << F << "\n";
 	}
 
 	if (verifyFunction(F, &errs())) {
