@@ -2475,7 +2475,67 @@ int ModuleFastAddressSanitizer::GetAsanVersion(const Module &M) const {
   return Version;
 }
 
+static void instrumentGlobal(Module &M, GlobalVariable *GV) {
+  Constant *Initializer = GV->getInitializer();
+  auto C = &(M.getContext());
+	auto Int64Ty = Type::getInt64Ty(*C);
+  uint64_t SizeInBytes =
+      M.getDataLayout().getTypeAllocSize(Initializer->getType());
+  uint64_t Padding = alignTo(8, GV->getAlignment());
+	std::vector<uint8_t> Init(Padding, 0);
+	uint64_t HeaderVal = ((SizeInBytes << 32) | 0xdeadfaceULL);
+	uint8_t *Data = (uint8_t*)&HeaderVal;
+	for (uint64_t i = Padding - 8; i < Padding; i++) {
+		Init[i] = *Data;
+		Data++;
+	}
+	Constant *Pad = ConstantDataArray::get(*C, Init);
+	Initializer = ConstantStruct::getAnon({Pad, Initializer});
+
+  auto *NewGV = new GlobalVariable(M, Initializer->getType(), GV->isConstant(),
+                                   GlobalValue::ExternalLinkage, Initializer,
+                                   GV->getName() + ".fastsan");
+  NewGV->copyAttributesFrom(GV);
+  NewGV->setLinkage(GlobalValue::PrivateLinkage);
+  NewGV->copyMetadata(GV, 0);
+  NewGV->setAlignment(GV->getAlignment());
+
+  NewGV->setUnnamedAddr(GlobalValue::UnnamedAddr::None);
+
+  Constant *Aliasee = ConstantExpr::getIntToPtr(
+      ConstantExpr::getAdd(
+          ConstantExpr::getPtrToInt(NewGV, Int64Ty),
+          ConstantInt::get(Int64Ty, Padding)),
+      GV->getType());
+  auto *Alias = GlobalAlias::create(GV->getValueType(), GV->getAddressSpace(),
+                                    GV->getLinkage(), "", Aliasee, &M);
+  Alias->setVisibility(GV->getVisibility());
+  Alias->takeName(GV);
+  GV->replaceAllUsesWith(Alias);
+  GV->eraseFromParent();
+}
+
+
+
 bool ModuleFastAddressSanitizer::instrumentModuleNew(Module &M) {
+  std::vector<GlobalVariable *> Globals;
+  for (GlobalVariable &GV : M.globals()) {
+    if (GV.isDeclarationForLinker() || GV.getName().startswith("llvm.") ||
+        GV.isThreadLocal())
+      continue;
+
+    if (GV.hasCommonLinkage())
+      continue;
+
+    if (GV.hasSection())
+      continue;
+
+    Globals.push_back(&GV);
+  }
+
+  for (GlobalVariable *GV : Globals) {
+    instrumentGlobal(M, GV);
+  }
 	return true;
 }
 
