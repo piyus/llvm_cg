@@ -664,7 +664,8 @@ struct FastAddressSanitizer {
 		Value *Size, Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, int &callsites);
 	void addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 		Value *TySize, PostDominatorTree &PDT,
-		DenseSet<Value*> &UnsafeUses, int &callsites, DenseSet<Value*> &GetLengths);
+		DenseSet<Value*> &UnsafeUses, int &callsites, DenseSet<Value*> &GetLengths,
+		DenseMap<Value*, Value*> &LenToBaseMap);
 	bool isSafeAlloca(const AllocaInst *AllocaPtr);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
@@ -2984,7 +2985,7 @@ void FastAddressSanitizer::
 addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	Value *TySize, PostDominatorTree &PDT, 
 	DenseSet<Value*> &UnsafeUses, int &callsites,
-	DenseSet<Value*> &GetLengths)
+	DenseSet<Value*> &GetLengths, DenseMap<Value*, Value*> &LenToBaseMap)
 {
 	auto InstPtr = dyn_cast<Instruction>(Ptr);
 	assert(InstPtr && "Invalid Ptr");
@@ -3002,6 +3003,7 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 																 ConstantInt::get(Int32Ty, -1));
 	auto Size = IRB.CreateLoad(Int32Ty, SizeLoc);
 	GetLengths.insert(Size);
+	LenToBaseMap[Size] = Base;
 
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
@@ -3613,6 +3615,41 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 	}
 }
 
+static void removeRedundentLengths(Function &F, DenseSet<Value*> &GetLengths,
+	DenseMap<Value*, Value*> &LenToBaseMap) {
+	DominatorTree DT(F);
+	DenseSet<Instruction*> ToDelete;
+	for (auto itr1 = GetLengths.begin(); itr1 != GetLengths.end(); itr1++) {
+		for (auto itr2 = std::next(itr1); itr2 != GetLengths.end(); itr2++) {
+			Instruction *len1 = cast<Instruction>(*itr1);
+			Instruction *len2 = cast<Instruction>(*itr2);
+			if (ToDelete.count(len1) || ToDelete.count(len2)) {
+				continue;
+			}
+			if (!LenToBaseMap.count(len1) || !LenToBaseMap.count(len2)) {
+				continue;
+			}
+			if (LenToBaseMap[len1] != LenToBaseMap[len2]) {
+				continue;
+			}
+			if (DT.dominates(len1, len2)) {
+    		len2->replaceAllUsesWith(len1);
+				ToDelete.insert(len2);
+			}
+			else if (DT.dominates(len2, len1)) {
+    		len1->replaceAllUsesWith(len2);
+				ToDelete.insert(len1);
+			}
+		}
+	}
+	for (auto len : ToDelete) {
+		errs() << "deleting: " << *len << "\n";
+		assert(GetLengths.count(len));
+		GetLengths.erase(len);
+		len->eraseFromParent();
+	}
+}
+
 static void removeRedundentAccesses(Function &F,
 	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, DenseSet<Value*> &TmpSet,
 	DominatorTree &DT, AAResults *AA)
@@ -3752,6 +3789,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
   const DataLayout &DL = F.getParent()->getDataLayout();
 	std::map<Value*, std::pair<const Value*, int64_t>> UnsafeMap;
 	DenseMap<Value*, Value*> BaseToLenMap;
+	DenseMap<Value*, Value*> LenToBaseMap;
 	DenseSet<Value*> TmpSet;
 	DenseSet<CallBase*> CallSites;
 	DenseSet<ReturnInst*> RetSites;
@@ -3837,13 +3875,15 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Value *Size;
 		if (!BaseToLenMap.count(Base)) {
 			addBoundsCheckWithLen(F, Base, Ptr, TySize, PDT, UnsafeUses, 
-				callsites, GetLengths);
+				callsites, GetLengths, LenToBaseMap);
 		}
 		else {
 			Size = BaseToLenMap[Base];
 			addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
 		}
 	}
+
+	removeRedundentLengths(F, GetLengths, LenToBaseMap);
 
 	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, TLI);
 
