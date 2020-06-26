@@ -3574,7 +3574,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 }
 
 static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &UnsafePointers,
-	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, DenseSet<Value*> &TmpSet,
+	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap,
+	DenseMap<Value*, Value*> &PtrToBaseMap,
+	DenseSet<Value*> &TmpSet,
 	DominatorTree &DT, DenseMap<Value*, Value*> &ReplacementMap, const TargetLibraryInfo *TLI)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
@@ -3591,6 +3593,7 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 		Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
 
 		if (Base) {
+			PtrToBaseMap[V] = Base;
 			if (Offset >= 0) {
 				bool Static = false;
 				uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
@@ -3605,7 +3608,8 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 				}
 			}
 			else {
-				UnsafeMap[V] = std::make_pair(Base, 0);
+				Value *Base1 = GetPointerBaseWithConstantOffset(V, Offset, DL);
+				UnsafeMap[V] = std::make_pair(Base1, Offset);
 				TmpSet.insert(V);
 			}
 		}
@@ -3643,7 +3647,6 @@ static void removeRedundentLengths(Function &F, DenseSet<Value*> &GetLengths,
 		}
 	}
 	for (auto len : ToDelete) {
-		errs() << "deleting: " << *len << "\n";
 		assert(GetLengths.count(len));
 		GetLengths.erase(len);
 		len->eraseFromParent();
@@ -3656,13 +3659,19 @@ static void removeRedundentAccesses(Function &F,
 {
 	// FIXME: Offset Calulation Needs to be done with respect to closest base
 	// If the closest base with constant offset is common, we can remove some checks
-	const Value* NullVal = NULL;
+	//const Value* NullVal = NULL;
+	DenseSet<Value*> ToDelete;
 
 	for (auto itr1 = TmpSet.begin(); itr1 != TmpSet.end(); itr1++) {
 		for (auto itr2 = std::next(itr1); itr2 != TmpSet.end(); itr2++) {
 
 			auto *Ptr1 = dyn_cast<Instruction>(*itr1);
       auto *Ptr2 = dyn_cast<Instruction>(*itr2);
+
+			if (ToDelete.count(Ptr1) || ToDelete.count(Ptr2)) {
+				continue;
+			}
+
 			if (Ptr1 == NULL) {
 				Value *V = *itr1;
 				errs() << "PTR1: " << *V << "\n";
@@ -3680,10 +3689,12 @@ static void removeRedundentAccesses(Function &F,
 
 			if (AR == MustAlias) {
 				if (DT.dominates(Ptr1, Ptr2)) {
-					UnsafeMap[Ptr2] = std::make_pair(NullVal, 0);
+					//UnsafeMap[Ptr2] = std::make_pair(NullVal, 0);
+					ToDelete.insert(Ptr2);
 				}
 				else if (DT.dominates(Ptr2, Ptr1)) {
-					UnsafeMap[Ptr1] = std::make_pair(NullVal, 0);
+					//UnsafeMap[Ptr1] = std::make_pair(NullVal, 0);
+					ToDelete.insert(Ptr1);
 				}
 			}
 			else {
@@ -3692,21 +3703,29 @@ static void removeRedundentAccesses(Function &F,
 				if (Ptr1Base == Ptr2Base) {
 					auto Ptr1Off = UnsafeMap[Ptr1].second;
 					auto Ptr2Off = UnsafeMap[Ptr2].second;
-					if (Ptr1Off > 0 && Ptr2Off > 0) {
+
+					//if (Ptr1Off > 0 && Ptr2Off > 0) {
 						auto Ptr1DominatesPtr2 = DT.dominates(Ptr1, Ptr2);
 						auto Ptr2DominatesPtr1 = DT.dominates(Ptr2, Ptr1);
 						if (Ptr1DominatesPtr2 || Ptr2DominatesPtr1) {
 							if (Ptr1Off >= Ptr2Off && Ptr1DominatesPtr2) {
-								UnsafeMap[Ptr2] = std::make_pair(NullVal, 0);
+								//UnsafeMap[Ptr2] = std::make_pair(NullVal, 0);
+								ToDelete.insert(Ptr2);
 							}
 							else if (Ptr2Off >= Ptr1Off && Ptr2DominatesPtr1) {
-								UnsafeMap[Ptr1] = std::make_pair(NullVal, 0);
+								//UnsafeMap[Ptr1] = std::make_pair(NullVal, 0);
+								ToDelete.insert(Ptr1);
 							}
 						}
-					}
+					//}
+
 				}
 			}
 		}
+	}
+	for (auto V : ToDelete) {
+		assert(TmpSet.count(V));
+		TmpSet.erase(V);
 	}
 }
 
@@ -3798,6 +3817,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Value*> InteriorPointers;
 	int callsites = 0;
 	DenseMap<Value*, Value*> ReplacementMap;
+	DenseMap<Value*, Value*> PtrToBaseMap;
 	DenseSet<Value*> GetLengths;
 
 	createReplacementMap(&F, ReplacementMap);
@@ -3818,17 +3838,17 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DominatorTree DT(F);
 	//LoopInfo LI(DT);
 
-	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, TmpSet, DT, ReplacementMap, TLI);
+	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, PtrToBaseMap, TmpSet, DT, ReplacementMap, TLI);
 	removeRedundentAccesses(F, UnsafeMap, TmpSet, DT, AA);
 
 
 	PostDominatorTree PDT(F);
 	DenseMap<Value*, DenseSet<Value*>> BaseToPtrsMap;
 
-	for (auto &It : UnsafeMap) {
-		Value* Ptr = It.first;
-		Value* Base = const_cast<Value*>((It.second).first);
-		if (!Base || BaseToLenMap.count(Base)) {
+	for (auto Ptr : TmpSet) {
+		assert(PtrToBaseMap.count(Ptr));
+		Value* Base = PtrToBaseMap[Ptr];
+		if (BaseToLenMap.count(Base)) {
 			continue;
 		}
 		if (BaseToPtrsMap.count(Base)) {
@@ -3861,12 +3881,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
-	for (auto &It : UnsafeMap) {
-		Value* Ptr = It.first;
-		Value* Base = const_cast<Value*>((It.second).first);
-		if (!Base) {
-			continue;
-		}
+	for (auto Ptr : TmpSet) {
+		assert(PtrToBaseMap.count(Ptr));
+		Value* Base = PtrToBaseMap[Ptr];
 		uint64_t TypeSize = UnsafePointers[Ptr];
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
 		if (1 || F.getName() == "interconnects__inner") {
