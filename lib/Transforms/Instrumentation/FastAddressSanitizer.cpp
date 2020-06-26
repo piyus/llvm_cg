@@ -662,6 +662,9 @@ struct FastAddressSanitizer {
 	//Value* getInterior(Function &F, Instruction *I, Value *V);
 	void addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
 		Value *Size, Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, int &callsites);
+	void addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
+		Value *TySize, PostDominatorTree &PDT,
+		DenseSet<Value*> &UnsafeUses, int &callsites, DenseSet<Value*> &GetLengths);
 	bool isSafeAlloca(const AllocaInst *AllocaPtr);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
@@ -2737,22 +2740,27 @@ Value* FastAddressSanitizer::getStaticBaseSize(Function &F, const Value *V1, con
 Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *Ptr)
 {
 	Value *Ret = getStaticBaseSize(F, V1, DL, TLI);
-	if (Ret) {
-		return Ret;
-	}
+	assert(Ret == NULL && "static base was possible");
 
 	Value *V = const_cast<Value*>(V1);
+	Instruction *InstPt;
 
-	auto InstPt = dyn_cast<Instruction>(V);
-	if (InstPt == NULL) {
-		assert(isa<Argument>(V) || isa<GlobalVariable>(V));
-		if (isa<GlobalVariable>(V)) {
-			assert(0);
-		}
-		InstPt = &*F.begin()->getFirstInsertionPt();
+	if (Ptr) {
+		InstPt = dyn_cast<Instruction>(Ptr);
+		assert(InstPt);
 	}
 	else {
-		InstPt = InstPt->getNextNode();
+		InstPt = dyn_cast<Instruction>(V);
+		if (InstPt == NULL) {
+			assert(isa<Argument>(V) || isa<GlobalVariable>(V));
+			if (isa<GlobalVariable>(V)) {
+				assert(0);
+			}
+			InstPt = &*F.begin()->getFirstInsertionPt();
+		}
+		else {
+			InstPt = InstPt->getNextNode();
+		}
 	}
 
 	IRBuilder<> IRB(InstPt->getParent());
@@ -2883,6 +2891,21 @@ postDominatesAnyUse(Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &
 	return false;
 }
 
+static bool
+postDominatesAnyPtrDef(Instruction *Base, PostDominatorTree &PDT, DenseSet<Value*> &Ptrs)
+{
+	assert(!Ptrs.empty());
+	for (auto V : Ptrs) {
+	  auto I = cast<const Instruction>(V);
+		assert(I);
+		if (PDT.dominates(I, Base)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+
 static void
 abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value *Ptr8, Value *Limit, Value *PtrLimit, Value *Size, Value *Callsite)
 {
@@ -2956,6 +2979,54 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 	}
 	callsites++;
 }
+
+void FastAddressSanitizer::
+addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
+	Value *TySize, PostDominatorTree &PDT, 
+	DenseSet<Value*> &UnsafeUses, int &callsites,
+	DenseSet<Value*> &GetLengths)
+{
+	auto InstPtr = dyn_cast<Instruction>(Ptr);
+	assert(InstPtr && "Invalid Ptr");
+	IRBuilder<> IRB(InstPtr->getParent());
+
+	if (isa<PHINode>(Ptr)) {
+		IRB.SetInsertPoint(InstPtr->getParent()->getFirstNonPHI());
+	}
+	else {
+		IRB.SetInsertPoint(InstPtr->getNextNode());
+	}
+
+	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
+																 IRB.CreateBitCast(Base, Int32PtrTy),
+																 ConstantInt::get(Int32Ty, -1));
+	auto Size = IRB.CreateLoad(Int32Ty, SizeLoc);
+	GetLengths.insert(Size);
+
+
+	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
+
+	Value *Limit = IRB.CreateGEP(Int8Ty, Base8, Size);
+	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
+
+	
+	auto Cmp1 = IRB.CreateICmpULT(Ptr8, Base8);
+	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
+	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
+	auto CmpInst = dyn_cast<Instruction>(Cmp);
+	assert(CmpInst && "no cmp inst");
+
+	bool Ret = postDominatesAnyUse(InstPtr, PDT, UnsafeUses);
+	if (Ret) {
+		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
+	}
+	else {
+		instrumentAllUses(F, InstPtr, UnsafeUses, Cmp, Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
+	}
+	callsites++;
+}
+
 
 static FunctionType *getInteriorType(Function *F)
 {
@@ -3546,6 +3617,8 @@ static void removeRedundentAccesses(Function &F,
 	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, DenseSet<Value*> &TmpSet,
 	DominatorTree &DT, AAResults *AA)
 {
+	// FIXME: Offset Calulation Needs to be done with respect to closest base
+	// If the closest base with constant offset is common, we can remove some checks
 	const Value* NullVal = NULL;
 
 	for (auto itr1 = TmpSet.begin(); itr1 != TmpSet.end(); itr1++) {
@@ -3712,6 +3785,43 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 
 	PostDominatorTree PDT(F);
+	DenseMap<Value*, DenseSet<Value*>> BaseToPtrsMap;
+
+	for (auto &It : UnsafeMap) {
+		Value* Ptr = It.first;
+		Value* Base = const_cast<Value*>((It.second).first);
+		if (!Base || BaseToLenMap.count(Base)) {
+			continue;
+		}
+		if (BaseToPtrsMap.count(Base)) {
+			BaseToPtrsMap[Base].insert(Ptr);
+		}
+		else {
+			auto Size = getStaticBaseSize(F, Base, DL, TLI);
+			if (Size) {
+				BaseToLenMap[Base] = Size;
+			}
+			else {
+				BaseToPtrsMap[Base].insert(Ptr);
+			}
+		}
+	}
+
+	for (auto &It : BaseToPtrsMap) {
+		Value* Base = It.first;
+		DenseSet<Value*> &ValSet = It.second;
+		Instruction *BaseI = dyn_cast<Instruction>(Base);
+		if (!BaseI) {
+			BaseI = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+			assert(BaseI);
+		}
+
+		if (postDominatesAnyPtrDef(BaseI, PDT, ValSet)) {
+			assert(!BaseToLenMap.count(Base));
+			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, NULL);
+			GetLengths.insert(BaseToLenMap[Base]);
+		}
+	}
 
 	for (auto &It : UnsafeMap) {
 		Value* Ptr = It.first;
@@ -3724,12 +3834,15 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (1 || F.getName() == "interconnects__inner") {
 			//errs() << "PTR: " << *Ptr << " BASEVAL: " << *Base << "\n";
 		}
+		Value *Size;
 		if (!BaseToLenMap.count(Base)) {
-			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, Ptr);
-			GetLengths.insert(BaseToLenMap[Base]);
+			addBoundsCheckWithLen(F, Base, Ptr, TySize, PDT, UnsafeUses, 
+				callsites, GetLengths);
 		}
-		auto Size = BaseToLenMap[Base];
-		addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
+		else {
+			Size = BaseToLenMap[Base];
+			addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
+		}
 	}
 
 	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, TLI);
