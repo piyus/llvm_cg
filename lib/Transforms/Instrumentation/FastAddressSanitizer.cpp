@@ -3884,7 +3884,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	setBoundsForArgv(F);
 
-	if (F.getName().startswith("ggc_alloc_stat")) {
+	if (F.getName().startswith("build_message_string")) {
 		errs() << "Before San\n" << F << "\n";
 	}
 
@@ -3981,7 +3981,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	instrumentPageFaultHandler(F, GetLengths, Stores);
 	instrumentOtherPointerUsage(F, DL);
 
-	if (F.getName().startswith("ggc_alloc_stat")) {
+	if (F.getName().startswith("build_message_string")) {
 		errs() << "After San\n" << F << "\n";
 	}
 

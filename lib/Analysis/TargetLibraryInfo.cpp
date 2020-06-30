@@ -644,6 +644,10 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
   unsigned NumParams = FTy.getNumParams();
 
   switch (F) {
+	case LibFunc_vasprintf:
+		return true;
+	case LibFunc_vasprintf1:
+		return true;
 	case LibFunc_obstack_begin:
 		return true;
 	case LibFunc_obstack_free:
