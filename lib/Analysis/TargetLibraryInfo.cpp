@@ -656,6 +656,32 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 		return true;
 	case LibFunc_obstack_newchunk:
 		return true;
+	case LibFunc_fxstat:
+	case LibFunc_fxstat64:
+	case LibFunc_fxstatat:
+	case LibFunc_fxstatat64:
+	case LibFunc_lxstat:
+	case LibFunc_lxstat64:
+	case LibFunc_overflow:
+	case LibFunc_uflow:
+	case LibFunc_xmknod:
+	case LibFunc_xmknodat:
+	case LibFunc_xstat64:
+	case LibFunc_asctime:
+	case LibFunc_freopen:
+	case LibFunc_getcwd:
+	case LibFunc_getrlimit:
+	case LibFunc_getrusage:
+	case LibFunc_localtime:
+	case LibFunc_readdir:
+	case LibFunc_setrlimit:
+	case LibFunc_signal:
+	case LibFunc_time:
+		return true;
+
+
+	case LibFunc_xstat:
+		return true;
   case LibFunc_execl:
   case LibFunc_execlp:
   case LibFunc_execle:

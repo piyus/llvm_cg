@@ -308,6 +308,16 @@ TLI_DEFINE_STRING_INTERNAL("__expf_finite")
 /// long double __expl_finite(long double x);
 TLI_DEFINE_ENUM_INTERNAL(expl_finite)
 TLI_DEFINE_STRING_INTERNAL("__expl_finite")
+
+TLI_DEFINE_ENUM_INTERNAL(fxstat)
+TLI_DEFINE_STRING_INTERNAL("__fxstat")
+TLI_DEFINE_ENUM_INTERNAL(fxstat64)
+TLI_DEFINE_STRING_INTERNAL("__fxstat64")
+TLI_DEFINE_ENUM_INTERNAL(fxstatat)
+TLI_DEFINE_STRING_INTERNAL("__fxstatat")
+TLI_DEFINE_ENUM_INTERNAL(fxstatat64)
+TLI_DEFINE_STRING_INTERNAL("__fxstatat64")
+
 /// int __isoc99_scanf (const char *format, ...)
 TLI_DEFINE_ENUM_INTERNAL(dunder_isoc99_scanf)
 TLI_DEFINE_STRING_INTERNAL("__isoc99_scanf")
@@ -341,6 +351,12 @@ TLI_DEFINE_STRING_INTERNAL("__logf_finite")
 /// long double __logl_finite(long double x);
 TLI_DEFINE_ENUM_INTERNAL(logl_finite)
 TLI_DEFINE_STRING_INTERNAL("__logl_finite")
+
+TLI_DEFINE_ENUM_INTERNAL(lxstat)
+TLI_DEFINE_STRING_INTERNAL("__lxstat")
+TLI_DEFINE_ENUM_INTERNAL(lxstat64)
+TLI_DEFINE_STRING_INTERNAL("__lxstat64")
+
 /// void *__memccpy_chk(void *dst, const void *src, int c, size_t n,
 ///                     size_t dstsize)
 TLI_DEFINE_ENUM_INTERNAL(memccpy_chk)
@@ -358,6 +374,11 @@ TLI_DEFINE_STRING_INTERNAL("__memset_chk")
 // int __nvvm_reflect(const char *)
 TLI_DEFINE_ENUM_INTERNAL(nvvm_reflect)
 TLI_DEFINE_STRING_INTERNAL("__nvvm_reflect")
+
+TLI_DEFINE_ENUM_INTERNAL(overflow)
+TLI_DEFINE_STRING_INTERNAL("__overflow")
+
+
 /// double __pow_finite(double x, double y);
 TLI_DEFINE_ENUM_INTERNAL(pow_finite)
 TLI_DEFINE_STRING_INTERNAL("__pow_finite")
@@ -449,6 +470,10 @@ TLI_DEFINE_STRING_INTERNAL("__strndup")
 /// char * __strtok_r(char *s, const char *delim, char **save_ptr);
 TLI_DEFINE_ENUM_INTERNAL(dunder_strtok_r)
 TLI_DEFINE_STRING_INTERNAL("__strtok_r")
+
+TLI_DEFINE_ENUM_INTERNAL(uflow)
+TLI_DEFINE_STRING_INTERNAL("__uflow")
+
 TLI_DEFINE_ENUM_INTERNAL(vasprintf)
 TLI_DEFINE_STRING_INTERNAL("__vasprintf")
 /// int __vsnprintf_chk(char *s, size_t n, int flags, size_t slen,
@@ -459,6 +484,17 @@ TLI_DEFINE_STRING_INTERNAL("__vsnprintf_chk")
 ///                    va_list ap);
 TLI_DEFINE_ENUM_INTERNAL(vsprintf_chk)
 TLI_DEFINE_STRING_INTERNAL("__vsprintf_chk")
+
+
+TLI_DEFINE_ENUM_INTERNAL(xmknod)
+TLI_DEFINE_STRING_INTERNAL("__xmknod")
+TLI_DEFINE_ENUM_INTERNAL(xmknodat)
+TLI_DEFINE_STRING_INTERNAL("__xmknodat")
+
+TLI_DEFINE_ENUM_INTERNAL(xstat)
+TLI_DEFINE_STRING_INTERNAL("__xstat")
+TLI_DEFINE_ENUM_INTERNAL(xstat64)
+TLI_DEFINE_STRING_INTERNAL("__xstat64")
 
 TLI_DEFINE_ENUM_INTERNAL(obstack_begin)
 TLI_DEFINE_STRING_INTERNAL("_obstack_begin")
@@ -496,6 +532,10 @@ TLI_DEFINE_STRING_INTERNAL("acoshl")
 /// long double acosl(long double x);
 TLI_DEFINE_ENUM_INTERNAL(acosl)
 TLI_DEFINE_STRING_INTERNAL("acosl")
+
+TLI_DEFINE_ENUM_INTERNAL(asctime)
+TLI_DEFINE_STRING_INTERNAL("asctime")
+
 /// double asin(double x);
 TLI_DEFINE_ENUM_INTERNAL(asin)
 TLI_DEFINE_STRING_INTERNAL("asin")
@@ -830,6 +870,11 @@ TLI_DEFINE_STRING_INTERNAL("fread_unlocked")
 TLI_DEFINE_ENUM_INTERNAL(free)
 TLI_DEFINE_STRING_INTERNAL("free")
 /// double frexp(double num, int *exp);
+
+TLI_DEFINE_ENUM_INTERNAL(freopen)
+TLI_DEFINE_STRING_INTERNAL("freopen")
+
+
 TLI_DEFINE_ENUM_INTERNAL(frexp)
 TLI_DEFINE_STRING_INTERNAL("frexp")
 /// float frexpf(float num, int *exp);
@@ -898,6 +943,10 @@ TLI_DEFINE_STRING_INTERNAL("getchar")
 /// int getchar_unlocked(void);
 TLI_DEFINE_ENUM_INTERNAL(getchar_unlocked)
 TLI_DEFINE_STRING_INTERNAL("getchar_unlocked")
+
+TLI_DEFINE_ENUM_INTERNAL(getcwd)
+TLI_DEFINE_STRING_INTERNAL("getcwd")
+
 /// char *getenv(const char *name);
 TLI_DEFINE_ENUM_INTERNAL(getenv)
 TLI_DEFINE_STRING_INTERNAL("getenv")
@@ -910,6 +959,13 @@ TLI_DEFINE_STRING_INTERNAL("getlogin_r")
 /// struct passwd *getpwnam(const char *name);
 TLI_DEFINE_ENUM_INTERNAL(getpwnam)
 TLI_DEFINE_STRING_INTERNAL("getpwnam")
+
+TLI_DEFINE_ENUM_INTERNAL(getrlimit)
+TLI_DEFINE_STRING_INTERNAL("getrlimit")
+TLI_DEFINE_ENUM_INTERNAL(getrusage)
+TLI_DEFINE_STRING_INTERNAL("getrusage")
+
+
 /// char *gets(char *s);
 TLI_DEFINE_ENUM_INTERNAL(gets)
 TLI_DEFINE_STRING_INTERNAL("gets")
@@ -949,6 +1005,10 @@ TLI_DEFINE_STRING_INTERNAL("ldexpl")
 /// long long int llabs(long long int j);
 TLI_DEFINE_ENUM_INTERNAL(llabs)
 TLI_DEFINE_STRING_INTERNAL("llabs")
+
+TLI_DEFINE_ENUM_INTERNAL(localtime)
+TLI_DEFINE_STRING_INTERNAL("localtime")
+
 /// double log(double x);
 TLI_DEFINE_ENUM_INTERNAL(log)
 TLI_DEFINE_STRING_INTERNAL("log")
@@ -1130,6 +1190,10 @@ TLI_DEFINE_STRING_INTERNAL("qsort")
 /// ssize_t read(int fildes, void *buf, size_t nbyte);
 TLI_DEFINE_ENUM_INTERNAL(read)
 TLI_DEFINE_STRING_INTERNAL("read")
+
+TLI_DEFINE_ENUM_INTERNAL(readdir)
+TLI_DEFINE_STRING_INTERNAL("readdir")
+
 /// ssize_t readlink(const char *path, char *buf, size_t bufsize);
 TLI_DEFINE_ENUM_INTERNAL(readlink)
 TLI_DEFINE_STRING_INTERNAL("readlink")
@@ -1182,9 +1246,17 @@ TLI_DEFINE_STRING_INTERNAL("setbuf")
 ///               struct itimerval *ovalue);
 TLI_DEFINE_ENUM_INTERNAL(setitimer)
 TLI_DEFINE_STRING_INTERNAL("setitimer")
+
+TLI_DEFINE_ENUM_INTERNAL(setrlimit)
+TLI_DEFINE_STRING_INTERNAL("setrlimit")
+
 /// int setvbuf(FILE *stream, char *buf, int type, size_t size);
 TLI_DEFINE_ENUM_INTERNAL(setvbuf)
 TLI_DEFINE_STRING_INTERNAL("setvbuf")
+
+TLI_DEFINE_ENUM_INTERNAL(signal)
+TLI_DEFINE_STRING_INTERNAL("signal")
+
 /// double sin(double x);
 TLI_DEFINE_ENUM_INTERNAL(sin)
 TLI_DEFINE_STRING_INTERNAL("sin")
@@ -1356,6 +1428,10 @@ TLI_DEFINE_STRING_INTERNAL("tanhl")
 /// long double tanl(long double x);
 TLI_DEFINE_ENUM_INTERNAL(tanl)
 TLI_DEFINE_STRING_INTERNAL("tanl")
+
+TLI_DEFINE_ENUM_INTERNAL(time)
+TLI_DEFINE_STRING_INTERNAL("time")
+
 /// clock_t times(struct tms *buffer);
 TLI_DEFINE_ENUM_INTERNAL(times)
 TLI_DEFINE_STRING_INTERNAL("times")
