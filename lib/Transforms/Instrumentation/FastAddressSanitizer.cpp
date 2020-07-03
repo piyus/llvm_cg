@@ -3884,7 +3884,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	setBoundsForArgv(F);
 
-	if (F.getName().startswith("build_message_string")) {
+	if (F.getName().startswith("def_fn_type")) {
 		errs() << "Before San\n" << F << "\n";
 	}
 
@@ -3981,7 +3981,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	instrumentPageFaultHandler(F, GetLengths, Stores);
 	instrumentOtherPointerUsage(F, DL);
 
-	if (F.getName().startswith("build_message_string")) {
+	if (F.getName().startswith("def_fn_type")) {
 		errs() << "After San\n" << F << "\n";
 	}
 
