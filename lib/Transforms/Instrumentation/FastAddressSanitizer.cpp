@@ -656,7 +656,10 @@ struct FastAddressSanitizer {
 	void recordAllUnsafeAccesses(Function &F, DenseSet<Value*> &UnsafeUses,
 		DenseMap<Value*, uint64_t> &UnsafePointers, DenseSet<CallBase*> &CallSites,
 		DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
-		DenseSet<AllocaInst*> &UnsafeAllocas);
+		DenseSet<AllocaInst*> &UnsafeAllocas,
+		DenseSet<Instruction*> &ICmpOrSub,
+		DenseSet<Instruction*> &IntToPtr,
+		DenseSet<Instruction*> &PtrToInt);
 	void patchDynamicAlloca(Function &F, AllocaInst *AI);
 	void patchStaticAlloca(Function &F, AllocaInst *AI);
 	//Value* getInterior(Function &F, Instruction *I, Value *V);
@@ -3373,37 +3376,76 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 }
 
 
-static void instrumentOtherPointerUsage(Function &F, const DataLayout &DL) {
-  for (auto &BB : F) {
-    for (auto &Inst : BB) {
-			Instruction *I = &Inst;
-			ICmpInst *IC = dyn_cast<ICmpInst>(I);
-			BinaryOperator *BO = dyn_cast<BinaryOperator>(I);
+static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,
+	DenseSet<Instruction*> &IntToPtr,
+	DenseSet<Instruction*> &PtrToInt,
+	const DataLayout &DL) {
 
-			if (IC || (BO && BO->getOpcode() == Instruction::Sub)) {
-				Value *Op1 = I->getOperand(0);
-				Value *Op2 = I->getOperand(1);
+	for (auto I : ICmpOrSub) {
+		Value *Op1 = I->getOperand(0);
+		Value *Op2 = I->getOperand(1);
 
-				if (Op1->getType()->isPointerTy() && Op2->getType()->isPointerTy()) {
-					if (!isa<AllocaInst>(Op1) && !isa<Constant>(Op1)) {
-						Value *Base1 = GetUnderlyingObject(Op1, DL, 0);
-						if (!isa<AllocaInst>(Base1)) {
-							auto NoInt = getNoInterior(F, I, Op1);
-							I->setOperand(0, NoInt);
-						}
-					}
-
-					if (!isa<AllocaInst>(Op2) && !isa<Constant>(Op2)) {
-						Value *Base2 = GetUnderlyingObject(Op2, DL, 0);
-						if (!isa<AllocaInst>(Base2)) {
-							auto NoInt = getNoInterior(F, I, Op2);
-							I->setOperand(1, NoInt);
-						}
-					}
-
+		if (Op1->getType()->isPointerTy() && Op2->getType()->isPointerTy()) {
+			if (!isa<AllocaInst>(Op1) && !isa<Constant>(Op1)) {
+				Value *Base1 = GetUnderlyingObject(Op1, DL, 0);
+				if (!isa<AllocaInst>(Base1)) {
+					auto NoInt = getNoInterior(F, I, Op1);
+					I->setOperand(0, NoInt);
 				}
+			}
 
+			if (!isa<AllocaInst>(Op2) && !isa<Constant>(Op2)) {
+				Value *Base2 = GetUnderlyingObject(Op2, DL, 0);
+				if (!isa<AllocaInst>(Base2)) {
+					auto NoInt = getNoInterior(F, I, Op2);
+					I->setOperand(1, NoInt);
+				}
+			}
 
+		}
+	}
+
+	for (auto I : IntToPtr) {
+		auto IntOp = I->getOperand(0);
+		if (!isa<Constant>(IntOp)) {
+#if 0
+			Instruction *Inst = dyn_cast<Instruction>(IntOp);
+			assert(Inst || isa<Argument>(IntOp));
+			if (Inst == NULL) {
+				Inst = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+			}
+			else {
+				if (isa<PHINode>(Inst)) {
+					Inst = Inst->getParent()->getFirstNonPHI();
+				}
+				else {
+					Inst = Inst->getNextNode();
+				}
+			}
+			IRBuilder<> IRB(Inst);
+			Instruction* Clean = dyn_cast<Instruction>(IRB.CreateAnd(IntOp, (1ULL << 63) - 1));
+			assert(Clean && "clean not inst");
+			IntOp->replaceAllUsesWith(Clean);
+			Clean->setOperand(0, IntOp);
+#endif
+
+			IRBuilder<> IRB(I);
+			Instruction* Dirty = dyn_cast<Instruction>(IRB.CreateOr(IntOp, (1ULL << 63)));
+			I->setOperand(0, Dirty);
+
+		}
+	}
+
+	for (auto I : PtrToInt) {
+		auto PtrOp = I->getOperand(0);
+		if (!isa<AllocaInst>(PtrOp) && !isa<Constant>(PtrOp)) {
+			Value *Base = GetUnderlyingObject(PtrOp, DL, 0);
+			if (!isa<AllocaInst>(Base)) {
+				IRBuilder<> IRB(I->getNextNode());
+				Instruction* Clean = dyn_cast<Instruction>(IRB.CreateAnd(I, (1ULL << 63) - 1));
+				assert(Clean && "clean not inst");
+				I->replaceAllUsesWith(Clean);
+				Clean->setOperand(0, I);
 			}
 		}
 	}
@@ -3556,7 +3598,10 @@ static void setBoundsForArgv(Function &F)
 void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*> &UnsafeUses,
 	DenseMap<Value*, uint64_t> &UnsafePointers, DenseSet<CallBase*> &CallSites,
 	DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
-	DenseSet<AllocaInst*> &UnsafeAllocas)
+	DenseSet<AllocaInst*> &UnsafeAllocas,
+	DenseSet<Instruction*> &ICmpOrSub,
+	DenseSet<Instruction*> &IntToPtr,
+	DenseSet<Instruction*> &PtrToInt)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
   Value *Addr;
@@ -3606,6 +3651,20 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 							UnsafeUses.insert(Ret);
 						}
           }
+				}
+				else if (auto Ret = dyn_cast<IntToPtrInst>(&Inst)) {
+					IntToPtr.insert(Ret);
+				}
+				else if (auto Ret = dyn_cast<PtrToIntInst>(&Inst)) {
+					PtrToInt.insert(Ret);
+				}
+				else if (auto Ret = dyn_cast<ICmpInst>(&Inst)) {
+					ICmpOrSub.insert(Ret);
+				}
+				else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
+					if (BO->getOpcode() == Instruction::Sub) {
+						ICmpOrSub.insert(BO);
+					}
 				}
 			}
 
@@ -3879,17 +3938,20 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseMap<Value*, Value*> ReplacementMap;
 	DenseMap<Value*, Value*> PtrToBaseMap;
 	DenseSet<Value*> GetLengths;
+	DenseSet<Instruction*> ICmpOrSub;
+	DenseSet<Instruction*> IntToPtr;
+	DenseSet<Instruction*> PtrToInt;
 
 	createReplacementMap(&F, ReplacementMap);
 
 	setBoundsForArgv(F);
 
-	if (F.getName().startswith("def_fn_type")) {
+	if (F.getName().startswith("cpp_push_buffer")) {
 		errs() << "Before San\n" << F << "\n";
 	}
 
 	recordAllUnsafeAccesses(F, UnsafeUses, UnsafePointers, CallSites,
-		RetSites, Stores, UnsafeAllocas);
+		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt);
 
 	if (UnsafePointers.empty()) {
 		return true;
@@ -3979,9 +4041,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	instrumentPageFaultHandler(F, GetLengths, Stores);
-	instrumentOtherPointerUsage(F, DL);
+	instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
-	if (F.getName().startswith("def_fn_type")) {
+	if (F.getName().startswith("cpp_push_buffer")) {
 		errs() << "After San\n" << F << "\n";
 	}
 
