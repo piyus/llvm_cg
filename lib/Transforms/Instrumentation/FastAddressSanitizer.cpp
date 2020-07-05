@@ -3290,7 +3290,7 @@ static Value* getBaseIfInterior(Function &F, Value *V, const DataLayout &DL, Den
 	return NULL;
 }
 
-static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, DenseSet<Value*> &GetLengths, bool call) {
+static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, DenseSet<Value*> &GetLengths, bool call, int id) {
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 	FunctionCallee Fn;
@@ -3298,6 +3298,7 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 	if (F.getSubprogram() && I->getDebugLoc()) {
 		LineNum = I->getDebugLoc()->getLine();
 	}
+	LineNum = (LineNum << 16) | id;
 	auto PtrTy = Ptr->getType();
 	auto LineTy = IRB.getInt32Ty(); //Line->getType();
 	auto M = F.getParent();
@@ -3452,30 +3453,32 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 }
  
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths, DenseSet<StoreInst*> &Stores) {
+	int id = 0;
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			Instruction *I = &Inst;
 			Value *Ret;
 			if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
-				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false);
+				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++);
 				LI->setOperand(0, Ret);
 			}
 			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
-				Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
-				Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false);
+				//Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
+				Value *Val = SI->getValueOperand();
+				Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++);
 				SI->setOperand(1, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
-				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false);
+				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++);
 				AI->setOperand(0, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false);
+				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++);
 				AI->setOperand(0, Ret);
 			}
 			else if (auto *CI = dyn_cast<CallBase>(I)) {
 				if (CI->isIndirectCall()) {
-					Ret = addHandler(F, I, CI->getCalledOperand(), NULL, GetLengths, true);
+					Ret = addHandler(F, I, CI->getCalledOperand(), NULL, GetLengths, true, id++);
 				}
 			}
 		}
@@ -3946,7 +3949,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	setBoundsForArgv(F);
 
-	if (F.getName().startswith("cpp_push_buffer")) {
+	if (F.getName().startswith("pp_base_format")) {
 		errs() << "Before San\n" << F << "\n";
 	}
 
@@ -4043,7 +4046,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	instrumentPageFaultHandler(F, GetLengths, Stores);
 	instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
-	if (F.getName().startswith("cpp_push_buffer")) {
+	if (F.getName().startswith("pp_base_format")) {
 		errs() << "After San\n" << F << "\n";
 	}
 
