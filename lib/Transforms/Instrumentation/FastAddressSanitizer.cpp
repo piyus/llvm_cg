@@ -3406,6 +3406,7 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 		}
 	}
 
+#if 0
 	for (auto I : IntToPtr) {
 		auto IntOp = I->getOperand(0);
 		if (!isa<Constant>(IntOp)) {
@@ -3450,6 +3451,7 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 			}
 		}
 	}
+#endif
 }
  
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths, DenseSet<StoreInst*> &Stores) {
