@@ -3894,12 +3894,13 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			LibCall = true;
 		}
 		DenseMap<Value*, Value*> InteriorToBase;
+    AttributeList PAL = CS->getAttributes();
     for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
 			if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
                                        CS->doesNotAccessMemory()))) {
     		Value *A = *ArgIt;
       	if (A->getType()->isPointerTy()) {
-					if (LibCall) {
+					if (LibCall || PAL.hasParamAttribute(ArgIt - Start, Attribute::ByVal)) {
 						auto Interior = getNoInterior(F, CS, A);
 						CS->setArgOperand(ArgIt - Start, Interior);
 					}
@@ -3924,10 +3925,33 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 	}
 }
 
+static void copyArgsByValToAllocas(Function &F) {
+  Instruction *CopyInsertPoint = &F.front().front();
+  IRBuilder<> IRB(CopyInsertPoint);
+  const DataLayout &DL = F.getParent()->getDataLayout();
+  for (Argument &Arg : F.args()) {
+    if (Arg.hasByValAttr()) {
+      Type *Ty = Arg.getType()->getPointerElementType();
+      const Align Alignment =
+          DL.getValueOrABITypeAlignment(Arg.getParamAlign(), Ty);
+
+      AllocaInst *AI = IRB.CreateAlloca(
+          Ty, nullptr,
+          (Arg.hasName() ? Arg.getName() : "Arg" + Twine(Arg.getArgNo())) +
+              ".byval");
+      AI->setAlignment(Alignment);
+      Arg.replaceAllUsesWith(AI);
+
+      uint64_t AllocSize = DL.getTypeAllocSize(Ty);
+      IRB.CreateMemCpy(AI, Alignment, &Arg, Alignment, AllocSize);
+    }
+  }
+}
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
+	//copyArgsByValToAllocas(F);
 	//errs() << "Printing function\n" << F << "\n";
 	createInteriorFn(&F);
 
@@ -3955,7 +3979,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	setBoundsForArgv(F);
 
-	if (F.getName().startswith("pop_scope")) {
+	if (F.getName().startswith("c_parser_binary_expression")) {
 		errs() << "Before San\n" << F << "\n";
 	}
 
@@ -4052,7 +4076,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	instrumentPageFaultHandler(F, GetLengths, Stores);
 	//instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
-	if (F.getName().startswith("pop_scope")) {
+	if (F.getName().startswith("c_parser_binary_expression")) {
 		errs() << "After San\n" << F << "\n";
 	}
 
