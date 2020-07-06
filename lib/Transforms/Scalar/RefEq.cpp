@@ -104,8 +104,65 @@ INITIALIZE_PASS_BEGIN(RefEqLegacyPass, "refeq", "RefEq Optimization",
 INITIALIZE_PASS_END(RefEqLegacyPass, "refeq", "RefEq Optimization",
                     false, false)
 
+static Value* getNoInterior(Function &F, Instruction *I, Value *V)
+{
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+
+	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
+	auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
+	return IRB.CreateIntToPtr(Interior, V->getType());
+}
+
+static bool isPointerOperand(Value *V) {
+  return V->getType()->isPointerTy() || isa<PtrToIntInst>(V);
+}
+
+static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,
+	const DataLayout &DL) {
+
+	for (auto I : ICmpOrSub) {
+		Value *Op1 = I->getOperand(0);
+		Value *Op2 = I->getOperand(1);
+
+		if (isPointerOperand(Op1) && isPointerOperand(Op2)) {
+			if (!isa<AllocaInst>(Op1) && !isa<Constant>(Op1)) {
+				Value *Base1 = GetUnderlyingObject(Op1, DL, 0);
+				if (!isa<AllocaInst>(Base1)) {
+					auto NoInt = getNoInterior(F, I, Op1);
+					I->setOperand(0, NoInt);
+				}
+			}
+
+			if (!isa<AllocaInst>(Op2) && !isa<Constant>(Op2)) {
+				Value *Base2 = GetUnderlyingObject(Op2, DL, 0);
+				if (!isa<AllocaInst>(Base2)) {
+					auto NoInt = getNoInterior(F, I, Op2);
+					I->setOperand(1, NoInt);
+				}
+			}
+
+		}
+	}
+}
 
 /// This is the main transformation entry point for a function.
 bool RefEqLegacyPass::runOnFunction(Function &F) {
+  const DataLayout &DL = F.getParent()->getDataLayout();
+	DenseSet<Instruction*> ICmpOrSub;
+
+  for (auto &BB : F) {
+    for (auto &Inst : BB) {
+			if (auto Ret = dyn_cast<ICmpInst>(&Inst)) {
+				ICmpOrSub.insert(Ret);
+			}
+			else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
+				if (BO->getOpcode() == Instruction::Sub) {
+					ICmpOrSub.insert(BO);
+				}
+			}
+		}
+	}
+	instrumentOtherPointerUsage(F, ICmpOrSub, DL);
 	return true;
 }

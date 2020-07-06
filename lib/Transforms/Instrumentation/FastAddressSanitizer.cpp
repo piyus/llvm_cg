@@ -3371,6 +3371,10 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 
+	if (isa<PtrToIntInst>(V)) {
+		return IRB.CreateAnd(V, (1ULL << 63) - 1);
+	}
+
 	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
 	auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
 	return IRB.CreateIntToPtr(Interior, V->getType());
@@ -4046,7 +4050,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	instrumentPageFaultHandler(F, GetLengths, Stores);
-	instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
+	//instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
 	if (F.getName().startswith("pop_scope")) {
 		errs() << "After San\n" << F << "\n";
