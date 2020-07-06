@@ -353,6 +353,7 @@ void PassManagerBuilder::addFunctionSimplificationPasses(
   MPM.add(createSROAPass());
   MPM.add(createEarlyCSEPass(true /* Enable mem-ssa. */)); // Catch trivial redundancies
 
+
   if (OptLevel > 1) {
     if (EnableGVNHoist)
       MPM.add(createGVNHoistPass());
@@ -565,6 +566,8 @@ void PassManagerBuilder::populateModulePassManager(
   MPM.add(createGlobalOptimizerPass()); // Optimize out global vars
   // Promote any localized global vars.
   MPM.add(createPromoteMemoryToRegisterPass());
+
+  MPM.add(createRefEqPass());
 
   MPM.add(createDeadArgEliminationPass()); // Dead argument elimination
 

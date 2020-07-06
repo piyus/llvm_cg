@@ -3951,7 +3951,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	setBoundsForArgv(F);
 
-	if (F.getName().startswith("pp_base_format")) {
+	if (F.getName().startswith("pop_scope")) {
 		errs() << "Before San\n" << F << "\n";
 	}
 
@@ -4048,7 +4048,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	instrumentPageFaultHandler(F, GetLengths, Stores);
 	instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
-	if (F.getName().startswith("pp_base_format")) {
+	if (F.getName().startswith("pop_scope")) {
 		errs() << "After San\n" << F << "\n";
 	}
 

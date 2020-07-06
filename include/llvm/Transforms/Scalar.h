@@ -334,6 +334,7 @@ FunctionPass *createDivRemPairsPass();
 // calls and/or combining multiple stores into memset's.
 //
 FunctionPass *createMemCpyOptPass();
+FunctionPass *createRefEqPass();
 
 //===----------------------------------------------------------------------===//
 //
