@@ -109,6 +109,10 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 
+	if (isa<PtrToIntInst>(V)) {
+		return IRB.CreateAnd(V, (1ULL << 63) - 1);
+	}
+
 	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
 	auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
 	return IRB.CreateIntToPtr(Interior, V->getType());
@@ -124,8 +128,10 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 	for (auto I : ICmpOrSub) {
 		Value *Op1 = I->getOperand(0);
 		Value *Op2 = I->getOperand(1);
+		bool IsOp1Ptr = isPointerOperand(Op1);
+		bool IsOp2Ptr = isPointerOperand(Op2);
 
-		if (isPointerOperand(Op1) && isPointerOperand(Op2)) {
+		if (IsOp1Ptr) {
 			if (!isa<AllocaInst>(Op1) && !isa<Constant>(Op1)) {
 				Value *Base1 = GetUnderlyingObject(Op1, DL, 0);
 				if (!isa<AllocaInst>(Base1)) {
@@ -133,7 +139,9 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 					I->setOperand(0, NoInt);
 				}
 			}
+		}
 
+		if (IsOp2Ptr) {
 			if (!isa<AllocaInst>(Op2) && !isa<Constant>(Op2)) {
 				Value *Base2 = GetUnderlyingObject(Op2, DL, 0);
 				if (!isa<AllocaInst>(Base2)) {
@@ -141,7 +149,6 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 					I->setOperand(1, NoInt);
 				}
 			}
-
 		}
 	}
 }

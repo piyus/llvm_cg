@@ -3893,6 +3893,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
     if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
 			LibCall = true;
 		}
+		//errs() << "LibCall " << LibCall << "  " << *CS << "\n";
 		DenseMap<Value*, Value*> InteriorToBase;
     AttributeList PAL = CS->getAttributes();
     for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
@@ -3979,7 +3980,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	setBoundsForArgv(F);
 
-	if (F.getName().startswith("c_parser_binary_expression")) {
+	if (F.getName().startswith("c_add_case_label")) {
 		errs() << "Before San\n" << F << "\n";
 	}
 
@@ -4076,7 +4077,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	instrumentPageFaultHandler(F, GetLengths, Stores);
 	//instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
-	if (F.getName().startswith("c_parser_binary_expression")) {
+	if (F.getName().startswith("c_add_case_label")) {
 		errs() << "After San\n" << F << "\n";
 	}
 
