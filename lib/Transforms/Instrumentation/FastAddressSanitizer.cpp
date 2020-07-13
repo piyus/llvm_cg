@@ -3380,7 +3380,42 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	return IRB.CreateIntToPtr(Interior, V->getType());
 }
 
+static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,
+	DenseSet<Instruction*> &IntToPtr, DenseSet<Instruction*> &PtrToInt, const DataLayout &DL)
+{
 
+	int id = 10000;
+	for (auto I : ICmpOrSub) {
+
+		IRBuilder<> IRB(I);
+		auto LineTy = IRB.getInt32Ty(); //Line->getType();
+		auto M = F.getParent();
+		auto Name = IRB.CreateGlobalStringPtr(M->getName());
+		auto NameTy = Name->getType();
+
+		Value *Op1 = I->getOperand(0);
+		Value *Op2 = I->getOperand(1);
+		auto Fn = M->getOrInsertFunction("san_icmp", IRB.getVoidTy(), Op1->getType(), Op2->getType(), LineTy, NameTy);
+		int LineNum = 0;
+		if (F.getSubprogram() && I->getDebugLoc()) {
+			LineNum = I->getDebugLoc()->getLine();
+		}
+
+		LineNum = (LineNum << 16) | id;
+		id++;
+		auto *Line = ConstantInt::get(LineTy, LineNum);
+		auto Call = IRB.CreateCall(Fn, {Op1, Op2, Line, Name});
+		if (F.getSubprogram()) {
+    	if (auto DL = I->getDebugLoc()) {
+      	Call->setDebugLoc(DL);
+			}
+  	}
+
+	}
+
+}
+
+#if 0
 static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,
 	DenseSet<Instruction*> &IntToPtr,
 	DenseSet<Instruction*> &PtrToInt,
@@ -3457,6 +3492,7 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 	}
 #endif
 }
+#endif
  
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths, DenseSet<StoreInst*> &Stores) {
 	int id = 0;
@@ -3980,7 +4016,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	setBoundsForArgv(F);
 
-	if (F.getName().startswith("c_add_case_label")) {
+	if (F.getName().startswith("cpp_push_buffer")) {
 		errs() << "Before San\n" << F << "\n";
 	}
 
@@ -4075,9 +4111,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	instrumentPageFaultHandler(F, GetLengths, Stores);
-	//instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
+	instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
-	if (F.getName().startswith("c_add_case_label")) {
+	if (F.getName().startswith("cpp_push_buffer")) {
 		errs() << "After San\n" << F << "\n";
 	}
 
