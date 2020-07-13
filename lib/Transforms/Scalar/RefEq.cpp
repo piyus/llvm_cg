@@ -186,11 +186,19 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			if (auto Ret = dyn_cast<ICmpInst>(&Inst)) {
-				ICmpOrSub.insert(Ret);
+				Value *Op1 = Ret->getOperand(0);
+				Value *Op2 = Ret->getOperand(1);
+				if (isPointerOperand(Op1) || isPointerOperand(Op2)) {
+					ICmpOrSub.insert(Ret);
+				}
 			}
 			else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
 				if (BO->getOpcode() == Instruction::Sub) {
-					ICmpOrSub.insert(BO);
+					Value *Op1 = BO->getOperand(0);
+					Value *Op2 = BO->getOperand(1);
+					if (isPointerOperand(Op1) && isPointerOperand(Op2)) {
+						ICmpOrSub.insert(BO);
+					}
 				}
 			}
 		}
