@@ -3745,11 +3745,11 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 				else if (auto Ret = dyn_cast<ICmpInst>(&Inst)) {
 					ICmpOrSub.insert(Ret);
 				}
-				else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
+				/*else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
 					if (BO->getOpcode() == Instruction::Sub) {
 						ICmpOrSub.insert(BO);
 					}
-				}
+				}*/
 			}
 
 			if (auto SI = dyn_cast<StoreInst>(&Inst)) {
