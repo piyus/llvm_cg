@@ -104,6 +104,31 @@ INITIALIZE_PASS_BEGIN(RefEqLegacyPass, "refeq", "RefEq Optimization",
 INITIALIZE_PASS_END(RefEqLegacyPass, "refeq", "RefEq Optimization",
                     false, false)
 
+
+static Value* getNoInterior(Function &F, Instruction *I, Value *V)
+{
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+	Type *Ty = NULL;
+
+	if (isa<PtrToIntInst>(V)) {
+		Ty = V->getType();
+		V = IRB.CreateIntToPtr(V, IRB.getInt8PtrTy());
+	}
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
+	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<63)-1)});
+	if (Ty) {
+		V = IRB.CreatePtrToInt(V, Ty);
+	}
+	return V;
+
+	//auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
+	//auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
+	//return IRB.CreateIntToPtr(Interior, V->getType());
+}
+
+/*
 static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 {
 	IRBuilder<> IRB(I->getParent());
@@ -117,7 +142,7 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
 	return IRB.CreateIntToPtr(Interior, V->getType());
 }
-
+*/
 static bool isPointerOperand(Value *V) {
   return V->getType()->isPointerTy() || isa<PtrToIntInst>(V);
 }
@@ -170,6 +195,8 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
 			}
 		}
 	}
+	//dbgs() << "Before Ref::\n" << F << "\n";
 	instrumentOtherPointerUsage(F, ICmpOrSub, DL);
+	//dbgs() << "After Ref::\n" << F << "\n";
 	return true;
 }

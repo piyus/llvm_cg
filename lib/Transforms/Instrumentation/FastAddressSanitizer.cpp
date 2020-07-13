@@ -3034,6 +3034,12 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
 	assert(CmpInst && "no cmp inst");
 
+	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
+	if (Intrinsic) {
+		errs() << "Base is Intrinsic\n" << *Base << "\n";
+		assert(0);
+	}
+
 	bool Ret = postDominatesAnyUse(InstPtr, PDT, UnsafeUses);
 	if (Ret) {
 		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
@@ -3068,6 +3074,11 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	GetLengths.insert(Size);
 	LenToBaseMap[Size] = Base;
 
+	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
+	if (Intrinsic) {
+		errs() << "Base is Intrinsic\n" << *Base << "\n";
+		assert(0);
+	}
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
@@ -3366,6 +3377,7 @@ static void addArgument(Function &F, Value *Ptr) {
 	IRB.CreateCall(Fn, {Ptr, Line, Name});
 }
 
+/*
 static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 {
 	IRBuilder<> IRB(I->getParent());
@@ -3378,6 +3390,30 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
 	auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
 	return IRB.CreateIntToPtr(Interior, V->getType());
+}
+*/
+
+static Value* getNoInterior(Function &F, Instruction *I, Value *V)
+{
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+	Type *Ty = NULL;
+
+	if (isa<PtrToIntInst>(V)) {
+		Ty = V->getType();
+		V = IRB.CreateIntToPtr(V, IRB.getInt8PtrTy());
+	}
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
+	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<63)-1)});
+	if (Ty) {
+		V = IRB.CreatePtrToInt(V, Ty);
+	}
+	return V;
+
+	//auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
+	//auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
+	//return IRB.CreateIntToPtr(Interior, V->getType());
 }
 
 static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,
@@ -3666,22 +3702,25 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 			else {
 				if (auto CS = dyn_cast<CallBase>(&Inst)) {
         	if (!Inst.isLifetimeStartOrEnd() && !isa<DbgInfoIntrinsic>(Inst)) {
-          	for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
-							if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
-                                               CS->doesNotAccessMemory()))) {
-            		Value *A = *ArgIt;
-              	if (A->getType()->isPointerTy()) {
-									auto ElemTy = A->getType()->getPointerElementType();
-									if (ElemTy->isSized()) {
-          					uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-										addUnsafePointer(UnsafePointers, A, Sz);
-										//errs() << "Call-Unsafe: " << *A << "\n";
-										CallSites.insert(CS);
-										UnsafeUses.insert(CS);
-									}
-              	}
-							}
-            }
+						auto II = dyn_cast<IntrinsicInst>(&Inst);
+						if (!II || II->getIntrinsicID() != Intrinsic::ptrmask) {
+          		for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
+								if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
+              	                                 CS->doesNotAccessMemory()))) {
+            			Value *A = *ArgIt;
+              		if (A->getType()->isPointerTy()) {
+										auto ElemTy = A->getType()->getPointerElementType();
+										if (ElemTy->isSized()) {
+          						uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+											addUnsafePointer(UnsafePointers, A, Sz);
+											//errs() << "Call-Unsafe: " << *A << "\n";
+											CallSites.insert(CS);
+											UnsafeUses.insert(CS);
+										}
+              		}
+								}
+            	}
+						}
           }
 				}
 				else if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
@@ -3765,6 +3804,9 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 				if (Offset > (int64_t)BaseSize) {
 					if (Static) {
 						errs() << "Out of bound array access\n";
+						errs() << F << "\n";
+						errs() << "Base: " << *Base << "\n";
+						errs() << "Val: " << *V << "\n";
 						exit(0);
 					}
 					UnsafeMap[V] = std::make_pair(Base, Offset);
@@ -4016,7 +4058,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	setBoundsForArgv(F);
 
-	if (F.getName().startswith("cpp_push_buffer")) {
+  if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
 		errs() << "Before San\n" << F << "\n";
 	}
 
@@ -4113,7 +4155,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	instrumentPageFaultHandler(F, GetLengths, Stores);
 	instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
-	if (F.getName().startswith("cpp_push_buffer")) {
+  if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
 		errs() << "After San\n" << F << "\n";
 	}
 
