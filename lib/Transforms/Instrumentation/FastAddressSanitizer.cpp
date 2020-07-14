@@ -4064,9 +4064,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	recordAllUnsafeAccesses(F, UnsafeUses, UnsafePointers, CallSites,
 		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt);
 
-	if (UnsafePointers.empty()) {
-		return true;
-	}
+	//if (UnsafePointers.empty()) {
+	//	return true;
+	//}
 
 	DominatorTree DT(F);
 	//LoopInfo LI(DT);
