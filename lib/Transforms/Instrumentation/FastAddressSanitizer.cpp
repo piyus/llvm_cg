@@ -2924,7 +2924,7 @@ Value* getInterior(Function &F, Instruction *I, Value *V)
 	IRB.SetInsertPoint(I);
 
 	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
-	auto Interior = IRB.CreateOr(VInt, (1ULL << 63));
+	auto Interior = IRB.CreateOr(VInt, (0xcabeULL << 48));
 	return IRB.CreateIntToPtr(Interior, V->getType());
 }
 
@@ -3405,7 +3405,7 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	}
 	Function *TheFn =
       Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
-	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<63)-1)});
+	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48)-1)});
 	if (Ty) {
 		V = IRB.CreatePtrToInt(V, Ty);
 	}
@@ -3419,13 +3419,12 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,
 	DenseSet<Instruction*> &IntToPtr, DenseSet<Instruction*> &PtrToInt, const DataLayout &DL)
 {
-
+	auto M = F.getParent();
 	int id = 10000;
 	for (auto I : ICmpOrSub) {
 
 		IRBuilder<> IRB(I);
 		auto LineTy = IRB.getInt32Ty(); //Line->getType();
-		auto M = F.getParent();
 		auto Name = IRB.CreateGlobalStringPtr(M->getName());
 		auto NameTy = Name->getType();
 

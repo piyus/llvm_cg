@@ -117,7 +117,7 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	}
 	Function *TheFn =
       Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
-	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<63)-1)});
+	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48)-1)});
 	if (Ty) {
 		V = IRB.CreatePtrToInt(V, Ty);
 	}
