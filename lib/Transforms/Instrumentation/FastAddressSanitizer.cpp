@@ -3711,10 +3711,10 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 										auto ElemTy = A->getType()->getPointerElementType();
 										if (ElemTy->isSized()) {
           						uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-											addUnsafePointer(UnsafePointers, A, Sz);
+											//addUnsafePointer(UnsafePointers, A, Sz);
 											//errs() << "Call-Unsafe: " << *A << "\n";
 											CallSites.insert(CS);
-											UnsafeUses.insert(CS);
+											//UnsafeUses.insert(CS);
 										}
               		}
 								}
@@ -3729,9 +3729,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 						auto ElemTy = RetVal->getType()->getPointerElementType();
 						if (ElemTy->isSized()) {
           		uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-							addUnsafePointer(UnsafePointers, RetVal, Sz);
+							//addUnsafePointer(UnsafePointers, RetVal, Sz);
 							RetSites.insert(Ret);
-							UnsafeUses.insert(Ret);
+							//UnsafeUses.insert(Ret);
 						}
           }
 				}
