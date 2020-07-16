@@ -3625,6 +3625,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 		}
 	}
 
+#if 0
 	int NumArgsAdded = 0;
   for (Argument &Arg : F.args()) {
 		if (Arg.getType()->isPointerTy()) {
@@ -3635,6 +3636,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	if (!NumArgsAdded) {
 		addArgument(F, Constant::getNullValue(F.getType()));
 	}
+#endif
 }
 
 
