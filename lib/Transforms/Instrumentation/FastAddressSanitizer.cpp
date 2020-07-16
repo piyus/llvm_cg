@@ -664,11 +664,27 @@ struct FastAddressSanitizer {
 	void patchStaticAlloca(Function &F, AllocaInst *AI);
 	//Value* getInterior(Function &F, Instruction *I, Value *V);
 	void addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
-		Value *Size, Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, int &callsites);
+		Value *Size, Value *TySize, DenseSet<Value*> &UnsafeUses, int &callsites,
+		bool MayNull);
 	void addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
-		Value *TySize, PostDominatorTree &PDT,
-		DenseSet<Value*> &UnsafeUses, int &callsites, DenseSet<Value*> &GetLengths,
-		DenseMap<Value*, Value*> &LenToBaseMap);
+		Value *TySize,
+		int &callsites, DenseSet<Value*> &GetLengths,
+		DenseMap<Value*, Value*> &LenToBaseMap
+		);
+
+	void addBoundsCheckWithLenAtUseHelper(Function &F, 
+			Value *Base, Value *Ptr, Value *TySize, Instruction* InstPtr,
+			int &callsites, 
+			DenseSet<Value*> &GetLengths,
+			DenseMap<Value*, Value*> &LenToBaseMap);
+
+	void addBoundsCheckWithLenAtUse(Function &F, 
+			Value *Base, Value *Ptr, Value *TySize,
+			DenseSet<Value*> &UnsafeUses,
+			int &callsites, 
+			DenseSet<Value*> &GetLengths,
+			DenseMap<Value*, Value*> &LenToBaseMap);
+
 	bool isSafeAlloca(const AllocaInst *AllocaPtr);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
@@ -3008,7 +3024,8 @@ instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, V
 
 void FastAddressSanitizer::
 addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size, 
-	Value *TySize, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, int &callsites)
+	Value *TySize, DenseSet<Value*> &UnsafeUses, int &callsites,
+	bool MayNull)
 {
 	auto InstPtr = dyn_cast<Instruction>(Ptr);
 	assert(InstPtr && "Invalid Ptr");
@@ -3040,8 +3057,7 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 		assert(0);
 	}
 
-	bool Ret = postDominatesAnyUse(InstPtr, PDT, UnsafeUses);
-	if (Ret) {
+	if (!MayNull) {
 		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
 	}
 	else {
@@ -3051,10 +3067,64 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 }
 
 void FastAddressSanitizer::
+addBoundsCheckWithLenAtUseHelper(Function &F, 
+	Value *Base, Value *Ptr, Value *TySize, Instruction* InstPtr,
+	int &callsites, 
+	DenseSet<Value*> &GetLengths,
+	DenseMap<Value*, Value*> &LenToBaseMap)
+{
+	IRBuilder<> IRB(InstPtr);
+
+	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
+																 IRB.CreateBitCast(Base, Int32PtrTy),
+																 ConstantInt::get(Int32Ty, -1));
+	auto Size = IRB.CreateLoad(Int32Ty, SizeLoc);
+	GetLengths.insert(Size);
+	LenToBaseMap[Size] = Base;
+
+	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
+	if (Intrinsic) {
+		errs() << "Base is Intrinsic\n" << *Base << "\n";
+		assert(0);
+	}
+
+	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
+
+	Value *Limit = IRB.CreateGEP(Int8Ty, Base8, Size);
+	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
+
+	
+	auto Cmp1 = IRB.CreateICmpULT(Ptr8, Base8);
+	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
+	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
+	auto CmpInst = dyn_cast<Instruction>(Cmp);
+	assert(CmpInst && "no cmp inst");
+	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
+	callsites++;
+}
+
+void FastAddressSanitizer::
+addBoundsCheckWithLenAtUse(Function &F, Value *Base, Value *Ptr, Value *TySize,
+	DenseSet<Value*> &UnsafeUses, int &callsites, DenseSet<Value*> &GetLengths, 
+	DenseMap<Value*, Value*> &LenToBaseMap)
+{
+	for (const Use &UI : Ptr->uses()) {
+	  auto I = cast<Instruction>(UI.getUser());
+		if (UnsafeUses.count(I)) {
+			if (!isNonAccessInst(I, Ptr)) {
+				addBoundsCheckWithLenAtUseHelper(F, Base, Ptr, TySize, I, callsites, GetLengths, LenToBaseMap);
+			}
+		}
+	}
+}
+
+void FastAddressSanitizer::
 addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
-	Value *TySize, PostDominatorTree &PDT, 
-	DenseSet<Value*> &UnsafeUses, int &callsites,
-	DenseSet<Value*> &GetLengths, DenseMap<Value*, Value*> &LenToBaseMap)
+	Value *TySize,
+	int &callsites,
+	DenseSet<Value*> &GetLengths, 
+	DenseMap<Value*, Value*> &LenToBaseMap)
 {
 	auto InstPtr = dyn_cast<Instruction>(Ptr);
 	assert(InstPtr && "Invalid Ptr");
@@ -3093,13 +3163,7 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
 	assert(CmpInst && "no cmp inst");
 
-	bool Ret = postDominatesAnyUse(InstPtr, PDT, UnsafeUses);
-	if (Ret) {
-		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
-	}
-	else {
-		instrumentAllUses(F, InstPtr, UnsafeUses, Cmp, Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
-	}
+	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
 	callsites++;
 }
 
@@ -4052,6 +4116,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Instruction*> ICmpOrSub;
 	DenseSet<Instruction*> IntToPtr;
 	DenseSet<Instruction*> PtrToInt;
+	DenseSet<Value*> PtrMayBeNull;
 
 	createReplacementMap(&F, ReplacementMap);
 
@@ -4079,13 +4144,24 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseMap<Value*, DenseSet<Value*>> BaseToPtrsMap;
 
 	for (auto Ptr : TmpSet) {
+
+		bool MayNull = false;
+		auto PtrI = dyn_cast<Instruction>(Ptr);
+		assert(PtrI && "Ptr is not an Instruction");
+		if (!postDominatesAnyUse(PtrI, PDT, UnsafeUses)) {
+			PtrMayBeNull.insert(Ptr);
+			MayNull = true;
+		}
+
 		assert(PtrToBaseMap.count(Ptr));
 		Value* Base = PtrToBaseMap[Ptr];
 		if (BaseToLenMap.count(Base)) {
 			continue;
 		}
 		if (BaseToPtrsMap.count(Base)) {
-			BaseToPtrsMap[Base].insert(Ptr);
+			if (!MayNull) {
+				BaseToPtrsMap[Base].insert(Ptr);
+			}
 		}
 		else {
 			auto Size = getStaticBaseSize(F, Base, DL, TLI);
@@ -4093,9 +4169,12 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				BaseToLenMap[Base] = Size;
 			}
 			else {
-				BaseToPtrsMap[Base].insert(Ptr);
+				if (!MayNull) {
+					BaseToPtrsMap[Base].insert(Ptr);
+				}
 			}
 		}
+
 	}
 
 	for (auto &It : BaseToPtrsMap) {
@@ -4123,13 +4202,20 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			//errs() << "PTR: " << *Ptr << " BASEVAL: " << *Base << "\n";
 		}
 		Value *Size;
+		bool MayNull = PtrMayBeNull.count(Ptr) > 0;
 		if (!BaseToLenMap.count(Base)) {
-			addBoundsCheckWithLen(F, Base, Ptr, TySize, PDT, UnsafeUses, 
-				callsites, GetLengths, LenToBaseMap);
+			if (!MayNull) {
+				addBoundsCheckWithLen(F, Base, Ptr, TySize,
+					callsites, GetLengths, LenToBaseMap);
+			}
+			else {
+				addBoundsCheckWithLenAtUse(F, Base, Ptr, TySize, UnsafeUses,
+					callsites, GetLengths, LenToBaseMap);
+			}
 		}
 		else {
 			Size = BaseToLenMap[Base];
-			addBoundsCheck(F, Base, Ptr, Size, TySize, PDT, UnsafeUses, callsites);
+			addBoundsCheck(F, Base, Ptr, Size, TySize, UnsafeUses, callsites, MayNull);
 		}
 	}
 
