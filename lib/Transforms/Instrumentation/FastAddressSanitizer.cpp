@@ -3620,6 +3620,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 			else if (auto *CI = dyn_cast<CallBase>(I)) {
 				if (CI->isIndirectCall()) {
 					Ret = addHandler(F, I, CI->getCalledOperand(), NULL, GetLengths, true, id++);
+					CI->setCalledOperand(Ret);
 				}
 			}
 		}
