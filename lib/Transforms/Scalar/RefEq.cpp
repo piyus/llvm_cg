@@ -109,6 +109,31 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 {
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
+
+#if 0
+		auto LineTy = IRB.getInt32Ty(); //Line->getType();
+		auto Name = IRB.CreateGlobalStringPtr(F.getParent()->getName());
+		auto NameTy = Name->getType();
+
+		Value *Op1 = V;
+		Value *Op2 = V;
+		auto Fn = F.getParent()->getOrInsertFunction("san_icmp", IRB.getVoidTy(), Op1->getType(), Op2->getType(), LineTy, NameTy);
+		int LineNum = 0;
+		if (F.getSubprogram() && I->getDebugLoc()) {
+			//LineNum = I->getDebugLoc()->getLine();
+		}
+
+		LineNum = (LineNum << 16) | 0;
+		auto *Line = ConstantInt::get(LineTy, LineNum);
+		auto Call = IRB.CreateCall(Fn, {Op1, Op2, Line, Name});
+		if (F.getSubprogram()) {
+    	if (auto DL = I->getDebugLoc()) {
+      	Call->setDebugLoc(DL);
+			}
+  	}
+#endif
+
+
 	Type *Ty = NULL;
 
 	if (isa<PtrToIntInst>(V)) {
@@ -178,24 +203,47 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 	}
 }
 
+static bool isInteriorConstant(Value *V) {
+	auto I = dyn_cast<ConstantExpr>(V);
+	if (I) {
+		V = I->getOperand(0);
+	}
+	//errs() << "Checking: " << *V << "\n";
+	auto C = dyn_cast<ConstantInt>(V);
+	if (!C) {
+		return false;
+	}
+	//errs() << "Constant: " << C->getZExtValue() << "\n";
+	return (C->getZExtValue() >> 48) > 0;
+}
+
 /// This is the main transformation entry point for a function.
 bool RefEqLegacyPass::runOnFunction(Function &F) {
   const DataLayout &DL = F.getParent()->getDataLayout();
 	DenseSet<Instruction*> ICmpOrSub;
+	//dbgs() << "Before Ref::\n" << F << "\n";
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			if (auto Ret = dyn_cast<ICmpInst>(&Inst)) {
+				//errs() << "Looking at " << *Ret << "\n";
 				Value *Op1 = Ret->getOperand(0);
 				Value *Op2 = Ret->getOperand(1);
+				if (isInteriorConstant(Op1) || isInteriorConstant(Op2)) {
+					continue;
+				}
 				if (isPointerOperand(Op1) || isPointerOperand(Op2)) {
 					ICmpOrSub.insert(Ret);
 				}
 			}
 			else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
 				if (BO->getOpcode() == Instruction::Sub) {
+					//errs() << "Looking at " << *BO << "\n";
 					Value *Op1 = BO->getOperand(0);
 					Value *Op2 = BO->getOperand(1);
+					if (isInteriorConstant(Op1) || isInteriorConstant(Op2)) {
+						continue;
+					}
 					if (isPointerOperand(Op1) && isPointerOperand(Op2)) {
 						ICmpOrSub.insert(BO);
 					}
@@ -203,7 +251,6 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
 			}
 		}
 	}
-	//dbgs() << "Before Ref::\n" << F << "\n";
 	instrumentOtherPointerUsage(F, ICmpOrSub, DL);
 	//dbgs() << "After Ref::\n" << F << "\n";
 	return true;
