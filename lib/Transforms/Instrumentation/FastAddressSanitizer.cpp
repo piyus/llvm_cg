@@ -2940,7 +2940,7 @@ Value* getInterior(Function &F, Instruction *I, Value *V)
 	IRB.SetInsertPoint(I);
 
 	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
-	auto Interior = IRB.CreateOr(VInt, (0xcabeULL << 48));
+	auto Interior = IRB.CreateOr(VInt, (0xcabaULL << 48));
 	return IRB.CreateIntToPtr(Interior, V->getType());
 }
 
@@ -3419,6 +3419,24 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 	return Call;
 }
 
+static void addMemcpy(Function &F, Instruction *I, Value *Ptr, Value *Size) {
+	IRBuilder<> IRB(I);
+
+	FunctionCallee Fn;
+	int LineNum = 0;
+	if (F.getSubprogram() && I->getDebugLoc()) {
+		LineNum = I->getDebugLoc()->getLine();
+	}
+	auto PtrTy = Ptr->getType();
+	auto LineTy = IRB.getInt32Ty(); //Line->getType();
+	auto M = F.getParent();
+	auto Name = IRB.CreateGlobalStringPtr(F.getName());
+	auto NameTy = Name->getType();
+
+	Fn = M->getOrInsertFunction("san_memcpy", IRB.getVoidTy(), PtrTy, Size->getType(), LineTy, NameTy);
+	auto *Line = ConstantInt::get(LineTy, LineNum);
+	IRB.CreateCall(Fn, {Ptr, Size, Line, Name});
+}
 
 static void addArgument(Function &F, Value *Ptr) {
   Instruction *I = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
@@ -3621,6 +3639,12 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				if (CI->isIndirectCall()) {
 					Ret = addHandler(F, I, CI->getCalledOperand(), NULL, GetLengths, true, id++);
 					CI->setCalledOperand(Ret);
+				}
+				else {
+					auto MT = dyn_cast<MemTransferInst>(CI);
+					if (MT) {
+						addMemcpy(F, MT, MT->getOperand(1), MT->getOperand(2));
+					}
 				}
 			}
 		}
