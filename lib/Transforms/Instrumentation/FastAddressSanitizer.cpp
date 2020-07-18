@@ -3390,7 +3390,7 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 			Fn = M->getOrInsertFunction("san_page_fault_len", PtrTy, PtrTy, LineTy, NameTy);
 		}
 		else if (!Val) {
-			if (I->getType()->isPointerTy()) {
+			if (1 /*I->getType()->isPointerTy()*/) {
 				Fn = M->getOrInsertFunction("san_page_fault_load", PtrTy, PtrTy, LineTy, NameTy);
 			}
 			else {
