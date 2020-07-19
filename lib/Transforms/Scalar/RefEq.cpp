@@ -104,9 +104,24 @@ INITIALIZE_PASS_BEGIN(RefEqLegacyPass, "refeq", "RefEq Optimization",
 INITIALIZE_PASS_END(RefEqLegacyPass, "refeq", "RefEq Optimization",
                     false, false)
 
+static bool isPtrMask(Value *V) {
+	auto I = dyn_cast<IntrinsicInst>(V);
+	return (I && I->getIntrinsicID() == Intrinsic::ptrmask);
+}
+
 
 static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 {
+	if (isa<PtrToIntInst>(V)) {
+		auto VI = dyn_cast<PtrToIntInst>(V);
+		if (isPtrMask(VI->getPointerOperand())) {
+			return NULL;
+		}
+	}
+	else if (isPtrMask(V)) {
+		return NULL;
+	}
+
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 
@@ -186,7 +201,9 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 				Value *Base1 = GetUnderlyingObject(Op1, DL, 0);
 				if (!isa<AllocaInst>(Base1)) {
 					auto NoInt = getNoInterior(F, I, Op1);
-					I->setOperand(0, NoInt);
+					if (NoInt) {
+						I->setOperand(0, NoInt);
+					}
 				}
 			}
 		}
@@ -196,7 +213,9 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 				Value *Base2 = GetUnderlyingObject(Op2, DL, 0);
 				if (!isa<AllocaInst>(Base2)) {
 					auto NoInt = getNoInterior(F, I, Op2);
-					I->setOperand(1, NoInt);
+					if (NoInt) {
+						I->setOperand(1, NoInt);
+					}
 				}
 			}
 		}
