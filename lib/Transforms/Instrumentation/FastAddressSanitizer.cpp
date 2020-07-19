@@ -3755,7 +3755,7 @@ void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI) {
 static void setBoundsForArgv(Function &F)
 {
 	if (F.getName() == "main" && F.arg_size() > 0) {
-		assert(F.arg_size() == 2);
+		assert(F.arg_size() > 1 && F.arg_size() <= 3);
 		auto argc = F.getArg(0);
 		auto argv = F.getArg(1);
 		auto Fn = F.getParent()->getOrInsertFunction("san_copy_argv", argv->getType(), argc->getType(), argv->getType());
