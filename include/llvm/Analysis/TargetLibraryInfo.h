@@ -78,6 +78,7 @@ class TargetLibraryInfoImpl {
                               const DataLayout *DL) const;
 
 public:
+	bool isInteriorSafe(LibFunc F) const;
   /// List of known vector-functions libraries.
   ///
   /// The vector-functions library defines, which functions are vectorizable
@@ -260,6 +261,9 @@ public:
     return *this;
   }
 
+	bool isInteriorSafe(LibFunc F) const {
+		return Impl->isInteriorSafe(F);
+	}
   /// Searches for a particular function name.
   ///
   /// If it is one of the known library functions, return true and set F to the

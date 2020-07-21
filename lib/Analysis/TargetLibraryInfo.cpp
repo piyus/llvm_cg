@@ -632,6 +632,20 @@ bool TargetLibraryInfoImpl::getLibFunc(StringRef funcName, LibFunc &F) const {
   return false;
 }
 
+bool TargetLibraryInfoImpl::isInteriorSafe(LibFunc F) const {
+  switch (F) {
+		case LibFunc_strstr:
+		case LibFunc_strchr:
+		case LibFunc_strrchr:
+		case LibFunc_strncat:
+		case LibFunc_strcat:
+			return true;
+		default:
+			return false;
+	}
+	return false;
+}
+
 bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
                                                    LibFunc F,
                                                    const DataLayout *DL) const {

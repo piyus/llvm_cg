@@ -4066,7 +4066,9 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			LibCall = true;
 		}
     if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
-			LibCall = true;
+			if (!TLI->isInteriorSafe(Func)) {
+				LibCall = true;
+			}
 		}
 		//errs() << "LibCall " << LibCall << "  " << *CS << "\n";
 		DenseMap<Value*, Value*> InteriorToBase;
