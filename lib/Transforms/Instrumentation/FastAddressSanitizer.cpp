@@ -3650,7 +3650,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 		}
 	}
 
-#if 0
+//#if 0
 	int NumArgsAdded = 0;
   for (Argument &Arg : F.args()) {
 		if (Arg.getType()->isPointerTy()) {
@@ -3661,7 +3661,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	if (!NumArgsAdded) {
 		addArgument(F, Constant::getNullValue(F.getType()));
 	}
-#endif
+//#endif
 }
 
 
@@ -3763,6 +3763,13 @@ static void setBoundsForArgv(Function &F)
 		auto Call = CallInst::Create(Fn, {argc, argv}, "", Entry);
     argv->replaceAllUsesWith(Call);
 		Call->setArgOperand(1, argv);
+		if (F.arg_size() == 3) {
+			auto env = F.getArg(2);
+			auto Fn = F.getParent()->getOrInsertFunction("san_copy_env", env->getType(), env->getType());
+			auto Call = CallInst::Create(Fn, {env}, "", Entry);
+    	env->replaceAllUsesWith(Call);
+			Call->setArgOperand(0, env);
+		}
 	}
 }
 
