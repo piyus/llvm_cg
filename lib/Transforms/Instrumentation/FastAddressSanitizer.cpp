@@ -3366,7 +3366,9 @@ static Value* getBaseIfInterior(Function &F, Value *V, const DataLayout &DL, Den
 	return NULL;
 }
 
-static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, DenseSet<Value*> &GetLengths, bool call, int id) {
+static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, DenseSet<Value*> &GetLengths, 
+	bool call, int id, Value *Name)
+{
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 	FunctionCallee Fn;
@@ -3378,7 +3380,7 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 	auto PtrTy = Ptr->getType();
 	auto LineTy = IRB.getInt32Ty(); //Line->getType();
 	auto M = F.getParent();
-	auto Name = IRB.CreateGlobalStringPtr(M->getName());
+	//auto Name = IRB.CreateGlobalStringPtr(M->getName());
 	auto NameTy = Name->getType();
 
 	if (call) {
@@ -3420,7 +3422,7 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 	return Call;
 }
 
-static void addCall(Function &F, CallBase *CI, int id) {
+static void addCall(Function &F, CallBase *CI, int id, Value *Name) {
 	int NumArgs = 0;
 	Value *Args[2];
 	for (auto ArgIt = CI->arg_begin(), End = CI->arg_end(), Start = CI->arg_begin(); ArgIt != End && NumArgs < 2; ++ArgIt) {
@@ -3446,7 +3448,7 @@ static void addCall(Function &F, CallBase *CI, int id) {
 	LineNum = (LineNum << 16) | id;
 	auto LineTy = IRB.getInt32Ty(); //Line->getType();
 	auto M = F.getParent();
-	auto Name = IRB.CreateGlobalStringPtr(F.getName());
+	//auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	auto NameTy = Name->getType();
 
 	Fn = M->getOrInsertFunction("san_call", IRB.getVoidTy(), Args[0]->getType(), Args[1]->getType(), LineTy, NameTy);
@@ -3455,7 +3457,7 @@ static void addCall(Function &F, CallBase *CI, int id) {
 }
 
 
-static void addMemcpy(Function &F, Instruction *I, Value *Ptr, Value *Size) {
+static void addMemcpy(Function &F, Instruction *I, Value *Ptr, Value *Size, Value *Name) {
 	IRBuilder<> IRB(I);
 
 	FunctionCallee Fn;
@@ -3466,7 +3468,7 @@ static void addMemcpy(Function &F, Instruction *I, Value *Ptr, Value *Size) {
 	auto PtrTy = Ptr->getType();
 	auto LineTy = IRB.getInt32Ty(); //Line->getType();
 	auto M = F.getParent();
-	auto Name = IRB.CreateGlobalStringPtr(F.getName());
+	//auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	auto NameTy = Name->getType();
 
 	Fn = M->getOrInsertFunction("san_memcpy", IRB.getVoidTy(), PtrTy, Size->getType(), LineTy, NameTy);
@@ -3474,7 +3476,7 @@ static void addMemcpy(Function &F, Instruction *I, Value *Ptr, Value *Size) {
 	IRB.CreateCall(Fn, {Ptr, Size, Line, Name});
 }
 
-static void addArgument(Function &F, Value *Ptr) {
+static void addArgument(Function &F, Value *Ptr, Value *Name) {
   Instruction *I = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
@@ -3487,7 +3489,7 @@ static void addArgument(Function &F, Value *Ptr) {
 	auto PtrTy = Ptr->getType();
 	auto LineTy = IRB.getInt32Ty(); //Line->getType();
 	auto M = F.getParent();
-	auto Name = IRB.CreateGlobalStringPtr(F.getName());
+	//auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	auto NameTy = Name->getType();
 
 	Fn = M->getOrInsertFunction("san_page_fault_arg", IRB.getVoidTy(), PtrTy, LineTy, NameTy);
@@ -3495,7 +3497,7 @@ static void addArgument(Function &F, Value *Ptr) {
 	IRB.CreateCall(Fn, {Ptr, Line, Name});
 }
 
-static void addReturn(Function &F, Instruction *I, Value *Ptr) {
+static void addReturn(Function &F, Instruction *I, Value *Ptr, Value *Name) {
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 
@@ -3507,7 +3509,7 @@ static void addReturn(Function &F, Instruction *I, Value *Ptr) {
 	auto PtrTy = Ptr->getType();
 	auto LineTy = IRB.getInt32Ty(); //Line->getType();
 	auto M = F.getParent();
-	auto Name = IRB.CreateGlobalStringPtr(F.getName());
+	//auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	auto NameTy = Name->getType();
 
 	Fn = M->getOrInsertFunction("san_page_fault_ret", IRB.getVoidTy(), PtrTy, LineTy, NameTy);
@@ -3669,47 +3671,52 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
  
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths, DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites) {
 	int id = 0;
+	Instruction *Entry = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+	assert(Entry);
+	IRBuilder<> IRB(Entry);
+	auto Name = IRB.CreateGlobalStringPtr(F.getName());
+
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			Instruction *I = &Inst;
 			Value *Ret;
 			if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
-				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++);
+				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
 				LI->setOperand(0, Ret);
 			}
 			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
 				//Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
 				Value *Val = SI->getValueOperand();
-				Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++);
+				Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++, Name);
 				SI->setOperand(1, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
-				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++);
+				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
 				AI->setOperand(0, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++);
+				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
 				AI->setOperand(0, Ret);
 			}
 			else if (auto *CI = dyn_cast<CallBase>(I)) {
 				if (CI->isIndirectCall()) {
-					Ret = addHandler(F, I, CI->getCalledOperand(), NULL, GetLengths, true, id++);
+					Ret = addHandler(F, I, CI->getCalledOperand(), NULL, GetLengths, true, id++, Name);
 					CI->setCalledOperand(Ret);
 				}
 				else {
 					auto MT = dyn_cast<MemTransferInst>(CI);
 					if (MT) {
-						addMemcpy(F, MT, MT->getOperand(1), MT->getOperand(2));
+						addMemcpy(F, MT, MT->getOperand(1), MT->getOperand(2), Name);
 					}
 					else if (CallSites.count(CI)) {
-						addCall(F, CI, id++);
+						addCall(F, CI, id++, Name);
 					}
 				}
 			}
 			else if (auto R = dyn_cast<ReturnInst>(I)) {
 				Value *RetVal = R->getReturnValue();
 				if (RetVal) {
-					addReturn(F, R, RetVal);
+					addReturn(F, R, RetVal, Name);
 				}
 			}
 		}
@@ -3719,12 +3726,12 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	int NumArgsAdded = 0;
   for (Argument &Arg : F.args()) {
 		if (Arg.getType()->isPointerTy()) {
-			addArgument(F, &Arg);
+			addArgument(F, &Arg, Name);
 			NumArgsAdded++;
 		}
 	}
 	if (!NumArgsAdded) {
-		addArgument(F, Constant::getNullValue(F.getType()));
+		addArgument(F, Constant::getNullValue(F.getType()), Name);
 	}
 //#endif
 }
