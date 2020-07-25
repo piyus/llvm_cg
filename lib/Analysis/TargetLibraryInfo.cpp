@@ -659,6 +659,8 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
   unsigned NumParams = FTy.getNumParams();
 
   switch (F) {
+	case LibFunc_dunder_isoc99_fscanf:
+		return true;
 	case LibFunc_vasprintf:
 		return true;
 	case LibFunc_vasprintf1:

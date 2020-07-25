@@ -318,6 +318,9 @@ TLI_DEFINE_STRING_INTERNAL("__fxstatat")
 TLI_DEFINE_ENUM_INTERNAL(fxstatat64)
 TLI_DEFINE_STRING_INTERNAL("__fxstatat64")
 
+TLI_DEFINE_ENUM_INTERNAL(dunder_isoc99_fscanf)
+TLI_DEFINE_STRING_INTERNAL("__isoc99_fscanf")
+
 /// int __isoc99_scanf (const char *format, ...)
 TLI_DEFINE_ENUM_INTERNAL(dunder_isoc99_scanf)
 TLI_DEFINE_STRING_INTERNAL("__isoc99_scanf")
