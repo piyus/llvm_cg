@@ -237,6 +237,7 @@ namespace llvm {
   /// StackSlotColoring - This pass performs stack coloring and merging.
   /// It merges disjoint allocas to reduce the stack size.
   extern char &StackColoringID;
+  extern char &FastAddressID;
 
   /// IfConverter - This pass performs machine code if conversion.
   extern char &IfConverterID;
@@ -415,6 +416,7 @@ namespace llvm {
   /// This pass splits the stack into a safe stack and an unsafe stack to
   /// protect against stack-based overflow vulnerabilities.
   FunctionPass *createSafeStackPass();
+  FunctionPass *createFastSafeStackPass();
 
   /// This pass detects subregister lanes in a virtual register that are used
   /// independently of other lanes and splits them into separate virtual

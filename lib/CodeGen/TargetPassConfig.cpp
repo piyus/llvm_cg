@@ -744,6 +744,7 @@ void TargetPassConfig::addISelPrepare() {
 
   // Add both the safe stack and the stack protection passes: each of them will
   // only protect functions that have corresponding attributes.
+  addPass(createFastSafeStackPass());
   addPass(createSafeStackPass());
   addPass(createStackProtectorPass());
 
@@ -1001,6 +1002,7 @@ void TargetPassConfig::addMachineSSAOptimization() {
   // This pass merges large allocas. StackSlotColoring is a different pass
   // which merges spill slots.
   addPass(&StackColoringID, false);
+  addPass(&FastAddressID, false);
 
   // If the target requests it, assign local variables to stack slots relative
   // to one another and simplify frame index references where possible.

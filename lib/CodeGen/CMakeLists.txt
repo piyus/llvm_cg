@@ -133,6 +133,8 @@ add_llvm_component_library(LLVMCodeGen
   RegUsageInfoPropagate.cpp
   ResetMachineFunctionPass.cpp
   SafeStack.cpp
+  FastSafeStack.cpp
+	FastAddress.cpp
   SafeStackColoring.cpp
   SafeStackLayout.cpp
   ScalarizeMaskedMemIntrin.cpp
