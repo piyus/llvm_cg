@@ -3789,24 +3789,24 @@ static void recordStackPointer(Function *F, Instruction *I)
 	CallInst::Create(Fn, {I}, "", I->getNextNode());
 }
 
-static void enterScope(Function *F)
+static Value* enterScope(Function *F)
 {
 	auto M = F->getParent();
-	auto RetTy = Type::getVoidTy(M->getContext());
+	auto RetTy = Type::getInt8PtrTy(M->getContext());
   Instruction *Entry = dyn_cast<Instruction>(F->begin()->getFirstInsertionPt());
 	auto Fn = M->getOrInsertFunction("san_enter_scope", RetTy);
-	CallInst::Create(Fn, {}, "", Entry);
+	return CallInst::Create(Fn, {}, "", Entry);
 }
 
-static void exitScope(Function *F)
+static void exitScope(Function *F, Value *V)
 {
 	auto M = F->getParent();
 	auto RetTy = Type::getVoidTy(M->getContext());
-	auto Fn = M->getOrInsertFunction("san_exit_scope", RetTy);
+	auto Fn = M->getOrInsertFunction("san_exit_scope", RetTy, V->getType());
   for (auto &BB : *F) {
     for (auto &Inst : BB) {
 			if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
-				CallInst::Create(Fn, {}, "", Ret);
+				CallInst::Create(Fn, {V}, "", Ret);
 			}
 		}
 	}
@@ -4376,8 +4376,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, TLI);
 
 	if (!UnsafeAllocas.empty()) {
-		enterScope(&F);
-		exitScope(&F);
+		Value *V = enterScope(&F);
+		exitScope(&F, V);
 	}
 
 	for (auto AI : UnsafeAllocas) {
