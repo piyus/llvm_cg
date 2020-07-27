@@ -3422,6 +3422,42 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 	return Call;
 }
 
+static uint64_t getAllocaSizeInBytes1(const AllocaInst &AI)
+{
+	uint64_t ArraySize = 1;
+  if (AI.isArrayAllocation()) {
+    const ConstantInt *CI = dyn_cast<ConstantInt>(AI.getArraySize());
+    assert(CI && "non-constant array size");
+    ArraySize = CI->getZExtValue();
+  }
+  Type *Ty = AI.getAllocatedType();
+  uint64_t SizeInBytes =
+      AI.getModule()->getDataLayout().getTypeAllocSize(Ty);
+  return SizeInBytes * ArraySize;
+}
+
+static void addAlloca(Function &F, AllocaInst *AI, int id, Value *Name) {
+	uint64_t Size = (AI->isStaticAlloca()) ? getAllocaSizeInBytes1(*AI) : 0;
+	IRBuilder<> IRB(AI->getNextNode());
+	FunctionCallee Fn;
+	int LineNum = 0;
+	if (F.getSubprogram() && AI->getDebugLoc()) {
+		LineNum = AI->getDebugLoc()->getLine();
+	}
+	LineNum = (LineNum << 16) | id;
+	auto LineTy = IRB.getInt32Ty(); //Line->getType();
+	auto SizeTy = IRB.getInt64Ty();
+	auto M = F.getParent();
+	//auto Name = IRB.CreateGlobalStringPtr(F.getName());
+	auto NameTy = Name->getType();
+
+	Fn = M->getOrInsertFunction("san_alloca", IRB.getVoidTy(), AI->getType(), SizeTy, LineTy, NameTy);
+	auto *Line = ConstantInt::get(LineTy, LineNum);
+	auto *Sz = ConstantInt::get(SizeTy, Size);
+	IRB.CreateCall(Fn, {AI, Sz, Line, Name});
+}
+
+
 static void addCall(Function &F, CallBase *CI, int id, Value *Name) {
 	int NumArgs = 0;
 	Value *Args[2];
@@ -3675,6 +3711,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	assert(Entry);
 	IRBuilder<> IRB(Entry);
 	auto Name = IRB.CreateGlobalStringPtr(F.getName());
+	DenseSet<AllocaInst*> AllocaInsts;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -3719,7 +3756,14 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 					addReturn(F, R, RetVal, Name);
 				}
 			}
+			else if (auto AI = dyn_cast<AllocaInst>(I)) {
+				AllocaInsts.insert(AI);
+			}
 		}
+	}
+
+	for (auto AI : AllocaInsts) {
+		addAlloca(F, AI, id++, Name);
 	}
 
 //#if 0
