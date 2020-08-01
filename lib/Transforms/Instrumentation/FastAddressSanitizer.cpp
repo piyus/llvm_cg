@@ -660,7 +660,8 @@ struct FastAddressSanitizer {
 		DenseSet<AllocaInst*> &UnsafeAllocas,
 		DenseSet<Instruction*> &ICmpOrSub,
 		DenseSet<Instruction*> &IntToPtr,
-		DenseSet<Instruction*> &PtrToInt);
+		DenseSet<Instruction*> &PtrToInt,
+		DenseSet<Instruction*> &RestorePoints);
 	void patchDynamicAlloca(Function &F, AllocaInst *AI);
 	void patchStaticAlloca(Function &F, AllocaInst *AI);
 	//Value* getInterior(Function &F, Instruction *I, Value *V);
@@ -2503,7 +2504,7 @@ static void instrumentGlobal(Module &M, GlobalVariable *GV) {
       M.getDataLayout().getTypeAllocSize(Initializer->getType());
   uint64_t Padding = alignTo(8, GV->getAlignment());
 	std::vector<uint8_t> Init(Padding, 0);
-	uint64_t HeaderVal = ((SizeInBytes << 32) | 0xdeadfaceULL);
+	uint64_t HeaderVal = ((SizeInBytes << 32) | 0xfaceULL);
 	uint8_t *Data = (uint8_t*)&HeaderVal;
 	for (uint64_t i = Padding - 8; i < Padding; i++) {
 		Init[i] = *Data;
@@ -2518,7 +2519,7 @@ static void instrumentGlobal(Module &M, GlobalVariable *GV) {
   NewGV->copyAttributesFrom(GV);
   NewGV->setLinkage(GlobalValue::PrivateLinkage);
   NewGV->copyMetadata(GV, 0);
-  NewGV->setAlignment(GV->getAlignment());
+  NewGV->setAlignment(MaybeAlign(GV->getAlignment()));
 
   NewGV->setUnnamedAddr(GlobalValue::UnnamedAddr::None);
 
@@ -3461,7 +3462,7 @@ static void addAlloca(Function &F, AllocaInst *AI, int id, Value *Name) {
 static void addCall(Function &F, CallBase *CI, int id, Value *Name) {
 	int NumArgs = 0;
 	Value *Args[2];
-	for (auto ArgIt = CI->arg_begin(), End = CI->arg_end(), Start = CI->arg_begin(); ArgIt != End && NumArgs < 2; ++ArgIt) {
+	for (auto ArgIt = CI->arg_begin(), End = CI->arg_end(); ArgIt != End && NumArgs < 2; ++ArgIt) {
 		Value *A = *ArgIt;
     if (A->getType()->isPointerTy()) {
 			Args[NumArgs++] = A;
@@ -3815,7 +3816,7 @@ static void exitScope(Function *F, Value *V)
 
 void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI) {
 	uint64_t Size = getAllocaSizeInBytes(*AI);
-	uint64_t HeaderVal = 0xdeadfaceULL | (Size << 32);
+	uint64_t HeaderVal = 0xfaceULL | (Size << 32);
 	auto AllocaSize = ConstantInt::get(Int64Ty, HeaderVal);
   uint64_t Padding = alignTo(8, AI->getAlignment());
 
@@ -3850,7 +3851,7 @@ void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI) {
   Value *OldSize = getAllocaSize(AI);
   IRBuilder<> IRB(AI);
   Value *NewSize = IRB.CreateAdd(OldSize, ConstantInt::get(Int64Ty, Padding));
-	Value *Header = IRB.CreateOr(IRB.CreateShl(OldSize, 32), 0xdeadfaceULL);
+	Value *Header = IRB.CreateOr(IRB.CreateShl(OldSize, 32), 0xfaceULL);
 
   AllocaInst *NewAI = IRB.CreateAlloca(IRB.getInt8Ty(), NewSize);
   NewAI->takeName(AI);
@@ -3895,7 +3896,8 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 	DenseSet<AllocaInst*> &UnsafeAllocas,
 	DenseSet<Instruction*> &ICmpOrSub,
 	DenseSet<Instruction*> &IntToPtr,
-	DenseSet<Instruction*> &PtrToInt)
+	DenseSet<Instruction*> &PtrToInt,
+	DenseSet<Instruction*> &RestorePoints)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
   Value *Addr;
@@ -3917,6 +3919,15 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
         	if (!Inst.isLifetimeStartOrEnd() && !isa<DbgInfoIntrinsic>(Inst)) {
 						auto II = dyn_cast<IntrinsicInst>(&Inst);
 						if (!II || II->getIntrinsicID() != Intrinsic::ptrmask) {
+							/*if (CS->isTailCall()) {
+								errs() << F << "\n";
+								errs() << *CS << "\n";
+							}
+							assert(!CS->isTailCall());*/
+							auto CI = dyn_cast<CallInst>(CS);
+							if (CI && CI->getCalledFunction() && CI->canReturnTwice()) {
+								RestorePoints.insert(CI);
+							}
           		for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
 								if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
               	                                 CS->doesNotAccessMemory()))) {
@@ -3924,7 +3935,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
               		if (A->getType()->isPointerTy()) {
 										auto ElemTy = A->getType()->getPointerElementType();
 										if (ElemTy->isSized()) {
-          						uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+          						//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
 											//addUnsafePointer(UnsafePointers, A, Sz);
 											//errs() << "Call-Unsafe: " << *A << "\n";
 											CallSites.insert(CS);
@@ -3942,7 +3953,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 						//errs() << "Ret: " << *RetVal << "\n";
 						auto ElemTy = RetVal->getType()->getPointerElementType();
 						if (ElemTy->isSized()) {
-          		uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+          		//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
 							//addUnsafePointer(UnsafePointers, RetVal, Sz);
 							RetSites.insert(Ret);
 							//UnsafeUses.insert(Ret);
@@ -3957,6 +3968,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 				}
 				else if (auto Ret = dyn_cast<ICmpInst>(&Inst)) {
 					ICmpOrSub.insert(Ret);
+				}
+				else if (auto LP = dyn_cast<LandingPadInst>(&Inst)) {
+					RestorePoints.insert(LP);
 				}
 				/*else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
 					if (BO->getOpcode() == Instruction::Sub) {
@@ -4219,6 +4233,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 	}
 }
 
+#if 0
 static void copyArgsByValToAllocas(Function &F) {
   Instruction *CopyInsertPoint = &F.front().front();
   IRBuilder<> IRB(CopyInsertPoint);
@@ -4241,6 +4256,7 @@ static void copyArgsByValToAllocas(Function &F) {
     }
   }
 }
+#endif
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
@@ -4269,6 +4285,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Instruction*> IntToPtr;
 	DenseSet<Instruction*> PtrToInt;
 	DenseSet<Value*> PtrMayBeNull;
+	DenseSet<Instruction*> RestorePoints;
 
 	createReplacementMap(&F, ReplacementMap);
 
@@ -4279,7 +4296,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	recordAllUnsafeAccesses(F, UnsafeUses, UnsafePointers, CallSites,
-		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt);
+		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt, RestorePoints);
 
 	//if (UnsafePointers.empty()) {
 	//	return true;
