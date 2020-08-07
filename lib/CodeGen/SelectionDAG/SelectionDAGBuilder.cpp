@@ -7029,6 +7029,7 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     SDValue Root = getMemoryRoot();
     SDValue Ret = DAG.getSafeStore(Root, sdl, Dst, Val,
                                    MachinePointerInfo(I.getArgOperand(0)));
+		DAG.setRoot(Ret);
     setValue(&I, Ret);
     return;
 	}
