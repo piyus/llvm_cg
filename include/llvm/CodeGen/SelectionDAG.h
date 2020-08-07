@@ -965,6 +965,11 @@ public:
                     bool isTailCall, MachinePointerInfo DstPtrInfo,
                     MachinePointerInfo SrcPtrInfo);
 
+	SDValue getSafeStore(SDValue Chain, const SDLoc &dl, SDValue Dst, SDValue Val,
+                       MachinePointerInfo DstPtrInfo);
+	SDValue getSafeLoad(SDValue Chain, const SDLoc &dl, SDValue Src,
+                      MachinePointerInfo SrcPtrInfo);
+
   SDValue getMemmove(SDValue Chain, const SDLoc &dl, SDValue Dst, SDValue Src,
                      SDValue Size, unsigned Align, bool isVol, bool isTailCall,
                      MachinePointerInfo DstPtrInfo,

@@ -7015,6 +7015,23 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
                              DAG.getZExtOrTrunc(Const, getCurSDLoc(), DestVT)));
     return;
   }
+	case Intrinsic::safe_load: {
+    SDValue Src = getValue(I.getArgOperand(0));
+    SDValue Root = getMemoryRoot();
+    SDValue Ret = DAG.getSafeLoad(Root, sdl, Src,
+                                  MachinePointerInfo(I.getArgOperand(0)));
+    setValue(&I, Ret);
+		return;
+	}
+	case Intrinsic::safe_store: {
+    SDValue Dst = getValue(I.getArgOperand(0));
+    SDValue Val = getValue(I.getArgOperand(1));
+    SDValue Root = getMemoryRoot();
+    SDValue Ret = DAG.getSafeStore(Root, sdl, Dst, Val,
+                                   MachinePointerInfo(I.getArgOperand(0)));
+    setValue(&I, Ret);
+    return;
+	}
   }
 }
 

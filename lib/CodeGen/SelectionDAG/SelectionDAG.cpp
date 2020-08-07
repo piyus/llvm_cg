@@ -6475,6 +6475,16 @@ SDValue SelectionDAG::getAtomicMemmove(SDValue Chain, const SDLoc &dl,
   return CallResult.second;
 }
 
+SDValue SelectionDAG::getSafeStore(SDValue Chain, const SDLoc &dl, SDValue Dst, SDValue Val,
+                     MachinePointerInfo DstPtrInfo) {
+	return getStore(Chain, dl, Val, Dst, DstPtrInfo);
+}
+
+SDValue SelectionDAG::getSafeLoad(SDValue Chain, const SDLoc &dl, SDValue Src,
+                     MachinePointerInfo SrcPtrInfo) {
+	return getLoad(Src.getValueType(), dl, Chain, Src, SrcPtrInfo);
+}
+
 SDValue SelectionDAG::getMemset(SDValue Chain, const SDLoc &dl, SDValue Dst,
                                 SDValue Src, SDValue Size, unsigned Align,
                                 bool isVol, bool isTailCall,

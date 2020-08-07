@@ -1187,6 +1187,12 @@ def int_icall_branch_funnel : Intrinsic<[], [llvm_vararg_ty], []>;
 def int_load_relative: Intrinsic<[llvm_ptr_ty], [llvm_ptr_ty, llvm_anyint_ty],
                                  [IntrReadMem, IntrArgMemOnly]>;
 
+def int_safe_load: Intrinsic<[llvm_any_ty], [llvm_anyptr_ty],
+                             [IntrReadMem, IntrArgMemOnly]>;
+
+def int_safe_store: Intrinsic<[], [llvm_ptrptr_ty, llvm_ptr_ty],
+                             [IntrArgMemOnly, NoCapture<0>, WriteOnly<0>, ReadNone<1>]>;
+
 def int_hwasan_check_memaccess :
   Intrinsic<[], [llvm_ptr_ty, llvm_ptr_ty, llvm_i32_ty], [IntrInaccessibleMemOnly, ImmArg<2>]>;
 def int_hwasan_check_memaccess_shortgranules :

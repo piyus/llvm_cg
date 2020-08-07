@@ -23176,6 +23176,14 @@ SDValue X86TargetLowering::LowerVASTART(SDValue Op, SelectionDAG &DAG) const {
       Op.getOperand(0), DL, RSFIN, FIN,
       MachinePointerInfo(SV, Subtarget.isTarget64BitLP64() ? 16 : 12));
   MemOps.push_back(Store);
+
+  FIN = DAG.getMemBasePlusOffset(FIN, Subtarget.isTarget64BitLP64() ? 8 : 4, DL);
+  Store = DAG.getStore(
+      Op.getOperand(0), DL,
+      DAG.getConstant(16, DL, MVT::i32), FIN,
+      MachinePointerInfo(SV, Subtarget.isTarget64BitLP64() ? 24 : 16));
+  MemOps.push_back(Store);
+
   return DAG.getNode(ISD::TokenFactor, DL, MVT::Other, MemOps);
 }
 
@@ -23256,7 +23264,7 @@ static SDValue LowerVACOPY(SDValue Op, const X86Subtarget &Subtarget,
   SDLoc DL(Op);
 
   return DAG.getMemcpy(Chain, DL, DstPtr, SrcPtr,
-                       DAG.getIntPtrConstant(24, DL), 8, /*isVolatile*/false,
+                       DAG.getIntPtrConstant(32, DL), 8, /*isVolatile*/false,
                        false, false,
                        MachinePointerInfo(DstSV), MachinePointerInfo(SrcSV));
 }
