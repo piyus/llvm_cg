@@ -1255,16 +1255,33 @@ bool StackColoring::runOnMachineFunction(MachineFunction &Func) {
   for (auto &s : LiveStarts)
     llvm::sort(s);
 
+	const AllocaInst *AI;
+
   bool Changed = true;
   while (Changed) {
     Changed = false;
     for (unsigned I = 0; I < NumSlots; ++I) {
-      if (SortedSlots[I] == -1)
+      if (SortedSlots[I] == -1) {
         continue;
+			}
+
+    	AI = MFI->getObjectAllocation(I);
+			if (AI->getMetadata("san_sizeinfo")) {
+				SortedSlots[I] = -1;
+				continue;
+			}
 
       for (unsigned J=I+1; J < NumSlots; ++J) {
-        if (SortedSlots[J] == -1)
+        if (SortedSlots[J] == -1) {
           continue;
+				}
+
+    		AI = MFI->getObjectAllocation(J);
+				if (AI->getMetadata("san_sizeinfo")) {
+					SortedSlots[J] = -1;
+					continue;
+				}
+
 
         int FirstSlot = SortedSlots[I];
         int SecondSlot = SortedSlots[J];

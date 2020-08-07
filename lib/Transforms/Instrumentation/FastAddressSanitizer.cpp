@@ -3820,6 +3820,13 @@ void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI) {
 	auto AllocaSize = ConstantInt::get(Int64Ty, HeaderVal);
   uint64_t Padding = alignTo(8, AI->getAlignment());
 
+	assert(Padding >= 8);
+
+	/*if (F.getName().startswith("register_attribute")) {
+	 errs() << "Size: " << Size << "\n";
+	 errs() << *AI << "\n";
+	}*/
+
 	Type *AllocatedType = AI->getAllocatedType();
   if (AI->isArrayAllocation()) {
     uint64_t ArraySize =
@@ -4263,7 +4270,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 																								 AAResults *AA) {
 	//copyArgsByValToAllocas(F);
 	//errs() << "Printing function\n" << F << "\n";
-	createInteriorFn(&F);
+	//createInteriorFn(&F);
 
 	DenseSet<Value*> UnsafeUses;
 	DenseMap<Value*, uint64_t> UnsafePointers;
@@ -4398,6 +4405,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	for (auto AI : UnsafeAllocas) {
+		MDNode* N = MDNode::get(AI->getContext(), {});
+		AI->setMetadata("san_sizeinfo", N);
 		if (AI->isStaticAlloca()) {
 			patchStaticAlloca(F, AI);
 		}
