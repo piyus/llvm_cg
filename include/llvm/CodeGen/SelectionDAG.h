@@ -968,7 +968,7 @@ public:
 	SDValue getSafeStore(SDValue Chain, const SDLoc &dl, SDValue Dst, SDValue Val,
                        MachinePointerInfo DstPtrInfo);
 	SDValue getSafeLoad(SDValue Chain, const SDLoc &dl, SDValue Src,
-                      MachinePointerInfo SrcPtrInfo);
+                      MachinePointerInfo SrcPtrInfo, Type *Ty);
 
   SDValue getMemmove(SDValue Chain, const SDLoc &dl, SDValue Dst, SDValue Src,
                      SDValue Size, unsigned Align, bool isVol, bool isTailCall,

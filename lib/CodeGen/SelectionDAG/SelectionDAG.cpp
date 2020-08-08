@@ -6481,8 +6481,17 @@ SDValue SelectionDAG::getSafeStore(SDValue Chain, const SDLoc &dl, SDValue Dst, 
 }
 
 SDValue SelectionDAG::getSafeLoad(SDValue Chain, const SDLoc &dl, SDValue Src,
-                     MachinePointerInfo SrcPtrInfo) {
-	return getLoad(Src.getValueType(), dl, Chain, Src, SrcPtrInfo);
+                     MachinePointerInfo SrcPtrInfo, Type *Ty) {
+
+  const TargetLowering &TLI = getTargetLoweringInfo();
+  EVT VT = TLI.getValueType(getDataLayout(), Ty);
+  EVT MemVT = TLI.getMemValueType(getDataLayout(), Ty);
+
+	SDValue L = getLoad(MemVT, dl, Chain, Src, SrcPtrInfo);
+	if (MemVT != VT) {
+  	L = getPtrExtOrTrunc(L, dl, VT);
+	}
+	return L;
 }
 
 SDValue SelectionDAG::getMemset(SDValue Chain, const SDLoc &dl, SDValue Dst,

@@ -3054,8 +3054,9 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 	assert(CmpInst && "no cmp inst");
 
 	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
-	if (Intrinsic) {
+	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
 		errs() << "Base is Intrinsic\n" << *Base << "\n";
+		errs() << F << "\n";
 		assert(0);
 	}
 
@@ -3085,8 +3086,9 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 	LenToBaseMap[Size] = Base;
 
 	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
-	if (Intrinsic) {
+	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
 		errs() << "Base is Intrinsic\n" << *Base << "\n";
+		errs() << F << "\n";
 		assert(0);
 	}
 
@@ -3147,8 +3149,9 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	LenToBaseMap[Size] = Base;
 
 	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
-	if (Intrinsic) {
+	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
 		errs() << "Base is Intrinsic\n" << *Base << "\n";
+		errs() << F << "\n";
 		assert(0);
 	}
 
