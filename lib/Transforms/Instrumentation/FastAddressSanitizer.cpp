@@ -3543,11 +3543,14 @@ static void addReturn(Function &F, Instruction *I, Value *Ptr, Value *Name) {
 
 	FunctionCallee Fn;
 	int LineNum = 0;
+	auto LineTy = IRB.getInt32Ty(); //Line->getType();
 	if (F.getSubprogram() && I->getDebugLoc()) {
 		LineNum = I->getDebugLoc()->getLine();
 	}
+	if (Ptr == NULL) {
+		Ptr = ConstantInt::get(LineTy, 0);
+	}
 	auto PtrTy = Ptr->getType();
-	auto LineTy = IRB.getInt32Ty(); //Line->getType();
 	auto M = F.getParent();
 	//auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	auto NameTy = Name->getType();
@@ -3756,9 +3759,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 			}
 			else if (auto R = dyn_cast<ReturnInst>(I)) {
 				Value *RetVal = R->getReturnValue();
-				if (RetVal) {
-					addReturn(F, R, RetVal, Name);
-				}
+				addReturn(F, R, RetVal, Name);
 			}
 			else if (auto AI = dyn_cast<AllocaInst>(I)) {
 				AllocaInsts.insert(AI);
@@ -4268,6 +4269,16 @@ static void copyArgsByValToAllocas(Function &F) {
 }
 #endif
 
+static void restoreStack(Function &F, DenseSet<Instruction*> &RestorePoints, Value *StackBase)
+{
+  for (Instruction *I : RestorePoints) {
+    IRBuilder<> IRB(I->getNextNode());
+		auto Fn = F.getParent()->getOrInsertFunction("san_restore_scope", IRB.getVoidTy(), StackBase->getType());
+    IRB.CreateCall(Fn, {StackBase});
+  }
+}
+
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
@@ -4402,9 +4413,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, TLI);
 
-	if (!UnsafeAllocas.empty()) {
-		Value *V = enterScope(&F);
-		exitScope(&F, V);
+	Value *StackBase = NULL;
+	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
+		StackBase = enterScope(&F);
+		exitScope(&F, StackBase);
 	}
 
 	for (auto AI : UnsafeAllocas) {
@@ -4420,6 +4432,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	instrumentPageFaultHandler(F, GetLengths, Stores, CallSites);
 	instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
+
+	if (!RestorePoints.empty()) {
+		restoreStack(F, RestorePoints, StackBase);
+	}
 
   if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
 		errs() << "After San\n" << F << "\n";
