@@ -1265,31 +1265,30 @@ bool StackColoring::runOnMachineFunction(MachineFunction &Func) {
         continue;
 			}
 
-    	AI = MFI->getObjectAllocation(I);
-			if (AI->getMetadata("san_sizeinfo")) {
-				SortedSlots[I] = -1;
-				continue;
-			}
-
       for (unsigned J=I+1; J < NumSlots; ++J) {
         if (SortedSlots[J] == -1) {
           continue;
 				}
 
-    		AI = MFI->getObjectAllocation(J);
-				if (AI->getMetadata("san_sizeinfo")) {
-					SortedSlots[J] = -1;
-					continue;
-				}
-
-
         int FirstSlot = SortedSlots[I];
         int SecondSlot = SortedSlots[J];
+
         LiveInterval *First = &*Intervals[FirstSlot];
         LiveInterval *Second = &*Intervals[SecondSlot];
         auto &FirstS = LiveStarts[FirstSlot];
         auto &SecondS = LiveStarts[SecondSlot];
         assert(!First->empty() && !Second->empty() && "Found an empty range");
+
+				
+    		AI = MFI->getObjectAllocation(FirstSlot);
+				if (AI->getMetadata("san_sizeinfo")) {
+					continue;
+				}
+
+    		AI = MFI->getObjectAllocation(SecondSlot);
+				if (AI->getMetadata("san_sizeinfo")) {
+					continue;
+				}
 
         // Merge disjoint slots. This is a little bit tricky - see the
         // Implementation Notes section for an explanation.
