@@ -2496,12 +2496,68 @@ int ModuleFastAddressSanitizer::GetAsanVersion(const Module &M) const {
   return Version;
 }
 
-static void instrumentGlobal(Module &M, GlobalVariable *GV) {
+static bool updateInitializer(Constant *Initializer, LLVMContext &C, DenseSet<Value*> &UpdatedList, const DataLayout &DL) {
+	auto CE = dyn_cast<ConstantExpr>(Initializer);
+	//errs() << "INIT: " << *Initializer << "\n";
+	if (UpdatedList.count(Initializer)) {
+		return false;
+	}
+	UpdatedList.insert(Initializer);
+	if (CE && CE->getOpcode() == Instruction::GetElementPtr) {
+
+		bool AllZeros = true;
+  	for (unsigned i = 1, e = CE->getNumOperands(); i != e; ++i) {
+			auto OpC = cast<ConstantInt>(CE->getOperand(1));
+    	if (!OpC->isZero()) {
+				AllZeros = false;
+      	break;
+			}
+  	}
+		if (AllZeros) {
+			return false;
+		}
+
+		auto Int8PtrTy = Type::getInt8PtrTy(C);
+		auto Int8Ty = Type::getInt8Ty(C);
+		auto Int64Ty = Type::getInt64Ty(C);
+		auto Base = CE->getOperand(0);
+		Constant *Res = NULL;
+		Type *BaseTy = Base->getType();
+
+		if (BaseTy != Int8PtrTy) {
+			//errs() << "Base: " << *Base << "\n";
+			Res = ConstantExpr::getBitCast(Base, Int8PtrTy);
+    	Res = ConstantExpr::getGetElementPtr(Int8Ty, Res, ConstantInt::get(Int64Ty, (0xcabaULL<<48)));
+    	Res = ConstantExpr::getBitCast(Res, BaseTy);
+			//errs() << "Res: " << *Res << "\n";
+		}
+		else {
+    	Res = ConstantExpr::getGetElementPtr(Int8Ty, Base, ConstantInt::get(Int64Ty, (0xcabaULL<<48)));
+		}
+		//errs() << "Res: " << *Res << "\n";
+		CE->handleOperandChange(Base, Res);
+		//errs() << "OperandChangeDone\n";
+		return true;
+	}
+	for (unsigned i = 0; i < Initializer->getNumOperands(); i++) {
+  	Constant *Val = cast<Constant>(Initializer->getOperand(i));
+		assert(Val);
+		if (!isa<ConstantInt>(Val)) {
+			if (updateInitializer(Val, C, UpdatedList, DL)) {
+				UpdatedList.insert(Initializer->getOperand(i));
+			}
+		}
+	}
+	return false;
+}
+
+static void instrumentGlobal(Module &M, GlobalVariable *GV, DenseSet<Value*> &UpdatedList) {
   Constant *Initializer = GV->getInitializer();
   auto C = &(M.getContext());
 	auto Int64Ty = Type::getInt64Ty(*C);
+  const DataLayout &DL = M.getDataLayout();
   uint64_t SizeInBytes =
-      M.getDataLayout().getTypeAllocSize(Initializer->getType());
+      DL.getTypeAllocSize(Initializer->getType());
   uint64_t Padding = alignTo(8, GV->getAlignment());
 	std::vector<uint8_t> Init(Padding, 0);
 	uint64_t HeaderVal = ((SizeInBytes << 32) | 0xfaceULL);
@@ -2510,7 +2566,13 @@ static void instrumentGlobal(Module &M, GlobalVariable *GV) {
 		Init[i] = *Data;
 		Data++;
 	}
+
+	if (Initializer) {
+		updateInitializer(Initializer, *C, UpdatedList, DL);
+	}
+
 	Constant *Pad = ConstantDataArray::get(*C, Init);
+
 	Initializer = ConstantStruct::getAnon({Pad, Initializer});
 
   auto *NewGV = new GlobalVariable(M, Initializer->getType(), GV->isConstant(),
@@ -2545,17 +2607,20 @@ bool ModuleFastAddressSanitizer::instrumentModuleNew(Module &M) {
         GV.isThreadLocal())
       continue;
 
-    if (GV.hasCommonLinkage())
-      continue;
+    if (GV.hasCommonLinkage()) {
+			GV.setLinkage(llvm::GlobalVariable::WeakAnyLinkage);
+		}
 
-    if (GV.hasSection())
+    if (GV.hasSection()) {
       continue;
+		}
 
     Globals.push_back(&GV);
   }
 
+	DenseSet<Value*> UpdatedList;
   for (GlobalVariable *GV : Globals) {
-    instrumentGlobal(M, GV);
+    instrumentGlobal(M, GV, UpdatedList);
   }
 	return true;
 }
