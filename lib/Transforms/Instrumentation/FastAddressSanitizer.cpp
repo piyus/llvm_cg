@@ -2878,8 +2878,10 @@ Value* FastAddressSanitizer::getStaticBaseSize(Function &F, const Value *V1, con
 		return getAllocaSize(AI);
 	}
 
-	if (isa<GlobalVariable>(V)) {
-		return ConstantInt::get(Int64Ty, 0xFFFFFFFFULL);
+	auto GV = dyn_cast<GlobalVariable>(V);
+	if (GV && GV->hasInitializer()) {
+  	Constant *Initializer = GV->getInitializer();
+  	return ConstantInt::get(Int64Ty, DL.getTypeAllocSize(Initializer->getType()));
 	}
 	return NULL;
 }
@@ -2900,9 +2902,6 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 		InstPt = dyn_cast<Instruction>(V);
 		if (InstPt == NULL) {
 			assert(isa<Argument>(V) || isa<GlobalVariable>(V));
-			if (isa<GlobalVariable>(V)) {
-				assert(0);
-			}
 			InstPt = &*F.begin()->getFirstInsertionPt();
 		}
 		else {
