@@ -184,7 +184,14 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 }
 */
 static bool isPointerOperand(Value *V) {
-  return V->getType()->isPointerTy() || isa<PtrToIntInst>(V);
+  if (V->getType()->isPointerTy() || isa<PtrToIntInst>(V)) {
+		return true;
+	}
+	auto CE = dyn_cast<ConstantExpr>(V);
+	if (CE && CE->getOpcode() == Instruction::PtrToInt) {
+		return true;
+	}
+	return false;
 }
 
 static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,

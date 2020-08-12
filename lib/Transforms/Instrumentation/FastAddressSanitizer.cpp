@@ -3814,16 +3814,16 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					auto MT = dyn_cast<MemTransferInst>(CI);
 					if (MT) {
-						addMemcpy(F, MT, MT->getOperand(1), MT->getOperand(2), Name);
+						//addMemcpy(F, MT, MT->getOperand(1), MT->getOperand(2), Name);
 					}
 					else if (CallSites.count(CI)) {
-						addCall(F, CI, id++, Name);
+						//addCall(F, CI, id++, Name);
 					}
 				}
 			}
 			else if (auto R = dyn_cast<ReturnInst>(I)) {
 				Value *RetVal = R->getReturnValue();
-				addReturn(F, R, RetVal, Name);
+				//addReturn(F, R, RetVal, Name);
 			}
 			else if (auto AI = dyn_cast<AllocaInst>(I)) {
 				AllocaInsts.insert(AI);
@@ -3832,19 +3832,19 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	}
 
 	for (auto AI : AllocaInsts) {
-		addAlloca(F, AI, id++, Name);
+		//addAlloca(F, AI, id++, Name);
 	}
 
 //#if 0
 	int NumArgsAdded = 0;
   for (Argument &Arg : F.args()) {
 		if (Arg.getType()->isPointerTy()) {
-			addArgument(F, &Arg, Name);
+			//addArgument(F, &Arg, Name);
 			NumArgsAdded++;
 		}
 	}
 	if (!NumArgsAdded) {
-		addArgument(F, Constant::getNullValue(F.getType()), Name);
+		//addArgument(F, Constant::getNullValue(F.getType()), Name);
 	}
 //#endif
 }

@@ -1180,6 +1180,7 @@ TLI_DEFINE_STRING_INTERNAL("putchar")
 /// int putchar_unlocked(int c);
 TLI_DEFINE_ENUM_INTERNAL(putchar_unlocked)
 TLI_DEFINE_STRING_INTERNAL("putchar_unlocked")
+
 /// int puts(const char *s);
 TLI_DEFINE_ENUM_INTERNAL(puts)
 TLI_DEFINE_STRING_INTERNAL("puts")
