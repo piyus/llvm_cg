@@ -56,6 +56,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Support/CommandLine.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -64,6 +65,9 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "referenceequal"
+
+static cl::opt<bool> ClTrace("fasan-enable-trace", cl::desc("enable trace"), cl::Hidden,
+                           cl::init(false));
 
 namespace {
 
@@ -78,8 +82,10 @@ class RefEqLegacyPass : public FunctionPass {
 
 public:
   static char ID; // Pass identification, replacement for typeid
+	bool TraceEnabled;
 
-  RefEqLegacyPass() : FunctionPass(ID) {
+  RefEqLegacyPass(bool Trace = false) : FunctionPass(ID) {
+		TraceEnabled = Trace;
     initializeRefEqLegacyPassPass(*PassRegistry::getPassRegistry());
   }
 
@@ -97,12 +103,26 @@ private:
 char RefEqLegacyPass::ID = 0;
 
 /// The public interface to this file...
-FunctionPass *llvm::createRefEqPass() { return new RefEqLegacyPass(); }
+FunctionPass *llvm::createRefEqPass(bool Trace) { return new RefEqLegacyPass(Trace); }
 
 INITIALIZE_PASS_BEGIN(RefEqLegacyPass, "refeq", "RefEq Optimization",
                       false, false)
 INITIALIZE_PASS_END(RefEqLegacyPass, "refeq", "RefEq Optimization",
                     false, false)
+
+static void traceFunction(Function &F) {
+  Instruction *I = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+
+	FunctionCallee Fn;
+	auto M = F.getParent();
+	auto Name = IRB.CreateGlobalStringPtr(F.getName());
+	auto NameTy = Name->getType();
+
+	Fn = M->getOrInsertFunction("san_trace", IRB.getVoidTy(), NameTy);
+	IRB.CreateCall(Fn, {Name});
+}
 
 static bool isPtrMask(Value *V) {
 	auto I = dyn_cast<IntrinsicInst>(V);
@@ -249,6 +269,9 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
 	DenseSet<Instruction*> ICmpOrSub;
 	//dbgs() << "Before Ref::\n" << F << "\n";
 
+	if (ClTrace && TraceEnabled) {
+		traceFunction(F);
+	}
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			if (auto Ret = dyn_cast<ICmpInst>(&Inst)) {

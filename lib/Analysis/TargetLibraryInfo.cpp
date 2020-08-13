@@ -661,6 +661,20 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
   unsigned NumParams = FTy.getNumParams();
 
   switch (F) {
+
+	case LibFunc_truncate64:
+		return true;
+	case LibFunc_readdir64:
+		return true;
+	case LibFunc_link:
+		return true;
+	case LibFunc_freopen64:
+		return true;
+
+	case LibFunc_putenv:
+		return true;
+	case LibFunc_chdir:
+		return true;
 	case LibFunc_dunder_isoc99_fscanf:
 		return true;
 	case LibFunc_vasprintf:

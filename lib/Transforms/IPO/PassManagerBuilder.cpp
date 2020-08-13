@@ -567,7 +567,7 @@ void PassManagerBuilder::populateModulePassManager(
   // Promote any localized global vars.
   MPM.add(createPromoteMemoryToRegisterPass());
 
-  MPM.add(createRefEqPass());
+  MPM.add(createRefEqPass(true));
 
   MPM.add(createDeadArgEliminationPass()); // Dead argument elimination
 
