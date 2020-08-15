@@ -119,9 +119,27 @@ static void traceFunction(Function &F) {
 	auto M = F.getParent();
 	auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	auto NameTy = Name->getType();
+	auto IntTy = IRB.getInt32Ty();
 
-	Fn = M->getOrInsertFunction("san_trace", IRB.getVoidTy(), NameTy);
-	IRB.CreateCall(Fn, {Name});
+	Fn = M->getOrInsertFunction("san_trace", IRB.getVoidTy(), NameTy, IntTy);
+	IRB.CreateCall(Fn, {Name, ConstantInt::get(IntTy, 0)});
+
+  for (auto &BB : F) {
+    for (auto &Inst : BB) {
+			auto CI = dyn_cast<CallBase>(&Inst);
+			if (CI) {
+				//IRB.SetInsertPoint(CI);
+				//IRB.CreateCall(Fn, {Name, ConstantInt::get(IntTy, 1)});
+			}
+			else {
+				auto RI = dyn_cast<ReturnInst>(&Inst);
+				if (RI) {
+					IRB.SetInsertPoint(RI);
+					IRB.CreateCall(Fn, {Name, ConstantInt::get(IntTy, 2)});
+				}
+			}
+		}
+	}
 }
 
 static bool isPtrMask(Value *V) {

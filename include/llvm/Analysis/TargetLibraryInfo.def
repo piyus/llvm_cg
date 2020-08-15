@@ -391,6 +391,10 @@ TLI_DEFINE_STRING_INTERNAL("__powf_finite")
 /// long double __powl_finite(long double x, long double y);
 TLI_DEFINE_ENUM_INTERNAL(powl_finite)
 TLI_DEFINE_STRING_INTERNAL("__powl_finite")
+
+TLI_DEFINE_ENUM_INTERNAL(sigsetjmp)
+TLI_DEFINE_STRING_INTERNAL("__sigsetjmp")
+
 /// double __sincospi_stret(double x);
 TLI_DEFINE_ENUM_INTERNAL(sincospi_stret)
 TLI_DEFINE_STRING_INTERNAL("__sincospi_stret")
@@ -753,6 +757,11 @@ TLI_DEFINE_STRING_INTERNAL("fabsl")
 /// int fclose(FILE *stream);
 TLI_DEFINE_ENUM_INTERNAL(fclose)
 TLI_DEFINE_STRING_INTERNAL("fclose")
+
+TLI_DEFINE_ENUM_INTERNAL(fcntl64)
+TLI_DEFINE_STRING_INTERNAL("fcntl64")
+
+
 /// FILE *fdopen(int fildes, const char *mode);
 TLI_DEFINE_ENUM_INTERNAL(fdopen)
 TLI_DEFINE_STRING_INTERNAL("fdopen")
@@ -930,6 +939,10 @@ TLI_DEFINE_STRING_INTERNAL("ftello")
 /// off64_t ftello64(FILE *stream)
 TLI_DEFINE_ENUM_INTERNAL(ftello64)
 TLI_DEFINE_STRING_INTERNAL("ftello64")
+
+TLI_DEFINE_ENUM_INTERNAL(ftruncate64)
+TLI_DEFINE_STRING_INTERNAL("ftruncate64")
+
 /// int ftrylockfile(FILE *file);
 TLI_DEFINE_ENUM_INTERNAL(ftrylockfile)
 TLI_DEFINE_STRING_INTERNAL("ftrylockfile")
@@ -957,6 +970,7 @@ TLI_DEFINE_STRING_INTERNAL("getchar_unlocked")
 
 TLI_DEFINE_ENUM_INTERNAL(getcwd)
 TLI_DEFINE_STRING_INTERNAL("getcwd")
+
 
 /// char *getenv(const char *name);
 TLI_DEFINE_ENUM_INTERNAL(getenv)
@@ -989,6 +1003,10 @@ TLI_DEFINE_STRING_INTERNAL("htonl")
 /// uint16_t htons(uint16_t hostshort);
 TLI_DEFINE_ENUM_INTERNAL(htons)
 TLI_DEFINE_STRING_INTERNAL("htons")
+
+TLI_DEFINE_ENUM_INTERNAL(ioctl)
+TLI_DEFINE_STRING_INTERNAL("ioctl")
+
 /// int iprintf(const char *format, ...);
 TLI_DEFINE_ENUM_INTERNAL(iprintf)
 TLI_DEFINE_STRING_INTERNAL("iprintf")
@@ -1160,6 +1178,10 @@ TLI_DEFINE_STRING_INTERNAL("pclose")
 /// void perror(const char *s);
 TLI_DEFINE_ENUM_INTERNAL(perror)
 TLI_DEFINE_STRING_INTERNAL("perror")
+
+TLI_DEFINE_ENUM_INTERNAL(pipe)
+TLI_DEFINE_STRING_INTERNAL("pipe")
+
 /// FILE *popen(const char *command, const char *mode);
 TLI_DEFINE_ENUM_INTERNAL(popen)
 TLI_DEFINE_STRING_INTERNAL("popen")
@@ -1264,6 +1286,10 @@ TLI_DEFINE_STRING_INTERNAL("roundl")
 TLI_DEFINE_ENUM_INTERNAL(scanf)
 TLI_DEFINE_STRING_INTERNAL("scanf")
 /// void setbuf(FILE *stream, char *buf);
+
+TLI_DEFINE_ENUM_INTERNAL(select)
+TLI_DEFINE_STRING_INTERNAL("select")
+
 TLI_DEFINE_ENUM_INTERNAL(setbuf)
 TLI_DEFINE_STRING_INTERNAL("setbuf")
 /// int setitimer(int which, const struct itimerval *value,
@@ -1277,6 +1303,9 @@ TLI_DEFINE_STRING_INTERNAL("setrlimit")
 /// int setvbuf(FILE *stream, char *buf, int type, size_t size);
 TLI_DEFINE_ENUM_INTERNAL(setvbuf)
 TLI_DEFINE_STRING_INTERNAL("setvbuf")
+
+TLI_DEFINE_ENUM_INTERNAL(siglongjmp)
+TLI_DEFINE_STRING_INTERNAL("siglongjmp")
 
 TLI_DEFINE_ENUM_INTERNAL(signal)
 TLI_DEFINE_STRING_INTERNAL("signal")
@@ -1525,6 +1554,10 @@ TLI_DEFINE_STRING_INTERNAL("vsprintf")
 /// int vsscanf(const char *s, const char *format, va_list arg);
 TLI_DEFINE_ENUM_INTERNAL(vsscanf)
 TLI_DEFINE_STRING_INTERNAL("vsscanf")
+
+TLI_DEFINE_ENUM_INTERNAL(waitpid)
+TLI_DEFINE_STRING_INTERNAL("waitpid")
+
 /// size_t wcslen (const wchar_t* wcs);
 TLI_DEFINE_ENUM_INTERNAL(wcslen)
 TLI_DEFINE_STRING_INTERNAL("wcslen")

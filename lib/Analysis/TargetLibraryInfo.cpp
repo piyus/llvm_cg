@@ -662,6 +662,17 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 
   switch (F) {
 
+	case LibFunc_sigsetjmp:
+		return true;
+	case LibFunc_fcntl64:
+		return true;
+	case LibFunc_ftruncate64:
+		return true;
+	case LibFunc_ioctl:
+		return true;
+	case LibFunc_pipe:
+		return true;
+
 	case LibFunc_truncate64:
 		return true;
 	case LibFunc_readdir64:
@@ -670,12 +681,18 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 		return true;
 	case LibFunc_freopen64:
 		return true;
+	case LibFunc_siglongjmp:
+		return true;
+	case LibFunc_waitpid:
+		return true;
 
 	case LibFunc_putenv:
 		return true;
 	case LibFunc_chdir:
 		return true;
 	case LibFunc_dunder_isoc99_fscanf:
+		return true;
+	case LibFunc_select:
 		return true;
 	case LibFunc_vasprintf:
 		return true;
