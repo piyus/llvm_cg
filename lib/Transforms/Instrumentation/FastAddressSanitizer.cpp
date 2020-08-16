@@ -3038,9 +3038,36 @@ postDominatesAnyUse(Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &
 }
 
 static bool
-postDominatesAnyPtrDef(Instruction *Base, PostDominatorTree &PDT, DenseSet<Value*> &Ptrs)
+mayBeNull(Instruction *Ptr) {
+	for (const Use &UI : Ptr->uses()) {
+	  auto I = dyn_cast<const ICmpInst>(UI.getUser());
+		if (I) {
+			auto Op1 = I->getOperand(0);
+			auto Op2 = I->getOperand(1);
+			assert(Ptr == Op1 || Ptr == Op2);
+			auto Op = (Ptr == Op1) ? Op2 : Op1;
+			if (isa<ConstantInt>(Op) || isa<ConstantPointerNull>(Op)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static bool
+postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT, DenseSet<Value*> &Ptrs)
 {
 	assert(!Ptrs.empty());
+
+	for (const Use &UI : Base->uses()) {
+	  auto I = dyn_cast<IntrinsicInst>(UI.getUser());
+		if (I && I->getIntrinsicID() == Intrinsic::ptrmask) {
+			if (mayBeNull(I)) {
+				return false;
+			}
+		}
+	}
+
 	for (auto V : Ptrs) {
 	  auto I = cast<const Instruction>(V);
 		assert(I);
@@ -4440,7 +4467,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			assert(BaseI);
 		}
 
-		if (postDominatesAnyPtrDef(BaseI, PDT, ValSet)) {
+		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet)) {
 			assert(!BaseToLenMap.count(Base));
 			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, NULL);
 			GetLengths.insert(BaseToLenMap[Base]);
