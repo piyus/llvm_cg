@@ -57,6 +57,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -66,8 +67,8 @@ using namespace llvm;
 
 #define DEBUG_TYPE "referenceequal"
 
-static cl::opt<bool> ClTrace("fasan-enable-trace", cl::desc("enable trace"), cl::Hidden,
-                           cl::init(false));
+static cl::opt<int> ClTrace("fasan-enable-trace", cl::desc("enable trace"), cl::Hidden,
+                           cl::init(0));
 
 namespace {
 
@@ -83,9 +84,11 @@ class RefEqLegacyPass : public FunctionPass {
 public:
   static char ID; // Pass identification, replacement for typeid
 	bool TraceEnabled;
+	bool Sanitizer;
 
-  RefEqLegacyPass(bool Trace = false) : FunctionPass(ID) {
+  RefEqLegacyPass(bool Trace = false, bool FSanitize = false) : FunctionPass(ID) {
 		TraceEnabled = Trace;
+		Sanitizer = FSanitize;
     initializeRefEqLegacyPassPass(*PassRegistry::getPassRegistry());
   }
 
@@ -103,40 +106,98 @@ private:
 char RefEqLegacyPass::ID = 0;
 
 /// The public interface to this file...
-FunctionPass *llvm::createRefEqPass(bool Trace) { return new RefEqLegacyPass(Trace); }
+FunctionPass *llvm::createRefEqPass(bool Trace, bool FSanitize) { return new RefEqLegacyPass(Trace, FSanitize); }
 
 INITIALIZE_PASS_BEGIN(RefEqLegacyPass, "refeq", "RefEq Optimization",
                       false, false)
 INITIALIZE_PASS_END(RefEqLegacyPass, "refeq", "RefEq Optimization",
                     false, false)
 
-static void traceFunction(Function &F) {
-  Instruction *I = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
-	IRBuilder<> IRB(I->getParent());
-	IRB.SetInsertPoint(I);
 
+static Value* getLineNo(Function &F, Instruction *I, Type *LineTy) {
+	int LineNum = 0;
+	if (F.getSubprogram() && I->getDebugLoc()) {
+		LineNum = I->getDebugLoc()->getLine();
+	}
+	return ConstantInt::get(LineTy, LineNum);
+}
+
+static void setBoundsForArgv(Function &F, int Sanitizer)
+{
+	if (F.getName() == "main" && F.arg_size() > 0) {
+		assert(F.arg_size() > 1 && F.arg_size() <= 3);
+		auto argc = F.getArg(0);
+		auto argv = F.getArg(1);
+		auto IntTy = argc->getType();
+		auto Fn = F.getParent()->getOrInsertFunction("san_copy_argv", argv->getType(), IntTy, argv->getType(), IntTy);
+  	Instruction *Entry = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+		auto Call = CallInst::Create(Fn, {argc, argv, ConstantInt::get(IntTy, Sanitizer)}, "", Entry);
+    argv->replaceAllUsesWith(Call);
+		Call->setArgOperand(1, argv);
+		if (F.arg_size() == 3) {
+			auto env = F.getArg(2);
+			auto Fn = F.getParent()->getOrInsertFunction("san_copy_env", env->getType(), env->getType());
+			auto Call = CallInst::Create(Fn, {env}, "", Entry);
+    	env->replaceAllUsesWith(Call);
+			Call->setArgOperand(0, env);
+		}
+	}
+}
+
+
+#define ENTRY_TY 0
+#define EXIT_TY 1
+#define ICMP_TY 2
+#define LOAD_TY 3
+#define STORE_TY 4
+#define PTR_TO_INT_TY 5
+
+static void insertTraceCall(Function &F, Instruction *I, Value *Val, int RecTy, bool InsertAfter)
+{
+	auto InsertPt = (InsertAfter) ? I->getNextNode() : I;
+	IRBuilder<> IRB(InsertPt);
+	auto IntTy = IRB.getInt32Ty();
 	FunctionCallee Fn;
 	auto M = F.getParent();
 	auto Name = IRB.CreateGlobalStringPtr(F.getName());
-	auto NameTy = Name->getType();
-	auto IntTy = IRB.getInt32Ty();
+	Value *Line = getLineNo(F, I, IntTy);
 
-	Fn = M->getOrInsertFunction("san_trace", IRB.getVoidTy(), NameTy, IntTy);
-	IRB.CreateCall(Fn, {Name, ConstantInt::get(IntTy, 0)});
+	if (Val->getType()->isPointerTy()) {
+		Val = ConstantInt::get(IntTy, 0);
+	}
+
+	Fn = M->getOrInsertFunction("san_trace", IRB.getVoidTy(), Name->getType(), IntTy, IntTy, Val->getType());
+	IRB.CreateCall(Fn, {Name, Line, ConstantInt::get(IntTy, RecTy), Val});
+}
+
+static void traceFunction(Function &F) {
+  Instruction *I = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+	auto Int64Ty = Type::getInt64Ty(F.getContext());
+
+	// void san_trace(char *name, int line, int record_ty, int64 val);
+	insertTraceCall(F, I, ConstantInt::get(Int64Ty, 0), ENTRY_TY, false);
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
-			auto CI = dyn_cast<CallBase>(&Inst);
-			if (CI) {
-				//IRB.SetInsertPoint(CI);
-				//IRB.CreateCall(Fn, {Name, ConstantInt::get(IntTy, 1)});
-			}
-			else {
-				auto RI = dyn_cast<ReturnInst>(&Inst);
-				if (RI) {
-					IRB.SetInsertPoint(RI);
-					IRB.CreateCall(Fn, {Name, ConstantInt::get(IntTy, 2)});
+			if (auto RI = dyn_cast<ReturnInst>(&Inst)) {
+				Value *RetVal = RI->getReturnValue();
+				if (!RetVal) {
+					RetVal = ConstantInt::get(Int64Ty, 0);
 				}
+				insertTraceCall(F, RI, RetVal, EXIT_TY, false);
+			}
+			else if (auto ICmp = dyn_cast<ICmpInst>(&Inst)) {
+				insertTraceCall(F, ICmp, ICmp, ICMP_TY, true);
+			}
+			else if (auto LI = dyn_cast<LoadInst>(&Inst)) {
+				insertTraceCall(F, LI, LI, LOAD_TY, true);
+			}
+			else if (auto SI = dyn_cast<StoreInst>(&Inst)) {
+				auto V = SI->getValueOperand();
+				insertTraceCall(F, SI, V, STORE_TY, false);
+			}
+			else if (auto PI = dyn_cast<PtrToIntInst>(&Inst)) {
+				insertTraceCall(F, PI, PI, PTR_TO_INT_TY, true);
 			}
 		}
 	}
@@ -281,13 +342,18 @@ static bool isInteriorConstant(Value *V) {
 	return (C->getZExtValue() >> 48) > 0;
 }
 
+#define TRACE_MASK    2
+#define SANITIZE_MASK 1
+
 /// This is the main transformation entry point for a function.
 bool RefEqLegacyPass::runOnFunction(Function &F) {
   const DataLayout &DL = F.getParent()->getDataLayout();
 	DenseSet<Instruction*> ICmpOrSub;
+
+	errs() << "Cl Trace: " << ClTrace << "\n";
 	//dbgs() << "Before Ref::\n" << F << "\n";
 
-	if (ClTrace && TraceEnabled) {
+	if ((ClTrace & TRACE_MASK) && TraceEnabled) {
 		traceFunction(F);
 	}
   for (auto &BB : F) {
@@ -319,6 +385,9 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
 		}
 	}
 	instrumentOtherPointerUsage(F, ICmpOrSub, DL);
+	if (TraceEnabled) {
+		setBoundsForArgv(F, (ClTrace & SANITIZE_MASK));
+	}
 	//dbgs() << "After Ref::\n" << F << "\n";
 	return true;
 }

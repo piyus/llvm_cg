@@ -3971,15 +3971,16 @@ void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI) {
 	recordStackPointer(&F, cast<Instruction>(Field));
 }
 
-static void setBoundsForArgv(Function &F)
+static void setBoundsForArgv(Function &F, int Sanitizer)
 {
 	if (F.getName() == "main" && F.arg_size() > 0) {
 		assert(F.arg_size() > 1 && F.arg_size() <= 3);
 		auto argc = F.getArg(0);
 		auto argv = F.getArg(1);
-		auto Fn = F.getParent()->getOrInsertFunction("san_copy_argv", argv->getType(), argc->getType(), argv->getType());
+		auto IntTy = argc->getType();
+		auto Fn = F.getParent()->getOrInsertFunction("san_copy_argv", argv->getType(), IntTy, argv->getType(), IntTy);
   	Instruction *Entry = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
-		auto Call = CallInst::Create(Fn, {argc, argv}, "", Entry);
+		auto Call = CallInst::Create(Fn, {argc, argv, ConstantInt::get(IntTy, Sanitizer)}, "", Entry);
     argv->replaceAllUsesWith(Call);
 		Call->setArgOperand(1, argv);
 		if (F.arg_size() == 3) {
@@ -4401,7 +4402,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	createReplacementMap(&F, ReplacementMap);
 
-	setBoundsForArgv(F);
+	//setBoundsForArgv(F);
 
   if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
 		errs() << "Before San\n" << F << "\n";
