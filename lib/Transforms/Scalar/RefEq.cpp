@@ -151,6 +151,7 @@ static void setBoundsForArgv(Function &F, int Sanitizer)
 #define LOAD_TY 3
 #define STORE_TY 4
 #define PTR_TO_INT_TY 5
+#define	SUB_TY 6
 
 static void insertTraceCall(Function &F, Instruction *I, Value *Val, int RecTy, bool InsertAfter)
 {
@@ -198,6 +199,11 @@ static void traceFunction(Function &F) {
 			}
 			else if (auto PI = dyn_cast<PtrToIntInst>(&Inst)) {
 				insertTraceCall(F, PI, PI, PTR_TO_INT_TY, true);
+			}
+			else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
+        if (BO->getOpcode() == Instruction::Sub) {
+					insertTraceCall(F, BO, BO, SUB_TY, true);
+				}
 			}
 		}
 	}
@@ -349,9 +355,6 @@ static bool isInteriorConstant(Value *V) {
 bool RefEqLegacyPass::runOnFunction(Function &F) {
   const DataLayout &DL = F.getParent()->getDataLayout();
 	DenseSet<Instruction*> ICmpOrSub;
-
-	errs() << "Cl Trace: " << ClTrace << "\n";
-	//dbgs() << "Before Ref::\n" << F << "\n";
 
 	if ((ClTrace & TRACE_MASK) && TraceEnabled) {
 		traceFunction(F);
