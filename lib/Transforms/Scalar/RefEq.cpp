@@ -166,6 +166,9 @@ static void insertTraceCall(Function &F, Instruction *I, Value *Val, int RecTy, 
 	if (Val->getType()->isPointerTy()) {
 		Val = ConstantInt::get(IntTy, 0);
 	}
+	else if (Val->getType()->isIntegerTy()) {
+		Val = IRB.CreateZExtOrTrunc(Val, IRB.getInt64Ty());
+	}
 
 	Fn = M->getOrInsertFunction("san_trace", IRB.getVoidTy(), Name->getType(), IntTy, IntTy, Val->getType());
 	IRB.CreateCall(Fn, {Name, Line, ConstantInt::get(IntTy, RecTy), Val});
