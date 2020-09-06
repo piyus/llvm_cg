@@ -67,8 +67,8 @@ using namespace llvm;
 
 #define DEBUG_TYPE "referenceequal"
 
-static cl::opt<int> ClTrace("fasan-enable-trace", cl::desc("enable trace"), cl::Hidden,
-                           cl::init(0));
+static cl::opt<bool> ClTrace("fasan-enable-trace", cl::desc("enable trace"), cl::Hidden,
+                           cl::init(false));
 
 namespace {
 
@@ -83,12 +83,10 @@ class RefEqLegacyPass : public FunctionPass {
 
 public:
   static char ID; // Pass identification, replacement for typeid
-	bool TraceEnabled;
-	bool Sanitizer;
+	bool FirstCall;
 
-  RefEqLegacyPass(bool Trace = false, bool FSanitize = false) : FunctionPass(ID) {
-		TraceEnabled = Trace;
-		Sanitizer = FSanitize;
+  RefEqLegacyPass(bool First = false) : FunctionPass(ID) {
+		FirstCall = First;
     initializeRefEqLegacyPassPass(*PassRegistry::getPassRegistry());
   }
 
@@ -106,7 +104,7 @@ private:
 char RefEqLegacyPass::ID = 0;
 
 /// The public interface to this file...
-FunctionPass *llvm::createRefEqPass(bool Trace, bool FSanitize) { return new RefEqLegacyPass(Trace, FSanitize); }
+FunctionPass *llvm::createRefEqPass(bool FirstCall) { return new RefEqLegacyPass(FirstCall); }
 
 INITIALIZE_PASS_BEGIN(RefEqLegacyPass, "refeq", "RefEq Optimization",
                       false, false)
@@ -122,16 +120,16 @@ static Value* getLineNo(Function &F, Instruction *I, Type *LineTy) {
 	return ConstantInt::get(LineTy, LineNum);
 }
 
-static void setBoundsForArgv(Function &F, int Sanitizer)
+static void setBoundsForArgv(Function &F)
 {
 	if (F.getName() == "main" && F.arg_size() > 0) {
 		assert(F.arg_size() > 1 && F.arg_size() <= 3);
 		auto argc = F.getArg(0);
 		auto argv = F.getArg(1);
 		auto IntTy = argc->getType();
-		auto Fn = F.getParent()->getOrInsertFunction("san_copy_argv", argv->getType(), IntTy, argv->getType(), IntTy);
+		auto Fn = F.getParent()->getOrInsertFunction("san_copy_argv", argv->getType(), IntTy, argv->getType());
   	Instruction *Entry = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
-		auto Call = CallInst::Create(Fn, {argc, argv, ConstantInt::get(IntTy, Sanitizer)}, "", Entry);
+		auto Call = CallInst::Create(Fn, {argc, argv}, "", Entry);
     argv->replaceAllUsesWith(Call);
 		Call->setArgOperand(1, argv);
 		if (F.arg_size() == 3) {
@@ -359,7 +357,7 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
   const DataLayout &DL = F.getParent()->getDataLayout();
 	DenseSet<Instruction*> ICmpOrSub;
 
-	if ((ClTrace & TRACE_MASK) && TraceEnabled) {
+	if (ClTrace && FirstCall) {
 		traceFunction(F);
 	}
   for (auto &BB : F) {
@@ -391,9 +389,8 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
 		}
 	}
 	instrumentOtherPointerUsage(F, ICmpOrSub, DL);
-	if (TraceEnabled) {
-		setBoundsForArgv(F, (ClTrace & SANITIZE_MASK));
+	if (FirstCall) {
+		setBoundsForArgv(F);
 	}
-	//dbgs() << "After Ref::\n" << F << "\n";
 	return true;
 }

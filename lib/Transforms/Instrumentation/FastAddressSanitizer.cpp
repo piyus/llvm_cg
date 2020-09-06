@@ -4371,6 +4371,13 @@ static void restoreStack(Function &F, DenseSet<Instruction*> &RestorePoints, Val
 }
 
 
+static void enableMasking(Function &F) {
+  	Instruction *Entry = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+		IRBuilder<> IRB(Entry);
+		auto Fn = F.getParent()->getOrInsertFunction("san_enable_mask", IRB.getVoidTy());
+		IRB.CreateCall(Fn, {});
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
@@ -4402,6 +4409,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	createReplacementMap(&F, ReplacementMap);
 
+	enableMasking(F);
 	//setBoundsForArgv(F);
 
   if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
