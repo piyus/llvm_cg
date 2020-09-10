@@ -3802,6 +3802,31 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 #endif
 }
 #endif
+
+static Value* getNoInteriorMap(Function &F, Instruction *Unused, Value *Oper, DenseMap<Value*, Value*> &RepMap)
+{
+	Value *Ret;
+	if (RepMap.count(Oper)) {
+		Ret = RepMap[Oper];
+	}
+	else {
+		Instruction *I = dyn_cast<Instruction>(Oper);
+		if (!I) {
+			I = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+			assert(I);
+		}
+		else if (isa<PHINode>(I)) {
+			I = I->getParent()->getFirstNonPHI();
+		}
+		else {
+			I = I->getNextNode();
+		}
+		Ret = getNoInterior(F, I, Oper);
+		RepMap[Oper] = Ret;
+	}
+	return Ret;
+}
+
  
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths, DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites) {
 	int id = 0;
@@ -3810,32 +3835,52 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	IRBuilder<> IRB(Entry);
 	auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	DenseSet<AllocaInst*> AllocaInsts;
+	DenseMap<Value*, Value*> RepMap;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			Instruction *I = &Inst;
 			Value *Ret;
-			if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
+			Value *Oper;
+			if (GetLengths.count(I)) {
+				LoadInst *LI = dyn_cast<LoadInst>(I);
+				assert(LI);
+				//Oper = LI->getPointerOperand();
 				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+				//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
+				LI->setOperand(0, Ret);
+			}
+			else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
+				Oper = LI->getPointerOperand();
+				Ret = getNoInteriorMap(F, LI, Oper, RepMap);
+				//Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
 				LI->setOperand(0, Ret);
 			}
 			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
 				//Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
 				Value *Val = SI->getValueOperand();
-				Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++, Name);
+				Oper = SI->getPointerOperand();
+				Ret = getNoInteriorMap(F, SI, Oper, RepMap);
+				//Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++, Name);
 				SI->setOperand(1, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
-				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+				//Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+				Oper = AI->getPointerOperand();
+				Ret = getNoInteriorMap(F, AI, Oper, RepMap);
 				AI->setOperand(0, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-				Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+				//Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+				Oper = AI->getPointerOperand();
+				Ret = getNoInteriorMap(F, AI, Oper, RepMap);
 				AI->setOperand(0, Ret);
 			}
 			else if (auto *CI = dyn_cast<CallBase>(I)) {
 				if (CI->isIndirectCall()) {
-					Ret = addHandler(F, I, CI->getCalledOperand(), NULL, GetLengths, true, id++, Name);
+					//Ret = addHandler(F, I, CI->getCalledOperand(), NULL, GetLengths, true, id++, Name);
+					Oper = CI->getCalledOperand();
+					Ret = getNoInteriorMap(F, CI, Oper, RepMap);
 					CI->setCalledOperand(Ret);
 				}
 				else {
@@ -3849,7 +3894,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				}
 			}
 			else if (auto R = dyn_cast<ReturnInst>(I)) {
-				Value *RetVal = R->getReturnValue();
+				//Value *RetVal = R->getReturnValue();
 				//addReturn(F, R, RetVal, Name);
 			}
 			else if (auto AI = dyn_cast<AllocaInst>(I)) {
@@ -4531,7 +4576,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	instrumentPageFaultHandler(F, GetLengths, Stores, CallSites);
-	instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
+	//instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
 	if (!RestorePoints.empty()) {
 		restoreStack(F, RestorePoints, StackBase);
