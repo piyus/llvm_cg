@@ -3130,9 +3130,10 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 	IRBuilder<> IRB(InstPtr->getParent());
 
 	if (isa<PHINode>(Ptr)) {
-		auto InstSz = dyn_cast<Instruction>(Size);
-		if (InstSz && InstSz->getParent() == InstPtr->getParent()) {
-			IRB.SetInsertPoint(InstSz->getNextNode());
+		auto BaseI = dyn_cast<PHINode>(Base);
+		auto SizeI = dyn_cast<Instruction>(Size);
+		if (SizeI && BaseI && BaseI->getParent() == InstPtr->getParent()) {
+			IRB.SetInsertPoint(SizeI->getNextNode());
 		}
 		else {
 			IRB.SetInsertPoint(InstPtr->getParent()->getFirstNonPHI());
@@ -4262,7 +4263,16 @@ handlePhiBase(const DataLayout &DL, PHINode *Phi,
 			Base = getPhiOrSelectBase(DL, Base, PhiAndSelectMap, RepMap);
 		}
 		auto PrevBB = Phi->getIncomingBlock(i);
-		Value *Op = addTypeCastForPhiOp(Base, PrevBB, PhiOp->getType());
+		Value *Op = NULL;
+		for (unsigned j = 0; j < i; j++) {
+			if (PhiBase->getIncomingBlock(j) == PrevBB) {
+				Op = PhiBase->getIncomingValue(j);
+				break;
+			}
+		}
+		if (Op == NULL) {
+			Op = addTypeCastForPhiOp(Base, PrevBB, PhiOp->getType());
+		}
 		PhiBase->addIncoming(Op, PrevBB);
 	}
 }
