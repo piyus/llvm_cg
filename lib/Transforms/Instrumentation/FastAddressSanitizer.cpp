@@ -2905,7 +2905,12 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 			InstPt = &*F.begin()->getFirstInsertionPt();
 		}
 		else {
-			InstPt = InstPt->getNextNode();
+			if (isa<PHINode>(InstPt)) {
+				InstPt = InstPt->getParent()->getFirstNonPHI();
+			}
+			else {
+				InstPt = InstPt->getNextNode();
+			}
 		}
 	}
 
@@ -3125,7 +3130,13 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 	IRBuilder<> IRB(InstPtr->getParent());
 
 	if (isa<PHINode>(Ptr)) {
-		IRB.SetInsertPoint(InstPtr->getParent()->getFirstNonPHI());
+		auto InstSz = dyn_cast<Instruction>(Size);
+		if (InstSz && InstSz->getParent() == InstPtr->getParent()) {
+			IRB.SetInsertPoint(InstSz->getNextNode());
+		}
+		else {
+			IRB.SetInsertPoint(InstPtr->getParent()->getFirstNonPHI());
+		}
 	}
 	else {
 		IRB.SetInsertPoint(InstPtr->getNextNode());
@@ -3353,6 +3364,7 @@ static void createInteriorCall(CallBase *CB, DenseMap<Value*, Value*> Interiors)
   CI->eraseFromParent();
 }
 
+#if 0
 void FastAddressSanitizer::createInteriorFn(Function *F) {
 
 	ValueToValueMapTy VMap;
@@ -3392,6 +3404,7 @@ void FastAddressSanitizer::createInteriorFn(Function *F) {
 	  DestI++;
 	}
 }
+#endif
 
 static void createReplacementMap(Function *F, DenseMap<Value*, Value*> &ReplacementMap)
 {
@@ -3442,18 +3455,17 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 			Ret = ReplacementMap[Ret];
 		}
 	}
+	else {
+		Ret = GetUnderlyingObject(V, DL, 0);
+		assert(isa<PHINode>(Ret) || isa<SelectInst>(Ret));
+		Offset = INVALID_OFFSET;
+	}
 	return Ret;
 }
 
 static Value* getBaseIfInterior(Function &F, Value *V, const DataLayout &DL, DenseMap<Value*, Value*> &ReplacementMap) {
 	int64_t Offset;
 	Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
-	if (Base == NULL) {
-		Base = GetUnderlyingObject(V, DL, 0);
-		Offset = INVALID_OFFSET;
-		//errs() << "PARAM: " << *V << "\n";
-		//errs() << F << "\n";
-	}
 	assert(Base);
 	if (Offset != 0) {
 		return Base;
@@ -3517,6 +3529,7 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 	return Call;
 }
 
+#if 0
 static uint64_t getAllocaSizeInBytes1(const AllocaInst &AI)
 {
 	uint64_t ArraySize = 1;
@@ -3530,7 +3543,9 @@ static uint64_t getAllocaSizeInBytes1(const AllocaInst &AI)
       AI.getModule()->getDataLayout().getTypeAllocSize(Ty);
   return SizeInBytes * ArraySize;
 }
+#endif
 
+#if 0
 static void addAlloca(Function &F, AllocaInst *AI, int id, Value *Name) {
 	uint64_t Size = (AI->isStaticAlloca()) ? getAllocaSizeInBytes1(*AI) : 0;
 	IRBuilder<> IRB(AI->getNextNode());
@@ -3650,6 +3665,7 @@ static void addReturn(Function &F, Instruction *I, Value *Ptr, Value *Name) {
 	auto *Line = ConstantInt::get(LineTy, LineNum);
 	IRB.CreateCall(Fn, {Ptr, Line, Name});
 }
+#endif
 
 /*
 static Value* getNoInterior(Function &F, Instruction *I, Value *V)
@@ -3690,6 +3706,7 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	//return IRB.CreateIntToPtr(Interior, V->getType());
 }
 
+#if 0
 static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,
 	DenseSet<Instruction*> &IntToPtr, DenseSet<Instruction*> &PtrToInt, const DataLayout &DL)
 {
@@ -3723,6 +3740,7 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 	}
 
 }
+#endif
 
 #if 0
 static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,
@@ -3858,7 +3876,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 			}
 			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
 				//Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
-				Value *Val = SI->getValueOperand();
+				//Value *Val = SI->getValueOperand();
 				Oper = SI->getPointerOperand();
 				Ret = getNoInteriorMap(F, SI, Oper, RepMap);
 				//Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++, Name);
@@ -3893,19 +3911,19 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 					}
 				}
 			}
-			else if (auto R = dyn_cast<ReturnInst>(I)) {
+			//else if (auto R = dyn_cast<ReturnInst>(I)) {
 				//Value *RetVal = R->getReturnValue();
 				//addReturn(F, R, RetVal, Name);
-			}
+			//}
 			else if (auto AI = dyn_cast<AllocaInst>(I)) {
 				AllocaInsts.insert(AI);
 			}
 		}
 	}
 
-	for (auto AI : AllocaInsts) {
+	//for (auto AI : AllocaInsts) {
 		//addAlloca(F, AI, id++, Name);
-	}
+	//}
 
 //#if 0
 	int NumArgsAdded = 0;
@@ -4016,6 +4034,7 @@ void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI) {
 	recordStackPointer(&F, cast<Instruction>(Field));
 }
 
+#if 0
 static void setBoundsForArgv(Function &F, int Sanitizer)
 {
 	if (F.getName() == "main" && F.arg_size() > 0) {
@@ -4037,6 +4056,7 @@ static void setBoundsForArgv(Function &F, int Sanitizer)
 		}
 	}
 }
+#endif
 
 void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*> &UnsafeUses,
 	DenseMap<Value*, uint64_t> &UnsafePointers, DenseSet<CallBase*> &CallSites,
@@ -4151,6 +4171,124 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 	}
 }
 
+static void
+handleSelectBase(const DataLayout &DL, SelectInst *Sel,
+	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap);
+
+static void
+handlePhiBase(const DataLayout &DL, PHINode *Phi,
+	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap);
+
+static Value*
+getPhiOrSelectBase(const DataLayout &DL, Value *Base,
+	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap)
+{
+	assert(isa<PHINode>(Base) || isa<SelectInst>(Base));
+	if (!PhiAndSelectMap.count(Base)) {
+		if (isa<PHINode>(Base)) {
+			handlePhiBase(DL, dyn_cast<PHINode>(Base), PhiAndSelectMap, RepMap);
+		}
+		else if (isa<SelectInst>(Base)) {
+			handleSelectBase(DL, dyn_cast<SelectInst>(Base), PhiAndSelectMap, RepMap);
+		}
+	}
+	assert(PhiAndSelectMap.count(Base));
+	return PhiAndSelectMap[Base];
+}
+
+static void
+handleSelectBase(const DataLayout &DL, SelectInst *Sel,
+	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap)
+{
+	Value *TrueOp = Sel->getTrueValue();
+	Value *FalseOp = Sel->getFalseValue();
+	IRBuilder<> IRB(Sel);
+	SelectInst *SelBase =
+		dyn_cast<SelectInst>(IRB.CreateSelect(Sel->getCondition(), TrueOp, FalseOp));
+	int64_t Offset;
+
+	assert(!PhiAndSelectMap.count(Sel));
+	PhiAndSelectMap[Sel] = SelBase;
+
+	Value *Base = tryGettingBaseAndOffset(Sel->getTrueValue(), Offset, DL, RepMap);
+	assert(Base);
+	if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
+		Base = getPhiOrSelectBase(DL, Base, PhiAndSelectMap, RepMap);
+	}
+	IRB.SetInsertPoint(SelBase);
+
+	if (Base->getType() != TrueOp->getType()) {
+		Base = IRB.CreateBitCast(Base, TrueOp->getType());
+	}
+	SelBase->setTrueValue(Base);
+
+	Base = tryGettingBaseAndOffset(Sel->getFalseValue(), Offset, DL, RepMap);
+	assert(Base);
+	if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
+		Base = getPhiOrSelectBase(DL, Base, PhiAndSelectMap, RepMap);
+	}
+
+	if (Base->getType() != FalseOp->getType()) {
+		Base = IRB.CreateBitCast(Base, FalseOp->getType());
+	}
+	SelBase->setFalseValue(Base);
+}
+
+static Value* addTypeCastForPhiOp(Value *Base, BasicBlock *BB, Type *DstTy)
+{
+	if (Base->getType() == DstTy) {
+		return Base;
+	}
+	IRBuilder<> IRB(BB->getTerminator());
+	return IRB.CreateBitCast(Base, DstTy);
+}
+
+static void
+handlePhiBase(const DataLayout &DL, PHINode *Phi,
+	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap)
+{
+	IRBuilder<> IRB(Phi);
+	PHINode *PhiBase = IRB.CreatePHI(Phi->getType(), Phi->getNumIncomingValues());
+	int64_t Offset;
+
+	assert(!PhiAndSelectMap.count(Phi));
+	PhiAndSelectMap[Phi] = PhiBase;
+
+	for (unsigned i = 0; i < Phi->getNumIncomingValues(); i++) {
+		auto PhiOp = Phi->getIncomingValue(i);
+		Value *Base = tryGettingBaseAndOffset(PhiOp, Offset, DL, RepMap);
+		assert(Base);
+		if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
+			Base = getPhiOrSelectBase(DL, Base, PhiAndSelectMap, RepMap);
+		}
+		auto PrevBB = Phi->getIncomingBlock(i);
+		Value *Op = addTypeCastForPhiOp(Base, PrevBB, PhiOp->getType());
+		PhiBase->addIncoming(Op, PrevBB);
+	}
+}
+
+static void
+findPhiAndSelectBases(Function &F, DenseSet<Value*> &PhiAndSelectNodes,
+	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap)
+{
+  const DataLayout &DL = F.getParent()->getDataLayout();
+
+	for (Value *Node : PhiAndSelectNodes) {
+		if (!PhiAndSelectMap.count(Node)) {
+			if (auto Phi = dyn_cast<PHINode>(Node)) {
+				handlePhiBase(DL, Phi, PhiAndSelectMap, RepMap);
+			}
+			else if (auto Sel = dyn_cast<SelectInst>(Node)) {
+				handleSelectBase(DL, Sel, PhiAndSelectMap, RepMap);
+			}
+			else {
+				assert(0);
+			}
+			assert(PhiAndSelectMap.count(Node));
+		}
+	}
+}
+
 static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &UnsafePointers,
 	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap,
 	DenseMap<Value*, Value*> &PtrToBaseMap,
@@ -4169,33 +4307,29 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 		}
 
 		Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
+		assert(Base);
 
-		if (Base) {
-			PtrToBaseMap[V] = Base;
-			if (Offset >= 0) {
-				bool Static = false;
-				uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
-				Offset += TypeSize;
-				if (Offset > (int64_t)BaseSize) {
-					if (Static) {
-						errs() << "Out of bound array access\n";
-						errs() << F << "\n";
-						errs() << "Base: " << *Base << "\n";
-						errs() << "Val: " << *V << "\n";
-						exit(0);
-					}
-					UnsafeMap[V] = std::make_pair(Base, Offset);
-					TmpSet.insert(V);
+		PtrToBaseMap[V] = Base;
+		if (Offset >= 0) {
+			bool Static = false;
+			uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
+			Offset += TypeSize;
+			if (Offset > (int64_t)BaseSize) {
+				if (Static) {
+					errs() << "Out of bound array access\n";
+					errs() << F << "\n";
+					errs() << "Base: " << *Base << "\n";
+					errs() << "Val: " << *V << "\n";
+					exit(0);
 				}
-			}
-			else {
-				Value *Base1 = GetPointerBaseWithConstantOffset(V, Offset, DL);
-				UnsafeMap[V] = std::make_pair(Base1, Offset);
+				UnsafeMap[V] = std::make_pair(Base, Offset);
 				TmpSet.insert(V);
 			}
 		}
 		else {
-			//errs() << "Multiple Base\n";
+			Value *Base1 = GetPointerBaseWithConstantOffset(V, Offset, DL);
+			UnsafeMap[V] = std::make_pair(Base1, Offset);
+			TmpSet.insert(V);
 		}
 	}
 }
@@ -4475,6 +4609,29 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, PtrToBaseMap, TmpSet, DT, ReplacementMap, TLI);
 	removeRedundentAccesses(F, UnsafeMap, TmpSet, DT, AA);
+
+	DenseSet<Value*> PhiAndSelectNodes;
+	DenseMap<Value*, Value*> PhiAndSelectMap;
+
+	for (auto It : PtrToBaseMap) {
+		Value *Base = It.second;
+		if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
+			if (!PhiAndSelectNodes.count(Base)) {
+				PhiAndSelectNodes.insert(Base);
+			}
+		}
+	}
+
+	findPhiAndSelectBases(F, PhiAndSelectNodes, PhiAndSelectMap, ReplacementMap);
+
+	for (auto It : PtrToBaseMap) {
+		Value *Base = It.second;
+		if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
+			assert(PhiAndSelectMap.count(Base));
+			PtrToBaseMap[It.first] = PhiAndSelectMap[Base];
+			errs() << "SRC: " << *It.first << "  BASE: " << *PhiAndSelectMap[Base] << "\n";
+		}
+	}
 
 
 	PostDominatorTree PDT(F);
