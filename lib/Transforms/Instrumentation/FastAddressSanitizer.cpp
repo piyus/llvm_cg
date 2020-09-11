@@ -4417,10 +4417,12 @@ static void restoreStack(Function &F, DenseSet<Instruction*> &RestorePoints, Val
 
 
 static void enableMasking(Function &F) {
+	if (F.getName() == "main") {
   	Instruction *Entry = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
 		IRBuilder<> IRB(Entry);
 		auto Fn = F.getParent()->getOrInsertFunction("san_enable_mask", IRB.getVoidTy());
 		IRB.CreateCall(Fn, {});
+	}
 }
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
