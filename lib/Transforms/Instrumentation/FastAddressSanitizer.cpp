@@ -3005,6 +3005,28 @@ static void addUnsafePointer(DenseMap<Value*, uint64_t> &Map, Value *V, uint64_t
 	}
 }
 
+Value* getInteriorVal(Function &F, Value *V)
+{
+	Instruction *I = dyn_cast<Instruction>(V);
+	if (!I) {
+		I = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+	}
+	else {
+		if (isa<PHINode>(I)) {
+			I = I->getParent()->getFirstNonPHI();
+		}
+		else {
+			I = I->getNextNode();
+		}
+	}
+	IRBuilder<> IRB(I);
+
+	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
+	auto Interior = IRB.CreateOr(VInt, (0xcabaULL << 48));
+	return IRB.CreateIntToPtr(Interior, V->getType());
+}
+
+
 Value* getInterior(Function &F, Instruction *I, Value *V)
 {
 	IRBuilder<> IRB(I->getParent());
@@ -4173,24 +4195,24 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 }
 
 static void
-handleSelectBase(const DataLayout &DL, SelectInst *Sel,
+handleSelectBase(Function &F, const DataLayout &DL, SelectInst *Sel,
 	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap);
 
 static void
-handlePhiBase(const DataLayout &DL, PHINode *Phi,
+handlePhiBase(Function &F, const DataLayout &DL, PHINode *Phi,
 	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap);
 
 static Value*
-getPhiOrSelectBase(const DataLayout &DL, Value *Base,
+getPhiOrSelectBase(Function &F, const DataLayout &DL, Value *Base,
 	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap)
 {
 	assert(isa<PHINode>(Base) || isa<SelectInst>(Base));
 	if (!PhiAndSelectMap.count(Base)) {
 		if (isa<PHINode>(Base)) {
-			handlePhiBase(DL, dyn_cast<PHINode>(Base), PhiAndSelectMap, RepMap);
+			handlePhiBase(F, DL, dyn_cast<PHINode>(Base), PhiAndSelectMap, RepMap);
 		}
 		else if (isa<SelectInst>(Base)) {
-			handleSelectBase(DL, dyn_cast<SelectInst>(Base), PhiAndSelectMap, RepMap);
+			handleSelectBase(F, DL, dyn_cast<SelectInst>(Base), PhiAndSelectMap, RepMap);
 		}
 	}
 	assert(PhiAndSelectMap.count(Base));
@@ -4198,7 +4220,7 @@ getPhiOrSelectBase(const DataLayout &DL, Value *Base,
 }
 
 static void
-handleSelectBase(const DataLayout &DL, SelectInst *Sel,
+handleSelectBase(Function &F, const DataLayout &DL, SelectInst *Sel,
 	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap)
 {
 	Value *TrueOp = Sel->getTrueValue();
@@ -4211,12 +4233,18 @@ handleSelectBase(const DataLayout &DL, SelectInst *Sel,
 	assert(!PhiAndSelectMap.count(Sel));
 	PhiAndSelectMap[Sel] = SelBase;
 
+	IRB.SetInsertPoint(SelBase);
+
 	Value *Base = tryGettingBaseAndOffset(Sel->getTrueValue(), Offset, DL, RepMap);
 	assert(Base);
+
 	if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
-		Base = getPhiOrSelectBase(DL, Base, PhiAndSelectMap, RepMap);
+		Base = getPhiOrSelectBase(F, DL, Base, PhiAndSelectMap, RepMap);
 	}
-	IRB.SetInsertPoint(SelBase);
+
+	if (Offset != 0 || isa<Constant>(Base)) {
+		Base = getInterior(F, SelBase, Base);
+	}
 
 	if (Base->getType() != TrueOp->getType()) {
 		Base = IRB.CreateBitCast(Base, TrueOp->getType());
@@ -4226,12 +4254,18 @@ handleSelectBase(const DataLayout &DL, SelectInst *Sel,
 	Base = tryGettingBaseAndOffset(Sel->getFalseValue(), Offset, DL, RepMap);
 	assert(Base);
 	if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
-		Base = getPhiOrSelectBase(DL, Base, PhiAndSelectMap, RepMap);
+		Base = getPhiOrSelectBase(F, DL, Base, PhiAndSelectMap, RepMap);
+	}
+
+	if (Offset != 0 || isa<Constant>(Base)) {
+		Base = getInterior(F, SelBase, Base);
 	}
 
 	if (Base->getType() != FalseOp->getType()) {
 		Base = IRB.CreateBitCast(Base, FalseOp->getType());
 	}
+
+
 	SelBase->setFalseValue(Base);
 }
 
@@ -4245,7 +4279,7 @@ static Value* addTypeCastForPhiOp(Value *Base, BasicBlock *BB, Type *DstTy)
 }
 
 static void
-handlePhiBase(const DataLayout &DL, PHINode *Phi,
+handlePhiBase(Function &F, const DataLayout &DL, PHINode *Phi,
 	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap)
 {
 	IRBuilder<> IRB(Phi);
@@ -4256,12 +4290,7 @@ handlePhiBase(const DataLayout &DL, PHINode *Phi,
 	PhiAndSelectMap[Phi] = PhiBase;
 
 	for (unsigned i = 0; i < Phi->getNumIncomingValues(); i++) {
-		auto PhiOp = Phi->getIncomingValue(i);
-		Value *Base = tryGettingBaseAndOffset(PhiOp, Offset, DL, RepMap);
-		assert(Base);
-		if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
-			Base = getPhiOrSelectBase(DL, Base, PhiAndSelectMap, RepMap);
-		}
+
 		auto PrevBB = Phi->getIncomingBlock(i);
 		Value *Op = NULL;
 		for (unsigned j = 0; j < i; j++) {
@@ -4270,9 +4299,22 @@ handlePhiBase(const DataLayout &DL, PHINode *Phi,
 				break;
 			}
 		}
+
 		if (Op == NULL) {
+
+			auto PhiOp = Phi->getIncomingValue(i);
+			Value *Base = tryGettingBaseAndOffset(PhiOp, Offset, DL, RepMap);
+			assert(Base);
+			if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
+				Base = getPhiOrSelectBase(F, DL, Base, PhiAndSelectMap, RepMap);
+			}
+			if (Offset != 0 || isa<Constant>(Base)) {
+				Base = getInteriorVal(F, Base);
+			}
 			Op = addTypeCastForPhiOp(Base, PrevBB, PhiOp->getType());
+
 		}
+
 		PhiBase->addIncoming(Op, PrevBB);
 	}
 }
@@ -4286,10 +4328,10 @@ findPhiAndSelectBases(Function &F, DenseSet<Value*> &PhiAndSelectNodes,
 	for (Value *Node : PhiAndSelectNodes) {
 		if (!PhiAndSelectMap.count(Node)) {
 			if (auto Phi = dyn_cast<PHINode>(Node)) {
-				handlePhiBase(DL, Phi, PhiAndSelectMap, RepMap);
+				handlePhiBase(F, DL, Phi, PhiAndSelectMap, RepMap);
 			}
 			else if (auto Sel = dyn_cast<SelectInst>(Node)) {
-				handleSelectBase(DL, Sel, PhiAndSelectMap, RepMap);
+				handleSelectBase(F, DL, Sel, PhiAndSelectMap, RepMap);
 			}
 			else {
 				assert(0);
