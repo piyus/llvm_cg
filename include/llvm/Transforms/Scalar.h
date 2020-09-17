@@ -335,6 +335,7 @@ FunctionPass *createDivRemPairsPass();
 //
 FunctionPass *createMemCpyOptPass();
 FunctionPass *createRefEqPass(bool FirstCall = false);
+FunctionPass *createFastTracePass(bool FirstCall = false);
 
 //===----------------------------------------------------------------------===//
 //

@@ -67,9 +67,6 @@ using namespace llvm;
 
 #define DEBUG_TYPE "referenceequal"
 
-static cl::opt<bool> ClTrace("fasan-enable-trace", cl::desc("enable trace"), cl::Hidden,
-                           cl::init(false));
-
 namespace {
 
 //===----------------------------------------------------------------------===//
@@ -111,7 +108,7 @@ INITIALIZE_PASS_BEGIN(RefEqLegacyPass, "refeq", "RefEq Optimization",
 INITIALIZE_PASS_END(RefEqLegacyPass, "refeq", "RefEq Optimization",
                     false, false)
 
-
+#if 0
 static Value* getLineNo(Function &F, Instruction *I, Type *LineTy) {
 	int LineNum = 0;
 	if (F.getSubprogram() && I->getDebugLoc()) {
@@ -119,6 +116,7 @@ static Value* getLineNo(Function &F, Instruction *I, Type *LineTy) {
 	}
 	return ConstantInt::get(LineTy, LineNum);
 }
+#endif
 
 static void setBoundsForArgv(Function &F)
 {
@@ -142,6 +140,7 @@ static void setBoundsForArgv(Function &F)
 	}
 }
 
+#if 0
 
 #define ENTRY_TY 0
 #define EXIT_TY 1
@@ -209,6 +208,8 @@ static void traceFunction(Function &F) {
 		}
 	}
 }
+
+#endif
 
 static bool isPtrMask(Value *V) {
 	auto I = dyn_cast<IntrinsicInst>(V);
@@ -349,17 +350,11 @@ static bool isInteriorConstant(Value *V) {
 	return (C->getZExtValue() >> 48) > 0;
 }
 
-#define TRACE_MASK    2
-#define SANITIZE_MASK 1
-
 /// This is the main transformation entry point for a function.
 bool RefEqLegacyPass::runOnFunction(Function &F) {
   const DataLayout &DL = F.getParent()->getDataLayout();
 	DenseSet<Instruction*> ICmpOrSub;
 
-	if (ClTrace && FirstCall) {
-		traceFunction(F);
-	}
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			if (auto Ret = dyn_cast<ICmpInst>(&Inst)) {

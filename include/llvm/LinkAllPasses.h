@@ -189,6 +189,7 @@ namespace {
       (void) llvm::createNewGVNPass();
       (void) llvm::createMemCpyOptPass();
       (void) llvm::createRefEqPass();
+      (void) llvm::createFastTracePass();
       (void) llvm::createLoopDeletionPass();
       (void) llvm::createPostDomTree();
       (void) llvm::createInstructionNamerPass();

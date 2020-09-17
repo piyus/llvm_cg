@@ -286,6 +286,7 @@ void initializeMachineTraceMetricsPass(PassRegistry&);
 void initializeMachineVerifierPassPass(PassRegistry&);
 void initializeMemCpyOptLegacyPassPass(PassRegistry&);
 void initializeRefEqLegacyPassPass(PassRegistry&);
+void initializeFastTraceLegacyPassPass(PassRegistry&);
 void initializeMemDepPrinterPass(PassRegistry&);
 void initializeMemDerefPrinterPass(PassRegistry&);
 void initializeMemoryDependenceWrapperPassPass(PassRegistry&);
