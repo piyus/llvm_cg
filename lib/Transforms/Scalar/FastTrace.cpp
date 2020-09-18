@@ -139,7 +139,7 @@ static void insertTraceCall(Function &F, Instruction *I, Value *Val, int RecTy, 
 	Value *Line = getLineNo(F, I, IntTy);
 
 	if (Val->getType()->isPointerTy()) {
-		Val = ConstantInt::get(IntTy, 0);
+		//Val = ConstantInt::get(IntTy, 0);
 	}
 	else if (Val->getType()->isIntegerTy()) {
 		Val = IRB.CreateZExtOrTrunc(Val, IRB.getInt64Ty());
