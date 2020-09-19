@@ -573,6 +573,7 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
   Function &F = *Header->getParent();
   HasFunNoNaNAttr =
       F.getFnAttribute("no-nans-fp-math").getValueAsString() == "true";
+	const DataLayout &DL = F.getParent()->getDataLayout();
 
   // For each block in the loop.
   for (BasicBlock *BB : TheLoop->blocks()) {
@@ -734,6 +735,10 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
                                      "CantVectorizeStore", ORE, TheLoop, ST);
           return false;
         }
+				Value *VO = ST->getValueOperand();
+				if (!IsNonInteriorObject(VO, DL)) {
+					return false;
+				}
 
         // For nontemporal stores, check that a nontemporal vector version is
         // supported on the target.

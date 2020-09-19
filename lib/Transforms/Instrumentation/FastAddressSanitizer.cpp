@@ -661,7 +661,8 @@ struct FastAddressSanitizer {
 		DenseSet<Instruction*> &ICmpOrSub,
 		DenseSet<Instruction*> &IntToPtr,
 		DenseSet<Instruction*> &PtrToInt,
-		DenseSet<Instruction*> &RestorePoints);
+		DenseSet<Instruction*> &RestorePoints,
+		DenseSet<Value*> &InteriorPointersSet);
 	void patchDynamicAlloca(Function &F, AllocaInst *AI);
 	void patchStaticAlloca(Function &F, AllocaInst *AI);
 	//Value* getInterior(Function &F, Instruction *I, Value *V);
@@ -3298,6 +3299,7 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 }
 
 
+#if 0
 static FunctionType *getInteriorType(Function *F)
 {
 	std::vector<Type*> ArgTypes;
@@ -3326,7 +3328,9 @@ static FunctionType *getInteriorType(Function *F)
                                     ArgTypes, F->getFunctionType()->isVarArg());
 	return FTy;
 }
+#endif
 
+#if 0
 static void createInteriorCall(CallBase *CB, DenseMap<Value*, Value*> Interiors) {
 
 	CallInst *CI = dyn_cast<CallInst>(CB);
@@ -3386,6 +3390,7 @@ static void createInteriorCall(CallBase *CB, DenseMap<Value*, Value*> Interiors)
 
   CI->eraseFromParent();
 }
+#endif
 
 #if 0
 void FastAddressSanitizer::createInteriorFn(Function *F) {
@@ -3484,16 +3489,6 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 		Offset = INVALID_OFFSET;
 	}
 	return Ret;
-}
-
-static Value* getBaseIfInterior(Function &F, Value *V, const DataLayout &DL, DenseMap<Value*, Value*> &ReplacementMap) {
-	int64_t Offset;
-	Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
-	assert(Base);
-	if (Offset != 0) {
-		return Base;
-	}
-	return NULL;
 }
 
 static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, DenseSet<Value*> &GetLengths, 
@@ -3893,16 +3888,16 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 			}
 			else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
 				Oper = LI->getPointerOperand();
-				Ret = getNoInteriorMap(F, LI, Oper, RepMap);
-				//Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+				//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
+				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
 				LI->setOperand(0, Ret);
 			}
 			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
 				//Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
-				//Value *Val = SI->getValueOperand();
+				Value *Val = SI->getValueOperand();
 				Oper = SI->getPointerOperand();
-				Ret = getNoInteriorMap(F, SI, Oper, RepMap);
-				//Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++, Name);
+				//Ret = getNoInteriorMap(F, SI, Oper, RepMap);
+				Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++, Name);
 				SI->setOperand(1, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
@@ -4088,7 +4083,8 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 	DenseSet<Instruction*> &ICmpOrSub,
 	DenseSet<Instruction*> &IntToPtr,
 	DenseSet<Instruction*> &PtrToInt,
-	DenseSet<Instruction*> &RestorePoints)
+	DenseSet<Instruction*> &RestorePoints,
+	DenseSet<Value*> &InteriorPointersSet)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
   Value *Addr;
@@ -4096,6 +4092,8 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
   unsigned Alignment = 0;
   uint64_t TypeSize = 0;
   Value *MaybeMask = nullptr;
+
+	errs() << "FUNCTION: " << F.getName();
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -4124,6 +4122,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
               	                                 CS->doesNotAccessMemory()))) {
             			Value *A = *ArgIt;
               		if (A->getType()->isPointerTy()) {
+										if (!IsNonInteriorObject(A, DL)) {
+											InteriorPointersSet.insert(A);
+										}
 										auto ElemTy = A->getType()->getPointerElementType();
 										if (ElemTy->isSized()) {
           						//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
@@ -4141,6 +4142,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 				else if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
 					Value *RetVal = Ret->getReturnValue();
           if (RetVal && RetVal->getType()->isPointerTy()) {
+						if (!IsNonInteriorObject(RetVal, DL)) {
+							InteriorPointersSet.insert(RetVal);
+            }
 						//errs() << "Ret: " << *RetVal << "\n";
 						auto ElemTy = RetVal->getType()->getPointerElementType();
 						if (ElemTy->isSized()) {
@@ -4173,7 +4177,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 			if (auto SI = dyn_cast<StoreInst>(&Inst)) {
 				auto V = SI->getValueOperand();
 				if (V->getType()->isPointerTy()) {
-					//errs() << "SI: " << *V << "\n";
+					if (!IsNonInteriorObject(V, DL)) {
+          	InteriorPointersSet.insert(V);
+          }
 					auto ElemTy = V->getType()->getPointerElementType();
 					if (ElemTy->isSized()) {
           	uint64_t Sz = DL.getTypeAllocSize(ElemTy);
@@ -4242,10 +4248,6 @@ handleSelectBase(Function &F, const DataLayout &DL, SelectInst *Sel,
 		Base = getPhiOrSelectBase(F, DL, Base, PhiAndSelectMap, RepMap);
 	}
 
-	if (Offset != 0 || isa<Constant>(Base)) {
-		Base = getInterior(F, SelBase, Base);
-	}
-
 	if (Base->getType() != TrueOp->getType()) {
 		Base = IRB.CreateBitCast(Base, TrueOp->getType());
 	}
@@ -4257,14 +4259,9 @@ handleSelectBase(Function &F, const DataLayout &DL, SelectInst *Sel,
 		Base = getPhiOrSelectBase(F, DL, Base, PhiAndSelectMap, RepMap);
 	}
 
-	if (Offset != 0 || isa<Constant>(Base)) {
-		Base = getInterior(F, SelBase, Base);
-	}
-
 	if (Base->getType() != FalseOp->getType()) {
 		Base = IRB.CreateBitCast(Base, FalseOp->getType());
 	}
-
 
 	SelBase->setFalseValue(Base);
 }
@@ -4301,18 +4298,13 @@ handlePhiBase(Function &F, const DataLayout &DL, PHINode *Phi,
 		}
 
 		if (Op == NULL) {
-
 			auto PhiOp = Phi->getIncomingValue(i);
 			Value *Base = tryGettingBaseAndOffset(PhiOp, Offset, DL, RepMap);
 			assert(Base);
 			if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
 				Base = getPhiOrSelectBase(F, DL, Base, PhiAndSelectMap, RepMap);
 			}
-			if (Offset != 0 || isa<Constant>(Base)) {
-				Base = getInteriorVal(F, Base);
-			}
 			Op = addTypeCastForPhiOp(Base, PrevBB, PhiOp->getType());
-
 		}
 
 		PhiBase->addIncoming(Op, PrevBB);
@@ -4498,14 +4490,14 @@ static void removeRedundentAccesses(Function &F,
 
 static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
 	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
+	DenseSet<Value*> &InteriorPointerSet,
   const TargetLibraryInfo *TLI)
 {
 
-  const DataLayout &DL = F.getParent()->getDataLayout();
+  //const DataLayout &DL = F.getParent()->getDataLayout();
 	for (auto SI : Stores) {
 		auto V = SI->getValueOperand();
-		Value *Base = getBaseIfInterior(F, V, DL, ReplacementMap);
-		if (Base || isa<Constant>(V)) {
+		if (InteriorPointerSet.count(V) || isa<Constant>(V)) {
 			auto Interior = getInterior(F, SI, V);
 			SI->setOperand(0, Interior);
 		}
@@ -4514,8 +4506,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 	for (auto RI : RetSites) {
 		auto V = RI->getReturnValue();
 		assert(V && "return value null!");
-		Value *Base = getBaseIfInterior(F, V, DL, ReplacementMap);
-		if (Base || isa<Constant>(V)) {
+		if (InteriorPointerSet.count(V) || isa<Constant>(V)) {
 			auto Interior = getInterior(F, RI, V);
 			RI->setOperand(0, Interior);
 		}
@@ -4547,23 +4538,22 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 						CS->setArgOperand(ArgIt - Start, Interior);
 					}
 					else {
-						Value *Base = getBaseIfInterior(F, A, DL, ReplacementMap);
-						if (Base /*|| isa<Constant>(A)*/) {
+						if (InteriorPointerSet.count(A) /*|| isa<Constant>(A)*/) {
 							if (1 /*isIndirect*/) {
 								auto Interior = getInterior(F, CS, A);
 								CS->setArgOperand(ArgIt - Start, Interior);
 							}
 							else {
-								InteriorToBase[A] = Base;
+								//InteriorToBase[A] = Base;
 							}
 						}
 					}
       	}
 			}
 		}
-		if (!InteriorToBase.empty()) {
-			createInteriorCall(CS, InteriorToBase);
-		}
+		//if (!InteriorToBase.empty()) {
+			//createInteriorCall(CS, InteriorToBase);
+		//}
 	}
 }
 
@@ -4640,6 +4630,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Value*> PtrMayBeNull;
 	DenseSet<Instruction*> RestorePoints;
 
+	DenseSet<Value*> InteriorPointersSet;
+
 	createReplacementMap(&F, ReplacementMap);
 
 	enableMasking(F);
@@ -4650,7 +4642,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	recordAllUnsafeAccesses(F, UnsafeUses, UnsafePointers, CallSites,
-		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt, RestorePoints);
+		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt, RestorePoints, 
+		InteriorPointersSet);
 
 	//if (UnsafePointers.empty()) {
 	//	return true;
@@ -4767,7 +4760,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	removeRedundentLengths(F, GetLengths, LenToBaseMap);
 
-	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, TLI);
+	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, InteriorPointersSet, TLI);
 
 	Value *StackBase = NULL;
 	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {

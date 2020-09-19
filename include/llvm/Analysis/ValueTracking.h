@@ -381,6 +381,8 @@ class Value;
                             const DataLayout &DL, LoopInfo *LI = nullptr,
                             unsigned MaxLookup = 6);
 
+	bool IsNonInteriorObject(Value *V, const DataLayout &DL);
+
   /// This is a wrapper around GetUnderlyingObjects and adds support for basic
   /// ptrtoint+arithmetic+inttoptr sequences.
   bool getUnderlyingObjectsForCodeGen(const Value *V,

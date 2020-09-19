@@ -3844,7 +3844,8 @@ bool llvm::isIntrinsicReturningPointerAliasingArgumentWithoutCapturing(
          Call->getIntrinsicID() == Intrinsic::aarch64_irg ||
          Call->getIntrinsicID() == Intrinsic::aarch64_tagp ||
          (!MustPreserveNullness &&
-          Call->getIntrinsicID() == Intrinsic::ptrmask);
+          (Call->getIntrinsicID() == Intrinsic::ptrmask ||
+				   Call->getIntrinsicID() == Intrinsic::ptrunmask));
 }
 
 /// \p PN defines a loop-variant pointer to an object.  Check if the
@@ -3922,6 +3923,94 @@ Value *llvm::GetUnderlyingObject(Value *V, const DataLayout &DL,
   }
   return V;
 }
+
+static Value *GetUnderlyingNonInteriorObject(Value *V, const DataLayout &DL,
+                                 					   unsigned MaxLookup) {
+  if (!V->getType()->isPointerTy())
+    return V;
+  for (unsigned Count = 0; MaxLookup == 0 || Count < MaxLookup; ++Count) {
+    if (GEPOperator *GEP = dyn_cast<GEPOperator>(V)) {
+			APInt GEPOffset(DL.getIndexTypeSizeInBits(V->getType()), 0);
+      if (!GEP->accumulateConstantOffset(DL, GEPOffset)) {
+        return NULL;
+			}
+			if (GEPOffset.getSExtValue()) {
+      	return NULL;
+			}
+			V = GEP->getPointerOperand();
+    } else if (Operator::getOpcode(V) == Instruction::BitCast ||
+               Operator::getOpcode(V) == Instruction::AddrSpaceCast) {
+      V = cast<Operator>(V)->getOperand(0);
+    } else if (GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
+      if (GA->isInterposable())
+        return V;
+      V = GA->getAliasee();
+    } else if (isa<AllocaInst>(V)) {
+      // An alloca can't be further simplified.
+      return V;
+    } else {
+      if (auto *Call = dyn_cast<CallBase>(V)) {
+        // CaptureTracking can know about special capturing properties of some
+        // intrinsics like launder.invariant.group, that can't be expressed with
+        // the attributes, but have properties like returning aliasing pointer.
+        // Because some analysis may assume that nocaptured pointer is not
+        // returned from some special intrinsic (because function would have to
+        // be marked with returns attribute), it is crucial to use this function
+        // because it should be in sync with CaptureTracking. Not using it may
+        // cause weird miscompilations where 2 aliasing pointers are assumed to
+        // noalias.
+        if (auto *RP = getArgumentAliasingToReturnedPointer(Call, false)) {
+          V = RP;
+          continue;
+        }
+      }
+
+      // See if InstructionSimplify knows any relevant tricks.
+      if (Instruction *I = dyn_cast<Instruction>(V))
+        // TODO: Acquire a DominatorTree and AssumptionCache and use them.
+        if (Value *Simplified = SimplifyInstruction(I, {DL, I})) {
+          V = Simplified;
+          continue;
+        }
+
+      return V;
+    }
+    assert(V->getType()->isPointerTy() && "Unexpected operand type!");
+  }
+  return V;
+}
+
+bool llvm::IsNonInteriorObject(Value *V, const DataLayout &DL) {
+  SmallPtrSet<Value *, 4> Visited;
+  SmallVector<Value *, 4> Worklist;
+  Worklist.push_back(V);
+
+  do {
+    Value *P = Worklist.pop_back_val();
+    P = GetUnderlyingNonInteriorObject(P, DL, 0);
+		if (P == NULL) {
+			return false;
+		}
+
+    if (!Visited.insert(P).second)
+      continue;
+
+    if (auto *SI = dyn_cast<SelectInst>(P)) {
+      Worklist.push_back(SI->getTrueValue());
+      Worklist.push_back(SI->getFalseValue());
+      continue;
+    }
+
+    if (auto *PN = dyn_cast<PHINode>(P)) {
+      for (Value *IncValue : PN->incoming_values())
+      	Worklist.push_back(IncValue);
+      continue;
+    }
+
+  } while (!Worklist.empty());
+	return true;
+}
+
 
 void llvm::GetUnderlyingObjects(const Value *V,
                                 SmallVectorImpl<const Value *> &Objects,
