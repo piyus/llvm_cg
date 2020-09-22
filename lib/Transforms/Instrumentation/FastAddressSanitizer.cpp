@@ -2887,6 +2887,20 @@ Value* FastAddressSanitizer::getStaticBaseSize(Function &F, const Value *V1, con
 	return NULL;
 }
 
+static void handleIntToPtrBase(Function &F, Value *Base) {
+  const DataLayout &DL = F.getParent()->getDataLayout();
+	auto IP = dyn_cast<IntToPtrInst>(Base);
+
+	if (!IP || IsNonInteriorObject(Base, DL)) {
+		return;
+	}
+
+	IRBuilder<> IRB(IP);
+	auto Op = IP->getOperand(0);
+	auto Interior = IRB.CreateOr(Op, (0xcabaULL << 48));
+  IP->setOperand(0, Interior);
+}
+
 Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *Ptr)
 {
 	Value *Ret = getStaticBaseSize(F, V1, DL, TLI);
@@ -2928,10 +2942,11 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 #endif
 
 //#if 0
-	if (V->getType()->isIntegerTy()) {
+	/*if (V->getType()->isIntegerTy()) {
 		V = IRB.CreateIntToPtr(V, Int8PtrTy);
-	}
+	}*/
 
+	handleIntToPtrBase(F, V);
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(V, Int32PtrTy),
 																 ConstantInt::get(Int32Ty, -1));
@@ -3208,10 +3223,7 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 {
 	IRBuilder<> IRB(InstPtr);
 
-	if (Base->getType()->isIntegerTy()) {
-		Base = IRB.CreateIntToPtr(Base, Int8PtrTy);
-	}
-
+	handleIntToPtrBase(F, Base);
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(Base, Int32PtrTy),
 																 ConstantInt::get(Int32Ty, -1));
@@ -3275,9 +3287,11 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 		IRB.SetInsertPoint(InstPtr->getNextNode());
 	}
 
-	if (Base->getType()->isIntegerTy()) {
+	/*if (Base->getType()->isIntegerTy()) {
 		Base = IRB.CreateIntToPtr(Base, Int8PtrTy);
-	}
+	}*/
+
+	handleIntToPtrBase(F, Base);
 
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(Base, Int32PtrTy),
@@ -3482,6 +3496,7 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 	if (Objects.size() == 1) {
 		Ret = const_cast<Value*>(Objects[0]);
 		if (Ret->getType()->isIntegerTy()) {
+			assert(0);
 			Offset = INVALID_OFFSET;
 			return Ret;
 		}
@@ -4289,6 +4304,7 @@ static Value* addTypeCastForPhiOp(Value *Base, BasicBlock *BB, Type *DstTy)
 	}
 	IRBuilder<> IRB(BB->getTerminator());
 	if (Base->getType()->isIntegerTy()) {
+		assert(0);
 		return IRB.CreateIntToPtr(Base, DstTy);
 	}
 	return IRB.CreateBitCast(Base, DstTy);
@@ -4320,6 +4336,7 @@ handlePhiBase(Function &F, const DataLayout &DL, PHINode *Phi,
 			auto PhiOp = Phi->getIncomingValue(i);
 			Value *Base = tryGettingBaseAndOffset(PhiOp, Offset, DL, RepMap);
 			assert(Base);
+			handleIntToPtrBase(F, Base);
 			if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
 				Base = getPhiOrSelectBase(F, DL, Base, PhiAndSelectMap, RepMap);
 			}
