@@ -389,6 +389,10 @@ class Value;
                             SmallVectorImpl<Value *> &Objects,
                             const DataLayout &DL);
 
+  bool GetUnderlyingObjects1(const Value *V,
+                            SmallVectorImpl<const Value *> &Objects,
+                            const DataLayout &DL);
+
   /// Return true if the only users of this pointer are lifetime markers.
   bool onlyUsedByLifetimeMarkers(const Value *V);
 

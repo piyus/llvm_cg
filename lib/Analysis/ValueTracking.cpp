@@ -4007,6 +4007,24 @@ bool llvm::IsNonInteriorObject(Value *V, const DataLayout &DL) {
       continue;
     }
 
+   	if (auto IP = dyn_cast<IntToPtrInst>(P)) {
+			Value *OP = IP->getOperand(0);
+
+			while (auto CI = dyn_cast<CastInst>(OP)) {
+				if (isa<PtrToIntInst>(CI)) {
+      		Worklist.push_back(CI->getOperand(0));
+					goto out;
+				}
+				OP = CI->getOperand(0);
+			}
+
+			if (!(isa<LoadInst>(OP) || isa<CallInst>(OP) || isa<Argument>(OP))) {
+      	return false;
+			}
+		}
+	out:
+		(void)P;
+
   } while (!Worklist.empty());
 	return true;
 }
@@ -4082,6 +4100,24 @@ static const Value *getUnderlyingObjectFromInt(const Value *V) {
   } while (true);
 }
 
+static const Value *getUnderlyingObjectFromInt1(const Value *V) {
+  do {
+    if (const Operator *U = dyn_cast<Operator>(V)) {
+			assert(!isa<PHINode>(V) && !isa<SelectInst>(V));
+			auto Opcode = U->getOpcode();
+      if (Opcode == Instruction::PtrToInt)
+        return U->getOperand(0);
+			if (Opcode == Instruction::Load || Opcode == Instruction::Call) {
+				return V;
+			}
+      V = U->getOperand(0);
+    } else {
+      return V;
+    }
+    assert(V->getType()->isIntegerTy() && "Unexpected operand type!");
+  } while (true);
+}
+
 /// This is a wrapper around GetUnderlyingObjects and adds support for basic
 /// ptrtoint+arithmetic+inttoptr sequences.
 /// It returns false if unidentified object is found in GetUnderlyingObjects.
@@ -4118,6 +4154,35 @@ bool llvm::getUnderlyingObjectsForCodeGen(const Value *V,
   } while (!Working.empty());
   return true;
 }
+
+bool llvm::GetUnderlyingObjects1(const Value *V,
+                          SmallVectorImpl<const Value *> &Objects,
+                          const DataLayout &DL) {
+  SmallPtrSet<const Value *, 16> Visited;
+  SmallVector<const Value *, 4> Working(1, V);
+  do {
+    V = Working.pop_back_val();
+
+    SmallVector<const Value *, 4> Objs;
+    GetUnderlyingObjects(V, Objs, DL);
+
+    for (const Value *V : Objs) {
+      if (!Visited.insert(V).second)
+        continue;
+      if (Operator::getOpcode(V) == Instruction::IntToPtr) {
+        const Value* O =
+					getUnderlyingObjectFromInt1(cast<User>(V)->getOperand(0));
+        if (O->getType()->isPointerTy()) {
+          Working.push_back(O);
+          continue;
+        }
+      }
+      Objects.push_back(V);
+    }
+  } while (!Working.empty());
+  return true;
+}
+
 
 /// Return true if the only users of this pointer are lifetime markers.
 bool llvm::onlyUsedByLifetimeMarkers(const Value *V) {

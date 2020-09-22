@@ -2928,6 +2928,10 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 #endif
 
 //#if 0
+	if (V->getType()->isIntegerTy()) {
+		V = IRB.CreateIntToPtr(V, Int8PtrTy);
+	}
+
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(V, Int32PtrTy),
 																 ConstantInt::get(Int32Ty, -1));
@@ -3204,6 +3208,10 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 {
 	IRBuilder<> IRB(InstPtr);
 
+	if (Base->getType()->isIntegerTy()) {
+		Base = IRB.CreateIntToPtr(Base, Int8PtrTy);
+	}
+
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(Base, Int32PtrTy),
 																 ConstantInt::get(Int32Ty, -1));
@@ -3267,6 +3275,10 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 		IRB.SetInsertPoint(InstPtr->getNextNode());
 	}
 
+	if (Base->getType()->isIntegerTy()) {
+		Base = IRB.CreateIntToPtr(Base, Int8PtrTy);
+	}
+
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(Base, Int32PtrTy),
 																 ConstantInt::get(Int32Ty, -1));
@@ -3280,6 +3292,7 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 		errs() << F << "\n";
 		assert(0);
 	}
+
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
@@ -3465,9 +3478,14 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 	Value *Ret = NULL;
 	SmallVector<const Value *, 2> Objects;
 
-	GetUnderlyingObjects(V, Objects, DL, NULL, 0);
+	GetUnderlyingObjects1(V, Objects, DL);
 	if (Objects.size() == 1) {
 		Ret = const_cast<Value*>(Objects[0]);
+		if (Ret->getType()->isIntegerTy()) {
+			Offset = INVALID_OFFSET;
+			return Ret;
+		}
+
 		assert(!isa<PHINode>(Ret) && !isa<SelectInst>(Ret));
 		Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
 		/*if (Base == Ret && Offset < 0) {
@@ -4093,8 +4111,6 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
   uint64_t TypeSize = 0;
   Value *MaybeMask = nullptr;
 
-	errs() << "FUNCTION: " << F.getName();
-
   for (auto &BB : F) {
     for (auto &Inst : BB) {
 			Addr = isInterestingMemoryAccess(&Inst, &IsWrite, &TypeSize, &Alignment, &MaybeMask);
@@ -4272,6 +4288,9 @@ static Value* addTypeCastForPhiOp(Value *Base, BasicBlock *BB, Type *DstTy)
 		return Base;
 	}
 	IRBuilder<> IRB(BB->getTerminator());
+	if (Base->getType()->isIntegerTy()) {
+		return IRB.CreateIntToPtr(Base, DstTy);
+	}
 	return IRB.CreateBitCast(Base, DstTy);
 }
 
