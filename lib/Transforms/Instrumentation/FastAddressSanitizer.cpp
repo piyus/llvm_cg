@@ -4652,6 +4652,18 @@ static void enableMasking(Function &F) {
 	}
 }
 
+static void
+addUnsafeAllocas(Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
+{
+	auto I = cast<Instruction>(Node);
+	for (unsigned i = 0; i < I->getNumOperands(); i++) {
+		auto Op = I->getOperand(i);
+		if (isa<AllocaInst>(Op)) {
+			UnsafeAllocas.insert(cast<AllocaInst>(Op));
+		}
+	}
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
@@ -4725,6 +4737,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
 			assert(PhiAndSelectMap.count(Base));
 			PtrToBaseMap[It.first] = PhiAndSelectMap[Base];
+			addUnsafeAllocas(PhiAndSelectMap[Base], UnsafeAllocas);
 			errs() << "SRC: " << *It.first << "  BASE: " << *PhiAndSelectMap[Base] << "\n";
 		}
 	}
