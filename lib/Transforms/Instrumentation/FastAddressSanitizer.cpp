@@ -4269,6 +4269,8 @@ handleSelectBase(Function &F, const DataLayout &DL, SelectInst *Sel,
 
 	assert(!PhiAndSelectMap.count(Sel));
 	PhiAndSelectMap[Sel] = SelBase;
+	PhiAndSelectMap[SelBase] = SelBase;
+
 
 	IRB.SetInsertPoint(SelBase);
 
@@ -4297,16 +4299,23 @@ handleSelectBase(Function &F, const DataLayout &DL, SelectInst *Sel,
 	SelBase->setFalseValue(Base);
 }
 
-static Value* addTypeCastForPhiOp(Value *Base, BasicBlock *BB, Type *DstTy)
+static Value* addTypeCastForPhiOp(Function &F, Value *Base, Value *Ptr, Type *DstTy)
 {
 	if (Base->getType() == DstTy) {
 		return Base;
 	}
-	IRBuilder<> IRB(BB->getTerminator());
-	if (Base->getType()->isIntegerTy()) {
-		assert(0);
-		return IRB.CreateIntToPtr(Base, DstTy);
+	assert(isa<Argument>(Ptr) || isa<Instruction>(Ptr) || isa<Constant>(Ptr));
+	BasicBlock *BB;
+	auto Inst = dyn_cast<Instruction>(Ptr);
+	if (Inst) {
+		BB = Inst->getParent();
 	}
+	else {
+		BB = &F.getEntryBlock();
+	}
+	assert(BB);
+
+	IRBuilder<> IRB(BB->getTerminator());
 	return IRB.CreateBitCast(Base, DstTy);
 }
 
@@ -4320,13 +4329,19 @@ handlePhiBase(Function &F, const DataLayout &DL, PHINode *Phi,
 
 	assert(!PhiAndSelectMap.count(Phi));
 	PhiAndSelectMap[Phi] = PhiBase;
+	PhiAndSelectMap[PhiBase] = PhiBase;
 
 	for (unsigned i = 0; i < Phi->getNumIncomingValues(); i++) {
 
 		auto PrevBB = Phi->getIncomingBlock(i);
+		auto PrevVal = Phi->getIncomingValue(i);
 		Value *Op = NULL;
 		for (unsigned j = 0; j < i; j++) {
 			if (PhiBase->getIncomingBlock(j) == PrevBB) {
+				Op = PhiBase->getIncomingValue(j);
+				break;
+			}
+			if (Phi->getIncomingValue(j) == PrevVal) {
 				Op = PhiBase->getIncomingValue(j);
 				break;
 			}
@@ -4340,7 +4355,7 @@ handlePhiBase(Function &F, const DataLayout &DL, PHINode *Phi,
 			if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
 				Base = getPhiOrSelectBase(F, DL, Base, PhiAndSelectMap, RepMap);
 			}
-			Op = addTypeCastForPhiOp(Base, PrevBB, PhiOp->getType());
+			Op = addTypeCastForPhiOp(F, Base, PhiOp, PhiOp->getType());
 		}
 
 		PhiBase->addIncoming(Op, PrevBB);
