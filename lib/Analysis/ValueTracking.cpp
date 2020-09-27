@@ -4018,7 +4018,7 @@ bool llvm::IsNonInteriorObject(Value *V, const DataLayout &DL) {
 				OP = CI->getOperand(0);
 			}
 
-			if (!(isa<LoadInst>(OP) || isa<CallInst>(OP) || isa<Argument>(OP))) {
+			if (!(isa<LoadInst>(OP) || isa<CallInst>(OP) || isa<Argument>(OP) || isa<ExtractElementInst>(OP))) {
       	return false;
 			}
 		}
@@ -4100,20 +4100,27 @@ static const Value *getUnderlyingObjectFromInt(const Value *V) {
   } while (true);
 }
 
-static const Value *getUnderlyingObjectFromInt1(const Value *V) {
+static Value *getUnderlyingObjectFromInt1(Value *V) {
   do {
     if (const Operator *U = dyn_cast<Operator>(V)) {
-			assert(!isa<PHINode>(V) && !isa<SelectInst>(V));
+			if (isa<PHINode>(V) || isa<SelectInst>(V)) {
+				return V;
+			}
 			auto Opcode = U->getOpcode();
       if (Opcode == Instruction::PtrToInt)
         return U->getOperand(0);
-			if (Opcode == Instruction::Load || Opcode == Instruction::Call) {
+			if (Opcode == Instruction::Load ||
+				Opcode == Instruction::Call ||
+				Opcode == Instruction::ExtractElement) {
 				return V;
 			}
       V = U->getOperand(0);
     } else {
       return V;
     }
+		if (!V->getType()->isIntegerTy()) {
+			errs() << *V << "\n";
+		}
     assert(V->getType()->isIntegerTy() && "Unexpected operand type!");
   } while (true);
 }
@@ -4181,6 +4188,19 @@ bool llvm::GetUnderlyingObjects1(const Value *V,
     }
   } while (!Working.empty());
   return true;
+}
+
+
+Value *llvm::GetUnderlyingObject1(Value *V, const DataLayout &DL,
+                                 unsigned MaxLookup) {
+	Value *U = GetUnderlyingObject(V, DL, MaxLookup);
+	if (isa<IntToPtrInst>(U)) {
+		Value* O = getUnderlyingObjectFromInt1(cast<User>(U)->getOperand(0));
+    if (O->getType()->isPointerTy()) {
+			return GetUnderlyingObject1(O, DL, MaxLookup);
+    }
+	}
+	return U;
 }
 
 

@@ -348,6 +348,13 @@ class Value;
     return GetUnderlyingObject(const_cast<Value *>(V), DL, MaxLookup);
   }
 
+  Value *GetUnderlyingObject1(Value *V, const DataLayout &DL,
+                             unsigned MaxLookup = 6);
+  inline const Value *GetUnderlyingObject1(const Value *V, const DataLayout &DL,
+                                          unsigned MaxLookup = 6) {
+    return GetUnderlyingObject1(const_cast<Value *>(V), DL, MaxLookup);
+  }
+
   /// This method is similar to GetUnderlyingObject except that it can
   /// look through phi and select instructions and return multiple objects.
   ///
