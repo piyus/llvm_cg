@@ -4608,30 +4608,6 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 	}
 }
 
-#if 0
-static void copyArgsByValToAllocas(Function &F) {
-  Instruction *CopyInsertPoint = &F.front().front();
-  IRBuilder<> IRB(CopyInsertPoint);
-  const DataLayout &DL = F.getParent()->getDataLayout();
-  for (Argument &Arg : F.args()) {
-    if (Arg.hasByValAttr()) {
-      Type *Ty = Arg.getType()->getPointerElementType();
-      const Align Alignment =
-          DL.getValueOrABITypeAlignment(Arg.getParamAlign(), Ty);
-
-      AllocaInst *AI = IRB.CreateAlloca(
-          Ty, nullptr,
-          (Arg.hasName() ? Arg.getName() : "Arg" + Twine(Arg.getArgNo())) +
-              ".byval");
-      AI->setAlignment(Alignment);
-      Arg.replaceAllUsesWith(AI);
-
-      uint64_t AllocSize = DL.getTypeAllocSize(Ty);
-      IRB.CreateMemCpy(AI, Alignment, &Arg, Alignment, AllocSize);
-    }
-  }
-}
-#endif
 
 static void restoreStack(Function &F, DenseSet<Instruction*> &RestorePoints, Value *StackBase)
 {
@@ -4652,22 +4628,57 @@ static void enableMasking(Function &F) {
 	}
 }
 
+static AllocaInst* copyArgsByValToAllocas1(Function &F, Argument &Arg) {
+  Instruction *CopyInsertPoint = &F.front().front();
+  IRBuilder<> IRB(CopyInsertPoint);
+  const DataLayout &DL = F.getParent()->getDataLayout();
+  //for (Argument &Arg : F.args()) {
+    if (Arg.hasByValAttr()) {
+      Type *Ty = Arg.getType()->getPointerElementType();
+      const Align Alignment =
+          DL.getValueOrABITypeAlignment(Arg.getParamAlign(), Ty);
+
+      AllocaInst *AI = IRB.CreateAlloca(
+          Ty, nullptr,
+          (Arg.hasName() ? Arg.getName() : "Arg" + Twine(Arg.getArgNo())) +
+              ".byval");
+      AI->setAlignment(Alignment);
+      Arg.replaceAllUsesWith(AI);
+
+      uint64_t AllocSize = DL.getTypeAllocSize(Ty);
+      IRB.CreateMemCpy(AI, Alignment, &Arg, Alignment, AllocSize);
+			return AI;
+    }
+  //}
+	return NULL;
+}
+
+
 static void
-addUnsafeAllocas(Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
+addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
 {
 	auto I = cast<Instruction>(Node);
 	for (unsigned i = 0; i < I->getNumOperands(); i++) {
 		auto Op = I->getOperand(i);
+		Op = Op->stripPointerCasts();
 		if (isa<AllocaInst>(Op)) {
 			UnsafeAllocas.insert(cast<AllocaInst>(Op));
+		}
+		else if (isa<Argument>(Op)) {
+			AllocaInst *AI = copyArgsByValToAllocas1(F, *(cast<Argument>(Op)));
+			if (AI) {
+				UnsafeAllocas.insert(AI);
+			}
 		}
 	}
 }
 
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
-	//copyArgsByValToAllocas(F);
+	//FIXME: only if used in phi
+	//copyArgsByValToAllocas1(F);
 	//errs() << "Printing function\n" << F << "\n";
 	//createInteriorFn(&F);
 
@@ -4737,7 +4748,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
 			assert(PhiAndSelectMap.count(Base));
 			PtrToBaseMap[It.first] = PhiAndSelectMap[Base];
-			addUnsafeAllocas(PhiAndSelectMap[Base], UnsafeAllocas);
+			addUnsafeAllocas(F, PhiAndSelectMap[Base], UnsafeAllocas);
 			errs() << "SRC: " << *It.first << "  BASE: " << *PhiAndSelectMap[Base] << "\n";
 		}
 	}
