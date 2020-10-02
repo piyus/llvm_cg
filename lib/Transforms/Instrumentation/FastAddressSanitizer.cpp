@@ -4367,7 +4367,7 @@ handleSelectBase(Function &F, const DataLayout &DL, SelectInst *Sel,
 	Value *FalseOp = Sel->getFalseValue();
 	IRBuilder<> IRB(Sel);
 	SelectInst *SelBase =
-		dyn_cast<SelectInst>(IRB.CreateSelect(Sel->getCondition(), TrueOp, FalseOp));
+		dyn_cast<SelectInst>(IRB.CreateSelect(Sel->getCondition(), TrueOp, FalseOp, Sel->getName() + ".sbase"));
 	int64_t Offset;
 
 	assert(!PhiAndSelectMap.count(Sel));
@@ -4427,7 +4427,7 @@ handlePhiBase(Function &F, const DataLayout &DL, PHINode *Phi,
 	DenseMap<Value*, Value*> &PhiAndSelectMap, DenseMap<Value*, Value*> &RepMap)
 {
 	IRBuilder<> IRB(Phi);
-	PHINode *PhiBase = IRB.CreatePHI(Phi->getType(), Phi->getNumIncomingValues());
+	PHINode *PhiBase = IRB.CreatePHI(Phi->getType(), Phi->getNumIncomingValues(), Phi->getName() + ".pbase");
 	int64_t Offset;
 
 	assert(!PhiAndSelectMap.count(Phi));
