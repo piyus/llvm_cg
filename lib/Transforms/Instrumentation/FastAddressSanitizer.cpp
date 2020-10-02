@@ -662,7 +662,8 @@ struct FastAddressSanitizer {
 		DenseSet<Instruction*> &IntToPtr,
 		DenseSet<Instruction*> &PtrToInt,
 		DenseSet<Instruction*> &RestorePoints,
-		DenseSet<Value*> &InteriorPointersSet);
+		DenseSet<Value*> &InteriorPointersSet,
+		DenseSet<Instruction*> &GEPs);
 	void patchDynamicAlloca(Function &F, AllocaInst *AI);
 	void patchStaticAlloca(Function &F, AllocaInst *AI);
 	//Value* getInterior(Function &F, Instruction *I, Value *V);
@@ -3794,6 +3795,104 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 #endif
 
 #if 0
+static void walkPtrToInt(Function &F, Instruction *PI)
+{
+  SmallPtrSet<Value *, 16> Visited;
+  SmallVector<Value *, 8> WorkList;
+  WorkList.push_back(PI);
+
+  // A DFS search through all uses of the alloca in bitcasts/PHI/GEPs/etc.
+  while (!WorkList.empty()) {
+    Value *V = WorkList.pop_back_val();
+    for (Use &UI : V->uses()) {
+      auto I = cast<Instruction>(UI.getUser());
+      assert(V == UI.get());
+
+      switch (I->getOpcode()) {
+			case Instruction::Load:
+				break;
+			case Instruction::VAArg:
+				break;
+
+      case Instruction::Store:
+        break;
+
+      case Instruction::Ret:
+        break;
+
+      case Instruction::Call:
+      case Instruction::Invoke: {
+        break;
+      }
+
+			case Instruction::GetElementPtr: {
+				if (V->getType()->isIntegerTy()) {
+					Value *V1 = getNoInterior(F, I, V);
+					for (unsigned i = 0; i < I->getNumOperands(); i++) {
+						if (I->getOperand(i) == V) {
+							I->setOperand(i, V1);
+						}
+					}
+				}
+				break;
+			}
+
+      default:
+        if (Visited.insert(I).second)
+          WorkList.push_back(cast<Instruction>(I));
+      }
+    }
+  }
+}
+
+static bool maybePointer(Value *V)
+{
+	V = V->stripPointerCasts();
+	auto LI = dyn_cast<LoadInst>(V);
+	if (LI) {
+		auto PI = LI->getPointerOperand();
+		errs() << "PI1: " << *PI << "\n";
+		PI = PI->stripPointerCasts();
+		errs() << "PI2: " << *PI << "\n";
+		auto Ty = PI->getType();
+		if (Ty->isPointerTy() && Ty->getPointerElementType()->isPointerTy()) {
+			errs() << "POINTERS: " << *Ty << " ----  " << *Ty->getPointerElementType() << "\n";
+			return true;
+		}
+	}
+	else if (isa<PtrToIntInst>(V)) {
+		return true;
+	}
+  for (Use &UI : V->uses()) {
+  	auto I = dyn_cast<IntToPtrInst>(UI.getUser());
+		if (I) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void instrumentPtrToInt(Function &F, DenseSet<Instruction*> &PtrToInt, DenseSet<Instruction*> &GEPs, const DataLayout &DL)
+{
+	//for (auto I : PtrToInt)
+	//{
+		//walkPtrToInt(F, I);
+	//}
+	for (auto I : GEPs) {
+		for (unsigned i = 0; i < I->getNumOperands(); i++) {
+			Value *Op = I->getOperand(i);
+			if (Op->getType()->isIntegerTy()) {
+				if (maybePointer(Op)) {
+					Value *V = getNoInterior(F, I, Op);
+					I->setOperand(i, V);
+				}
+			}
+		}
+	}
+}
+#endif
+
+#if 0
 static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,
 	DenseSet<Instruction*> &IntToPtr,
 	DenseSet<Instruction*> &PtrToInt,
@@ -4117,7 +4216,8 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 	DenseSet<Instruction*> &IntToPtr,
 	DenseSet<Instruction*> &PtrToInt,
 	DenseSet<Instruction*> &RestorePoints,
-	DenseSet<Value*> &InteriorPointersSet)
+	DenseSet<Value*> &InteriorPointersSet,
+	DenseSet<Instruction*> &GEPs)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
   Value *Addr;
@@ -4197,6 +4297,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 				}
 				else if (auto LP = dyn_cast<LandingPadInst>(&Inst)) {
 					RestorePoints.insert(LP);
+				}
+				else if (auto GEP = dyn_cast<GetElementPtrInst>(&Inst)) {
+					GEPs.insert(GEP);
 				}
 				/*else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
 					if (BO->getOpcode() == Instruction::Sub) {
@@ -4701,6 +4804,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Instruction*> ICmpOrSub;
 	DenseSet<Instruction*> IntToPtr;
 	DenseSet<Instruction*> PtrToInt;
+	DenseSet<Instruction*> GEPs;
 	DenseSet<Value*> PtrMayBeNull;
 	DenseSet<Instruction*> RestorePoints;
 
@@ -4717,7 +4821,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	recordAllUnsafeAccesses(F, UnsafeUses, UnsafePointers, CallSites,
 		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt, RestorePoints, 
-		InteriorPointersSet);
+		InteriorPointersSet, GEPs);
 
 	//if (UnsafePointers.empty()) {
 	//	return true;
@@ -4854,6 +4958,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
+	//instrumentPtrToInt(F, PtrToInt, GEPs, DL);
 	instrumentPageFaultHandler(F, GetLengths, Stores, CallSites);
 	//instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 

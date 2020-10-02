@@ -216,6 +216,15 @@ static bool isPtrMask(Value *V) {
 	return (I && I->getIntrinsicID() == Intrinsic::ptrmask);
 }
 
+static Value* getNoInterior1(Function &F, Instruction *I, Value *V)
+{
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrmask1, {V->getType(), V->getType(), IRB.getInt64Ty()});
+	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48)-1)});
+	return V;
+}
 
 static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 {
@@ -301,7 +310,36 @@ static bool isPointerOperand(Value *V) {
 	return false;
 }
 
+static bool maybePointer(Value *V)
+{
+	auto II = dyn_cast<IntrinsicInst>(V);
+  if (II && II->getIntrinsicID() == Intrinsic::ptrmask1) {
+		return false;
+	}
+	V = V->stripPointerCasts();
+	auto LI = dyn_cast<LoadInst>(V);
+	if (LI) {
+		auto PI = LI->getPointerOperand();
+		PI = PI->stripPointerCasts();
+		auto Ty = PI->getType();
+		if (Ty->isPointerTy() && Ty->getPointerElementType()->isPointerTy()) {
+			return true;
+		}
+	}
+	else if (isa<PtrToIntInst>(V)) {
+		return true;
+	}
+  for (Use &UI : V->uses()) {
+  	auto I = dyn_cast<IntToPtrInst>(UI.getUser());
+		if (I) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICmpOrSub,
+	DenseSet<Instruction*> &GEPs,
 	const DataLayout &DL) {
 
 	for (auto I : ICmpOrSub) {
@@ -334,6 +372,19 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 			}
 		}
 	}
+
+	for (auto I : GEPs) {
+		for (unsigned i = 0; i < I->getNumOperands(); i++) {
+			Value *Op = I->getOperand(i);
+			if (!isa<Constant>(Op) && Op->getType()->isIntegerTy()) {
+				errs() << "CHECKING: " << *Op << "\n";
+				if (maybePointer(Op)) {
+					Value *V = getNoInterior1(F, I, Op);
+					I->setOperand(i, V);
+				}
+			}
+		}
+	}
 }
 
 static bool isInteriorConstant(Value *V) {
@@ -354,6 +405,7 @@ static bool isInteriorConstant(Value *V) {
 bool RefEqLegacyPass::runOnFunction(Function &F) {
   const DataLayout &DL = F.getParent()->getDataLayout();
 	DenseSet<Instruction*> ICmpOrSub;
+	DenseSet<Instruction*> GEPs;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -367,6 +419,9 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
 				if (isPointerOperand(Op1) || isPointerOperand(Op2)) {
 					ICmpOrSub.insert(Ret);
 				}
+			}
+			else if (auto GEP = dyn_cast<GetElementPtrInst>(&Inst)) {
+				GEPs.insert(GEP);
 			}
 			else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
 				if (BO->getOpcode() == Instruction::Sub) {
@@ -383,7 +438,7 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
 			}
 		}
 	}
-	instrumentOtherPointerUsage(F, ICmpOrSub, DL);
+	instrumentOtherPointerUsage(F, ICmpOrSub, GEPs, DL);
 	if (FirstCall) {
 		setBoundsForArgv(F);
 	}
