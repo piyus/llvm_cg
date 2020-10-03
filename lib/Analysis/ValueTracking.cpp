@@ -4009,21 +4009,57 @@ bool llvm::IsNonInteriorObject(Value *V, const DataLayout &DL) {
 
    	if (auto IP = dyn_cast<IntToPtrInst>(P)) {
 			Value *OP = IP->getOperand(0);
-
-			while (auto CI = dyn_cast<CastInst>(OP)) {
-				if (isa<PtrToIntInst>(CI)) {
-      		Worklist.push_back(CI->getOperand(0));
-					goto out;
-				}
-				OP = CI->getOperand(0);
-			}
-
-			if (!(isa<LoadInst>(OP) || isa<CallInst>(OP) || isa<Argument>(OP) || isa<ExtractElementInst>(OP))) {
-      	return false;
+			OP = OP->stripPointerCasts();
+			if (auto PI = dyn_cast<PtrToIntInst>(OP)) {
+      	Worklist.push_back(PI->getOperand(0));
 			}
 		}
-	out:
-		(void)P;
+
+  } while (!Worklist.empty());
+	return true;
+}
+
+bool llvm::IsNonInteriorIntPtr(Value *V, const DataLayout &DL) {
+	assert(isa<IntToPtrInst>(V));
+  SmallPtrSet<Value *, 4> Visited;
+  SmallVector<Value *, 4> Worklist;
+  Worklist.push_back(V);
+
+  do {
+    Value *P = Worklist.pop_back_val();
+    P = GetUnderlyingNonInteriorObject(P, DL, 0);
+		if (P == NULL) {
+			return false;
+		}
+
+    if (!Visited.insert(P).second)
+      continue;
+
+    if (auto *SI = dyn_cast<SelectInst>(P)) {
+      Worklist.push_back(SI->getTrueValue());
+      Worklist.push_back(SI->getFalseValue());
+      continue;
+    }
+
+    if (auto *PN = dyn_cast<PHINode>(P)) {
+      for (Value *IncValue : PN->incoming_values())
+      	Worklist.push_back(IncValue);
+      continue;
+    }
+
+   	if (auto IP = dyn_cast<IntToPtrInst>(P)) {
+			Value *OP = IP->getOperand(0);
+			OP = OP->stripPointerCasts();
+			if (auto PI = dyn_cast<PtrToIntInst>(OP)) {
+      	Worklist.push_back(PI->getOperand(0));
+			}
+			else {
+				if (!(isa<LoadInst>(OP) || isa<CallInst>(OP) || isa<Argument>(OP) || isa<ExtractElementInst>(OP))) {
+					errs() << "INTERIOR:  " << *OP << "\n";
+      		return false;
+				}
+			}
+		}
 
   } while (!Worklist.empty());
 	return true;

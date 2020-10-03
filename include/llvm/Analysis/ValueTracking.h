@@ -389,6 +389,7 @@ class Value;
                             unsigned MaxLookup = 6);
 
 	bool IsNonInteriorObject(Value *V, const DataLayout &DL);
+	bool IsNonInteriorIntPtr(Value *V, const DataLayout &DL);
 
   /// This is a wrapper around GetUnderlyingObjects and adds support for basic
   /// ptrtoint+arithmetic+inttoptr sequences.

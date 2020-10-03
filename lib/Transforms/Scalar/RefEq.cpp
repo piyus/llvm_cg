@@ -377,7 +377,6 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 		for (unsigned i = 0; i < I->getNumOperands(); i++) {
 			Value *Op = I->getOperand(i);
 			if (!isa<Constant>(Op) && Op->getType()->isIntegerTy()) {
-				errs() << "CHECKING: " << *Op << "\n";
 				if (maybePointer(Op)) {
 					Value *V = getNoInterior1(F, I, Op);
 					I->setOperand(i, V);

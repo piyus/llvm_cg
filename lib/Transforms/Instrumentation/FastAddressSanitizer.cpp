@@ -2888,19 +2888,13 @@ Value* FastAddressSanitizer::getStaticBaseSize(Function &F, const Value *V1, con
 	return NULL;
 }
 
-static void handleIntToPtrBase(Function &F, Value *Base) {
-  const DataLayout &DL = F.getParent()->getDataLayout();
-	auto IP = dyn_cast<IntToPtrInst>(Base);
-
-	if (!IP || IsNonInteriorObject(Base, DL)) {
-		return;
-	}
-
-	IRBuilder<> IRB(IP);
-	auto Op = IP->getOperand(0);
-	auto Interior = IRB.CreateOr(Op, (0xcabaULL << 48));
-  IP->setOperand(0, Interior);
+static Value* sanGetBase(Function &F, Value *V, IRBuilder<> &IRB)
+{
+	auto M = F.getParent();
+	auto Fn = M->getOrInsertFunction("san_get_base", V->getType(), V->getType());
+	return IRB.CreateCall(Fn, {V});
 }
+
 
 Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *Ptr)
 {
@@ -2933,6 +2927,11 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	IRBuilder<> IRB(InstPt->getParent());
 	IRB.SetInsertPoint(InstPt);
 
+	if (isa<IntToPtrInst>(V) && !IsNonInteriorIntPtr(V, DL)) {
+		V = sanGetBase(F, V, IRB);
+	}
+
+
 
 	//auto Base8 = IRB.CreateBitCast(V, Int8PtrTy);
 #if 0
@@ -2947,7 +2946,6 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 		V = IRB.CreateIntToPtr(V, Int8PtrTy);
 	}*/
 
-	handleIntToPtrBase(F, V);
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(V, Int32PtrTy),
 																 ConstantInt::get(Int32Ty, -1));
@@ -3050,12 +3048,20 @@ Value* getInteriorVal(Function &F, Value *V)
 
 Value* getInterior(Function &F, Instruction *I, Value *V)
 {
+	IRBuilder<> IRB(I);
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrunmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
+	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (0xcabaULL<<48))});
+	return V;
+
+#if 0
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 
 	auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
 	auto Interior = IRB.CreateOr(VInt, (0xcabaULL << 48));
 	return IRB.CreateIntToPtr(Interior, V->getType());
+#endif
 }
 
 static bool
@@ -3186,6 +3192,7 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 		IRB.SetInsertPoint(InstPtr->getNextNode());
 	}
 
+
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
 
@@ -3201,9 +3208,11 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 
 	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
 	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
-		errs() << "Base is Intrinsic\n" << *Base << "\n";
-		errs() << F << "\n";
-		assert(0);
+		//if (Intrinsic->getIntrinsicID() != Intrinsic::ptrunmask) {
+			errs() << "Base is Intrinsic\n" << *Base << "\n";
+			errs() << F << "\n";
+			assert(0);
+		//}
 	}
 
 	if (!MayNull) {
@@ -3224,7 +3233,12 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 {
 	IRBuilder<> IRB(InstPtr);
 
-	handleIntToPtrBase(F, Base);
+
+	const DataLayout &DL = F.getParent()->getDataLayout();
+	if (isa<IntToPtrInst>(Base) && !IsNonInteriorIntPtr(Base, DL)) {
+		Base = sanGetBase(F, Base, IRB);
+	}
+
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(Base, Int32PtrTy),
 																 ConstantInt::get(Int32Ty, -1));
@@ -3234,9 +3248,11 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 
 	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
 	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
-		errs() << "Base is Intrinsic\n" << *Base << "\n";
-		errs() << F << "\n";
-		assert(0);
+		//if (Intrinsic->getIntrinsicID() != Intrinsic::ptrunmask) {
+			errs() << "Base is Intrinsic\n" << *Base << "\n";
+			errs() << F << "\n";
+			assert(0);
+		//}
 	}
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
@@ -3288,11 +3304,14 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 		IRB.SetInsertPoint(InstPtr->getNextNode());
 	}
 
+	const DataLayout &DL = F.getParent()->getDataLayout();
+	if (isa<IntToPtrInst>(Base) && !IsNonInteriorIntPtr(Base, DL)) {
+		Base = sanGetBase(F, Base, IRB);
+	}
+
 	/*if (Base->getType()->isIntegerTy()) {
 		Base = IRB.CreateIntToPtr(Base, Int8PtrTy);
 	}*/
-
-	handleIntToPtrBase(F, Base);
 
 	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
 																 IRB.CreateBitCast(Base, Int32PtrTy),
@@ -3303,9 +3322,11 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 
 	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
 	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
-		errs() << "Base is Intrinsic\n" << *Base << "\n";
-		errs() << F << "\n";
-		assert(0);
+		//if (Intrinsic->getIntrinsicID() != Intrinsic::ptrunmask) {
+			errs() << "Base is Intrinsic\n" << *Base << "\n";
+			errs() << F << "\n";
+			assert(0);
+		//}
 	}
 
 
@@ -3518,9 +3539,9 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 		}
 	}
 	else {
-		Ret = GetUnderlyingObject1(V, DL, 0);
-		assert(isa<PHINode>(Ret) || isa<SelectInst>(Ret));
-		Offset = INVALID_OFFSET;
+		//Ret = GetUnderlyingObject1(V, DL, 0);
+		//assert(isa<PHINode>(Ret) || isa<SelectInst>(Ret));
+		//Offset = INVALID_OFFSET;
 	}
 	return Ret;
 }
@@ -4454,7 +4475,6 @@ handlePhiBase(Function &F, const DataLayout &DL, PHINode *Phi,
 			auto PhiOp = Phi->getIncomingValue(i);
 			Value *Base = tryGettingBaseAndOffset(PhiOp, Offset, DL, RepMap);
 			assert(Base);
-			handleIntToPtrBase(F, Base);
 			if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
 				Base = getPhiOrSelectBase(F, DL, Base, PhiAndSelectMap, RepMap);
 			}
@@ -4505,6 +4525,9 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 		}
 
 		Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
+		if (Base == NULL) {
+			continue;
+		}
 		assert(Base);
 
 		PtrToBaseMap[V] = Base;
@@ -4832,6 +4855,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, PtrToBaseMap, TmpSet, DT, ReplacementMap, TLI);
 	removeRedundentAccesses(F, UnsafeMap, TmpSet, DT, AA);
+
 
 	DenseSet<Value*> PhiAndSelectNodes;
 	DenseMap<Value*, Value*> PhiAndSelectMap;
