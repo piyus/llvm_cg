@@ -3514,6 +3514,11 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 	Value *Ret = NULL;
 	SmallVector<const Value *, 2> Objects;
 
+	if (isa<UndefValue>(V)) {
+		Offset = INVALID_OFFSET;
+		return Constant::getNullValue(V->getType());
+	}
+
 	GetUnderlyingObjects1(V, Objects, DL);
 	if (Objects.size() == 1) {
 		Ret = const_cast<Value*>(Objects[0]);

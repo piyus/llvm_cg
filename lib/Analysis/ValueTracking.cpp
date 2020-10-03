@@ -4019,49 +4019,141 @@ bool llvm::IsNonInteriorObject(Value *V, const DataLayout &DL) {
 	return true;
 }
 
+bool isSafeCE(ConstantExpr *CE)
+{
+  switch (CE->getOpcode()) {
+   case Instruction::Trunc:
+   case Instruction::ZExt:
+   case Instruction::SExt:
+   case Instruction::FPTrunc:
+   case Instruction::FPExt:
+   case Instruction::UIToFP:
+   case Instruction::SIToFP:
+   case Instruction::FPToUI:
+   case Instruction::FPToSI:
+   case Instruction::PtrToInt:
+   case Instruction::IntToPtr:
+   case Instruction::BitCast:
+   case Instruction::AddrSpaceCast:
+   case Instruction::Select:
+		return true;
+	}
+	return false;
+}
+
+static bool maybeIntArith(Value *OP)
+{
+	if (isa<LoadInst>(OP) ||
+	    isa<CallInst>(OP) ||
+			isa<Argument>(OP) ||
+			isa<ExtractElementInst>(OP) ||
+			isa<PHINode>(OP) ||
+			isa<SelectInst>(OP) ||
+			isa<PtrToIntInst>(OP) ||
+			isa<CastInst>(OP)
+			)
+	{
+		return false;
+	}
+	auto C = dyn_cast<Constant>(OP);
+	if (C && (C->isNullValue())) {
+		return false;
+	}
+	else {
+		auto CE = dyn_cast<ConstantExpr>(OP);
+		if (CE && isSafeCE(CE)) {
+			return false;
+		}
+	}
+	errs() << "MAYINTERIOR: " << *OP << "\n";
+	return true;
+}
+
 bool llvm::IsNonInteriorIntPtr(Value *V, const DataLayout &DL) {
 	assert(isa<IntToPtrInst>(V));
   SmallPtrSet<Value *, 4> Visited;
   SmallVector<Value *, 4> Worklist;
   Worklist.push_back(V);
 
-  do {
+  while (!Worklist.empty())
+	{
     Value *P = Worklist.pop_back_val();
-    P = GetUnderlyingNonInteriorObject(P, DL, 0);
-		if (P == NULL) {
-			return false;
+
+		if (P->getType()->isIntegerTy()) {
+			if (maybeIntArith(P)) {
+				return false;
+			}
+		}
+		else {
+    	P = GetUnderlyingNonInteriorObject(P, DL, 0);
+			if (P == NULL) {
+				return false;
+			}
 		}
 
     if (!Visited.insert(P).second)
       continue;
 
     if (auto *SI = dyn_cast<SelectInst>(P)) {
-      Worklist.push_back(SI->getTrueValue());
-      Worklist.push_back(SI->getFalseValue());
+			Value *Val = SI->getTrueValue();
+			if (isa<UndefValue>(Val)) {
+				SI->setTrueValue(Constant::getNullValue(SI->getType()));
+			}
+			else {
+      	Worklist.push_back(Val);
+			}
+
+			Val = SI->getFalseValue();
+			if (isa<UndefValue>(Val)) {
+				SI->setFalseValue(Constant::getNullValue(SI->getType()));
+			}
+			else {
+      	Worklist.push_back(Val);
+			}
       continue;
     }
 
     if (auto *PN = dyn_cast<PHINode>(P)) {
-      for (Value *IncValue : PN->incoming_values())
-      	Worklist.push_back(IncValue);
+			for (unsigned i = 0; i < PN->getNumIncomingValues(); i++) {
+				Value *In = PN->getIncomingValue(i);
+				if (isa<UndefValue>(In)) {
+					PN->setIncomingValue(i, Constant::getNullValue(PN->getType()));
+				}
+				else {
+      		Worklist.push_back(In);
+				}
+			}
       continue;
     }
 
+   	if (auto PI = dyn_cast<PtrToIntInst>(P)) {
+      Worklist.push_back(PI);
+			continue;
+		}
+
    	if (auto IP = dyn_cast<IntToPtrInst>(P)) {
 			Value *OP = IP->getOperand(0);
-			OP = OP->stripPointerCasts();
-			if (auto PI = dyn_cast<PtrToIntInst>(OP)) {
-      	Worklist.push_back(PI->getOperand(0));
-			}
-			else {
-				if (!(isa<LoadInst>(OP) || isa<CallInst>(OP) || isa<Argument>(OP) || isa<ExtractElementInst>(OP))) {
-					errs() << "INTERIOR:  " << *OP << "\n";
-      		return false;
-				}
+			Worklist.push_back(OP);
+			continue;
+		}
+
+		if (auto CI = dyn_cast<CastInst>(P)) {
+			assert(P->getType()->isIntegerTy());
+			Value *OP = CI->getOperand(0);
+			Worklist.push_back(OP);
+			continue;
+		}
+
+		if (auto CE = dyn_cast<ConstantExpr>(P)) {
+			for (unsigned i = 0; i < CE->getNumOperands(); i++)
+			{
+				Value *OP = CE->getOperand(i);
+				Worklist.push_back(OP);
 			}
 		}
 
-  } while (!Worklist.empty());
+  }
+
 	return true;
 }
 
