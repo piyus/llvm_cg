@@ -3980,6 +3980,55 @@ static Value *GetUnderlyingNonInteriorObject(Value *V, const DataLayout &DL,
   return V;
 }
 
+
+static bool hasPointerAncestor(Value *V, const DataLayout &DL) {
+  SmallPtrSet<Value *, 4> Visited;
+  SmallVector<Value *, 4> Worklist;
+  Worklist.push_back(V);
+
+  while (!Worklist.empty())
+	{
+    Value *P = Worklist.pop_back_val();
+    if (!Visited.insert(P).second)
+      continue;
+
+    if (auto *SI = dyn_cast<SelectInst>(P))
+		{
+      Worklist.push_back(SI->getTrueValue());
+      Worklist.push_back(SI->getFalseValue());
+      continue;
+    }
+
+    if (auto *PN = dyn_cast<PHINode>(P)) {
+			for (unsigned i = 0; i < PN->getNumIncomingValues(); i++) {
+      	Worklist.push_back(PN->getIncomingValue(i));
+			}
+      continue;
+    }
+
+    if (const Operator *U = dyn_cast<Operator>(V)) {
+			auto Opcode = U->getOpcode(V);
+			if (Opcode == Instruction::PtrToInt) {
+				return true;
+			}
+
+			if (Opcode == Instruction::ICmp ||
+				  Opcode == Instruction::FCmp ||
+			    Opcode == Instruction::FNeg) {
+				continue;
+			}
+
+			if (U->getNumOperands() == 2) {
+				if (!(Opcode == Instruction::Add || Opcode == Instruction::And)) {
+					continue;
+				}
+			}
+      Worklist.push_back(U->getOperand(0));
+		}
+	}
+	return false;;
+}
+
 bool llvm::IsNonInteriorObject(Value *V, const DataLayout &DL) {
   SmallPtrSet<Value *, 4> Visited;
   SmallVector<Value *, 4> Worklist;
@@ -4008,11 +4057,21 @@ bool llvm::IsNonInteriorObject(Value *V, const DataLayout &DL) {
     }
 
    	if (auto IP = dyn_cast<IntToPtrInst>(P)) {
+			bool hasPtrInt = false;
+			if (!IsNonInteriorIntPtr(IP, DL, &hasPtrInt))
+			{
+				if (hasPtrInt || hasPointerAncestor(IP->getOperand(0), DL))
+				{
+					return false;
+				}
+			}
+#if 0
 			Value *OP = IP->getOperand(0);
 			OP = OP->stripPointerCasts();
 			if (auto PI = dyn_cast<PtrToIntInst>(OP)) {
       	Worklist.push_back(PI->getOperand(0));
 			}
+#endif
 		}
 
   } while (!Worklist.empty());
@@ -4069,11 +4128,12 @@ static bool maybeIntArith(Value *OP)
 	return true;
 }
 
-bool llvm::IsNonInteriorIntPtr(Value *V, const DataLayout &DL) {
-	assert(isa<IntToPtrInst>(V));
+bool llvm::IsNonInteriorIntPtr(Value *V, const DataLayout &DL, bool *hasPtrInt) {
+	auto I = cast<IntToPtrInst>(V);
+
   SmallPtrSet<Value *, 4> Visited;
   SmallVector<Value *, 4> Worklist;
-  Worklist.push_back(V);
+  Worklist.push_back(I->getOperand(0));
 
   while (!Worklist.empty())
 	{
@@ -4127,6 +4187,9 @@ bool llvm::IsNonInteriorIntPtr(Value *V, const DataLayout &DL) {
     }
 
    	if (auto PI = dyn_cast<PtrToIntInst>(P)) {
+			if (hasPtrInt) {
+				*hasPtrInt = true;
+			}
       Worklist.push_back(PI);
 			continue;
 		}
