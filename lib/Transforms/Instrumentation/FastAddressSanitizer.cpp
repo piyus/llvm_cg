@@ -3049,8 +3049,14 @@ Value* getInteriorVal(Function &F, Value *V)
 Value* getInterior(Function &F, Instruction *I, Value *V)
 {
 	IRBuilder<> IRB(I);
-	Function *TheFn =
-      Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrunmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
+	Function *TheFn;
+
+	if (V->getType()->isIntegerTy()) {
+		TheFn = Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrunmask1, {V->getType(), V->getType(), IRB.getInt64Ty()});
+	}
+	else {
+		TheFn = Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrunmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
+	}
 	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (0xcabaULL<<48))});
 	return V;
 
@@ -4347,6 +4353,12 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 						Stores.insert(SI);
 						UnsafeUses.insert(SI);
 					}
+				}
+				else if (auto PI = dyn_cast<PtrToIntInst>(V)) {
+					if (!IsNonInteriorObject(PI->getOperand(0), DL)) {
+          	InteriorPointersSet.insert(V);
+						Stores.insert(SI);
+          }
 				}
 			}
 
