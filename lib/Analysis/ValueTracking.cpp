@@ -4190,7 +4190,7 @@ bool llvm::IsNonInteriorIntPtr(Value *V, const DataLayout &DL, bool *hasPtrInt) 
 			if (hasPtrInt) {
 				*hasPtrInt = true;
 			}
-      Worklist.push_back(PI);
+      Worklist.push_back(PI->getOperand(0));
 			continue;
 		}
 
@@ -4216,6 +4216,7 @@ bool llvm::IsNonInteriorIntPtr(Value *V, const DataLayout &DL, bool *hasPtrInt) 
 		}
 
   }
+	errs() << "return true\n";
 
 	return true;
 }

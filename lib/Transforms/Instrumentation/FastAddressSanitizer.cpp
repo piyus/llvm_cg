@@ -3771,18 +3771,11 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 {
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
-	Type *Ty = NULL;
+	auto Intrin = (isa<PtrToIntInst>(V)) ? Intrinsic::ptrmask1 : Intrinsic::ptrmask;
 
-	if (isa<PtrToIntInst>(V)) {
-		Ty = V->getType();
-		V = IRB.CreateIntToPtr(V, IRB.getInt8PtrTy());
-	}
 	Function *TheFn =
-      Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
+      Intrinsic::getDeclaration(F.getParent(), Intrin, {V->getType(), V->getType(), IRB.getInt64Ty()});
 	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48)-1)});
-	if (Ty) {
-		V = IRB.CreatePtrToInt(V, Ty);
-	}
 	return V;
 
 	//auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());

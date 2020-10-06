@@ -213,7 +213,9 @@ static void traceFunction(Function &F) {
 
 static bool isPtrMask(Value *V) {
 	auto I = dyn_cast<IntrinsicInst>(V);
-	return (I && I->getIntrinsicID() == Intrinsic::ptrmask);
+	return (I &&
+		(I->getIntrinsicID() == Intrinsic::ptrmask ||
+		 I->getIntrinsicID() == Intrinsic::ptrmask1));
 }
 
 static Value* getNoInterior1(Function &F, Instruction *I, Value *V)
@@ -228,13 +230,7 @@ static Value* getNoInterior1(Function &F, Instruction *I, Value *V)
 
 static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 {
-	if (isa<PtrToIntInst>(V)) {
-		auto VI = dyn_cast<PtrToIntInst>(V);
-		if (isPtrMask(VI->getPointerOperand())) {
-			return NULL;
-		}
-	}
-	else if (isPtrMask(V)) {
+	if (isPtrMask(V)) {
 		return NULL;
 	}
 
@@ -264,19 +260,12 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
   	}
 #endif
 
+	auto Intrin = (isa<PtrToIntInst>(V)) ? Intrinsic::ptrmask1 : Intrinsic::ptrmask;
 
-	Type *Ty = NULL;
-
-	if (isa<PtrToIntInst>(V)) {
-		Ty = V->getType();
-		V = IRB.CreateIntToPtr(V, IRB.getInt8PtrTy());
-	}
 	Function *TheFn =
-      Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
+      Intrinsic::getDeclaration(F.getParent(), Intrin, {V->getType(), V->getType(), IRB.getInt64Ty()});
 	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48)-1)});
-	if (Ty) {
-		V = IRB.CreatePtrToInt(V, Ty);
-	}
+
 	return V;
 
 	//auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
