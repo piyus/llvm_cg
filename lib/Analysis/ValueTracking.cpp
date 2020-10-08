@@ -4357,28 +4357,41 @@ bool llvm::getUnderlyingObjectsForCodeGen(const Value *V,
 bool llvm::GetUnderlyingObjects1(const Value *V,
                           SmallVectorImpl<const Value *> &Objects,
                           const DataLayout &DL) {
-  SmallPtrSet<const Value *, 16> Visited;
-  SmallVector<const Value *, 4> Working(1, V);
+
+  SmallPtrSet<const Value *, 4> Visited;
+  SmallVector<const Value *, 4> Worklist;
+  Worklist.push_back(V);
   do {
-    V = Working.pop_back_val();
+    const Value *P = Worklist.pop_back_val();
+    P = GetUnderlyingObject(P, DL, 0);
 
-    SmallVector<const Value *, 4> Objs;
-    GetUnderlyingObjects(V, Objs, DL);
+    if (!Visited.insert(P).second)
+      continue;
 
-    for (const Value *V : Objs) {
-      if (!Visited.insert(V).second)
-        continue;
-      if (Operator::getOpcode(V) == Instruction::IntToPtr) {
-        const Value* O =
-					getUnderlyingObjectFromInt1(cast<User>(V)->getOperand(0));
-        if (O->getType()->isPointerTy()) {
-          Working.push_back(O);
-          continue;
-        }
-      }
-      Objects.push_back(V);
+    if (auto *SI = dyn_cast<SelectInst>(P)) {
+      Worklist.push_back(SI->getTrueValue());
+      Worklist.push_back(SI->getFalseValue());
+      continue;
     }
-  } while (!Working.empty());
+
+    if (auto *PN = dyn_cast<PHINode>(P)) {
+      for (Value *IncValue : PN->incoming_values())
+        Worklist.push_back(IncValue);
+      continue;
+    }
+
+    if (auto IP = dyn_cast<IntToPtrInst>(P)) {
+      const Value* O =
+				getUnderlyingObjectFromInt1(IP->getOperand(0));
+      if (O->getType()->isPointerTy()) {
+        Worklist.push_back(O);
+        continue;
+      }
+    }
+
+    Objects.push_back(P);
+  } while (!Worklist.empty());
+
   return true;
 }
 
