@@ -4293,28 +4293,56 @@ static const Value *getUnderlyingObjectFromInt(const Value *V) {
 }
 
 static Value *getUnderlyingObjectFromInt1(Value *V) {
-  do {
-    if (const Operator *U = dyn_cast<Operator>(V)) {
-			if (isa<PHINode>(V) || isa<SelectInst>(V)) {
-				return V;
-			}
-			auto Opcode = U->getOpcode();
-      if (Opcode == Instruction::PtrToInt)
-        return U->getOperand(0);
-			if (Opcode == Instruction::Load ||
-				Opcode == Instruction::Call ||
-				Opcode == Instruction::ExtractElement) {
-				return V;
-			}
-      V = U->getOperand(0);
-    } else {
-      return V;
-    }
-		if (!V->getType()->isIntegerTy()) {
-			errs() << *V << "\n";
+
+  SmallPtrSet<Value *, 4> Visited;
+  SmallVector<Value *, 4> Worklist;
+
+  Worklist.push_back(V);
+
+  while (!Worklist.empty())
+	{
+    Value *P = Worklist.pop_back_val();
+
+    if (!Visited.insert(P).second)
+      continue;
+
+		if (!P->getType()->isIntegerTy()) {
+			errs() << *P << "\n";
 		}
-    assert(V->getType()->isIntegerTy() && "Unexpected operand type!");
-  } while (true);
+    assert(P->getType()->isIntegerTy() && "Unexpected operand type!");
+
+    if (const Operator *U = dyn_cast<Operator>(P)) {
+
+    	if (auto *SI = dyn_cast<SelectInst>(P)) {
+      	//Worklist.push_back(SI->getTrueValue());
+      	//Worklist.push_back(SI->getFalseValue());
+      	//continue;
+				return NULL;
+			}
+
+    	if (auto *PN = dyn_cast<PHINode>(P)) {
+				//for (unsigned i = 0; i < PN->getNumIncomingValues(); i++) {
+      	//	Worklist.push_back(PN->getIncomingValue(i));
+				//}
+      	//continue;
+				return NULL;
+			}
+
+			auto Opcode = U->getOpcode();
+      if (Opcode == Instruction::PtrToInt) {
+        return U->getOperand(0);
+			}
+
+			if (Opcode == Instruction::Load ||
+				  Opcode == Instruction::Call ||
+				  Opcode == Instruction::ExtractElement) {
+				continue;
+			}
+      Worklist.push_back(U->getOperand(0));
+    }
+	}
+
+	return NULL;
 }
 
 /// This is a wrapper around GetUnderlyingObjects and adds support for basic
@@ -4383,7 +4411,8 @@ bool llvm::GetUnderlyingObjects1(const Value *V,
     if (auto IP = dyn_cast<IntToPtrInst>(P)) {
       const Value* O =
 				getUnderlyingObjectFromInt1(IP->getOperand(0));
-      if (O->getType()->isPointerTy()) {
+      if (O) {
+				assert(O->getType()->isPointerTy() && "unexpected type");
         Worklist.push_back(O);
         continue;
       }
@@ -4401,7 +4430,8 @@ Value *llvm::GetUnderlyingObject1(Value *V, const DataLayout &DL,
 	Value *U = GetUnderlyingObject(V, DL, MaxLookup);
 	if (isa<IntToPtrInst>(U)) {
 		Value* O = getUnderlyingObjectFromInt1(cast<User>(U)->getOperand(0));
-    if (O->getType()->isPointerTy()) {
+    if (O) {
+			assert(O->getType()->isPointerTy() && "unexpected type");
 			return GetUnderlyingObject1(O, DL, MaxLookup);
     }
 	}
