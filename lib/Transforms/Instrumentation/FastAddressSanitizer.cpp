@@ -3550,9 +3550,9 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 		}
 	}
 	else {
-		//Ret = GetUnderlyingObject1(V, DL, 0);
-		//assert(isa<PHINode>(Ret) || isa<SelectInst>(Ret));
-		//Offset = INVALID_OFFSET;
+		Ret = GetUnderlyingObject1(V, DL, 0);
+		assert(isa<PHINode>(Ret) || isa<SelectInst>(Ret));
+		Offset = INVALID_OFFSET;
 	}
 	return Ret;
 }

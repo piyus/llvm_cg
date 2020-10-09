@@ -4338,7 +4338,9 @@ static Value *getUnderlyingObjectFromInt1(Value *V) {
 				  Opcode == Instruction::ExtractElement) {
 				continue;
 			}
-      Worklist.push_back(U->getOperand(0));
+			for (unsigned i = 0; i < U->getNumOperands(); i++) {
+      	Worklist.push_back(U->getOperand(i));
+			}
     }
 	}
 
