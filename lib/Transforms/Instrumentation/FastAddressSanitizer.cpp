@@ -2913,8 +2913,8 @@ static bool indefiniteBase(Value *V, const DataLayout &DL) {
 		}
 
 
-		if (isa<SelectInst>(V) || isa<PHINode>(V)) {
-			auto U = cast<User>(V);
+		if (isa<SelectInst>(P) || isa<PHINode>(P)) {
+			auto U = cast<User>(P);
 			for (unsigned i = 0; i < U->getNumOperands(); i++) {
 				Worklist.push_back(U->getOperand(i));
 			}
@@ -4822,17 +4822,35 @@ static AllocaInst* copyArgsByValToAllocas1(Function &F, Argument &Arg) {
 static void
 addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
 {
-	auto I = cast<Instruction>(Node);
-	for (unsigned i = 0; i < I->getNumOperands(); i++) {
-		auto Op = I->getOperand(i);
-		Op = Op->stripPointerCasts();
-		if (isa<AllocaInst>(Op)) {
-			UnsafeAllocas.insert(cast<AllocaInst>(Op));
-		}
-		else if (isa<Argument>(Op)) {
-			AllocaInst *AI = copyArgsByValToAllocas1(F, *(cast<Argument>(Op)));
-			if (AI) {
-				UnsafeAllocas.insert(AI);
+  SmallPtrSet<Value *, 4> Visited;
+  SmallVector<Value *, 4> Worklist;
+  Worklist.push_back(Node);
+
+	assert(isa<SelectInst>(Node) || isa<PHINode>(Node));
+
+  while (!Worklist.empty())
+	{
+    Value *P = Worklist.pop_back_val();
+
+    if (!Visited.insert(P).second)
+      continue;
+
+		auto I = cast<Instruction>(P);
+
+		for (unsigned i = 0; i < I->getNumOperands(); i++) {
+			auto Op = I->getOperand(i);
+			Op = Op->stripPointerCasts();
+			if (isa<AllocaInst>(Op)) {
+				UnsafeAllocas.insert(cast<AllocaInst>(Op));
+			}
+			else if (isa<Argument>(Op)) {
+				AllocaInst *AI = copyArgsByValToAllocas1(F, *(cast<Argument>(Op)));
+				if (AI) {
+					UnsafeAllocas.insert(AI);
+				}
+			}
+			else if (isa<PHINode>(Op) || isa<SelectInst>(Op)) {
+				Worklist.push_back(Op);
 			}
 		}
 	}
