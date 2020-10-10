@@ -3112,14 +3112,37 @@ isNonAccessInst(const Instruction *I, Value *Ptr) {
 	return false;
 }
 
-static bool 
-postDominatesAnyUse(Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses)
+static bool
+inSameLoop(const Value *Base, const Value *Ptr, LoopInfo &LI)
 {
+	if (isa<PHINode>(Base)) {
+		//errs() << "Finding BASE: "<< *Base << "\n";
+		auto L1 = LI.getLoopFor(cast<Instruction>(Base)->getParent());
+		//errs() << "L1: " << L1 << "\n";
+		if (L1 == NULL) {
+			return true;
+		}
+		auto L2 = LI.getLoopFor(cast<Instruction>(Ptr)->getParent());
+		//errs() << "L2: " << L2 << "\n";
+		if (LI.isNotAlreadyContainedIn(L2, L1)) {
+			//errs() << "L1 and L2 are different\n";
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool 
+postDominatesAnyUse(Function &F, Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, LoopInfo &LI)
+{
+	//errs() << "CHECKING1 : " << *Ptr << "\n";
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<const Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
 			if (!isNonAccessInst(I, Ptr) && PDT.dominates(I, Ptr)) {
-				return true;
+				if (inSameLoop(Ptr, I, LI)) {
+					return true;
+				}
 			}
 		}
 	}
@@ -3144,14 +3167,16 @@ mayBeNull(Instruction *Ptr) {
 }
 
 static bool
-postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT, DenseSet<Value*> &Ptrs)
+postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT, DenseSet<Value*> &Ptrs, LoopInfo &LI)
 {
+	//errs() << "CHECKING2 : " << *Base << "\n";
 	assert(!Ptrs.empty());
 
 	for (const Use &UI : Base->uses()) {
 	  auto I = dyn_cast<IntrinsicInst>(UI.getUser());
 		if (I && I->getIntrinsicID() == Intrinsic::ptrmask) {
 			if (mayBeNull(I)) {
+				//errs() << "Returning FALSE1\n";
 				return false;
 			}
 		}
@@ -3161,9 +3186,12 @@ postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT, D
 	  auto I = cast<const Instruction>(V);
 		assert(I);
 		if (PDT.dominates(I, Base)) {
-			return true;
+			if (inSameLoop(Base, I, LI)) {
+				return true;
+			}
 		}
 	}
+	//errs() << "Returning FALSE\n";
 	return false;
 }
 
@@ -4939,6 +4967,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 
+	DT.recalculate(F);
+
+	LoopInfo LI(DT);
 	PostDominatorTree PDT(F);
 	DenseMap<Value*, DenseSet<Value*>> BaseToPtrsMap;
 
@@ -4947,7 +4978,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		bool MayNull = false;
 		auto PtrI = dyn_cast<Instruction>(Ptr);
 		assert(PtrI && "Ptr is not an Instruction");
-		if (!postDominatesAnyUse(PtrI, PDT, UnsafeUses)) {
+		if (!postDominatesAnyUse(F, PtrI, PDT, UnsafeUses, LI)) {
 			PtrMayBeNull.insert(Ptr);
 			MayNull = true;
 		}
@@ -4985,7 +5016,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			assert(BaseI);
 		}
 
-		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet)) {
+		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI)) {
 			assert(!BaseToLenMap.count(Base));
 			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, NULL);
 			GetLengths.insert(BaseToLenMap[Base]);
