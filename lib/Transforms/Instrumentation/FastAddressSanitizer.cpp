@@ -2895,6 +2895,35 @@ static Value* sanGetBase(Function &F, Value *V, IRBuilder<> &IRB)
 	return IRB.CreateCall(Fn, {V});
 }
 
+static bool indefiniteBase(Value *V, const DataLayout &DL) {
+
+  SmallPtrSet<Value *, 4> Visited;
+  SmallVector<Value *, 4> Worklist;
+  Worklist.push_back(V);
+
+  while (!Worklist.empty())
+	{
+    Value *P = Worklist.pop_back_val();
+
+    if (!Visited.insert(P).second)
+      continue;
+
+		if (isa<IntToPtrInst>(P) && !IsNonInteriorIntPtr(P, DL)) {
+			return true;
+		}
+
+
+		if (isa<SelectInst>(V) || isa<PHINode>(V)) {
+			auto U = cast<User>(V);
+			for (unsigned i = 0; i < U->getNumOperands(); i++) {
+				Worklist.push_back(U->getOperand(i));
+			}
+		}
+	}
+
+	return false;
+}
+
 
 Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *Ptr)
 {
@@ -2927,7 +2956,7 @@ Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const Dat
 	IRBuilder<> IRB(InstPt->getParent());
 	IRB.SetInsertPoint(InstPt);
 
-	if (isa<IntToPtrInst>(V) && !IsNonInteriorIntPtr(V, DL)) {
+	if (indefiniteBase(V, DL)) {
 		V = sanGetBase(F, V, IRB);
 	}
 
@@ -3241,7 +3270,7 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 
 
 	const DataLayout &DL = F.getParent()->getDataLayout();
-	if (isa<IntToPtrInst>(Base) && !IsNonInteriorIntPtr(Base, DL)) {
+	if (indefiniteBase(Base, DL)) {
 		Base = sanGetBase(F, Base, IRB);
 	}
 
@@ -3311,7 +3340,7 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	}
 
 	const DataLayout &DL = F.getParent()->getDataLayout();
-	if (isa<IntToPtrInst>(Base) && !IsNonInteriorIntPtr(Base, DL)) {
+	if (indefiniteBase(Base, DL)) {
 		Base = sanGetBase(F, Base, IRB);
 	}
 
