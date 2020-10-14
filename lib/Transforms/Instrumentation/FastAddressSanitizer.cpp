@@ -3132,6 +3132,36 @@ inSameLoop(const Value *Base, const Value *Ptr, LoopInfo &LI)
 	return true;
 }
 
+static bool
+hasUnsafeUse(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses)
+{
+	for (const Use &UI : Ptr->uses()) {
+	  auto I = cast<const Instruction>(UI.getUser());
+		if (UnsafeUses.count(I)) {
+			if (!isNonAccessInst(I, Ptr)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static void
+removeOnlyNonAccessPtrs(Function &F, DenseSet<Value*> &TmpSet, DenseSet<Value*> &UnsafeUses)
+{
+	DenseSet<Value*> ToDelete;
+	for (auto Ptr : TmpSet) {
+		if (!hasUnsafeUse(F, cast<Instruction>(Ptr), UnsafeUses)) {
+			ToDelete.insert(Ptr);
+		}
+	}
+
+	for (auto Ptr : ToDelete) {
+		assert(TmpSet.count(Ptr));
+		TmpSet.erase(Ptr);
+	}
+}
+
 static bool 
 postDominatesAnyUse(Function &F, Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, LoopInfo &LI)
 {
@@ -4098,13 +4128,9 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				assert(LI);
 				//Oper = LI->getPointerOperand();
 				//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
-				if (!LI->uses().empty()) {
-					Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
-					LoadMap[LI] = Ret;
-				}
-				else {
-					LoadMap[LI] = NULL;
-				}
+				assert(!LI->uses().empty());
+				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+				LoadMap[LI] = Ret;
 				//LI->setOperand(0, Ret);
 			}
 			else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
@@ -4163,9 +4189,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	for (auto It : LoadMap) {
 		auto LI = cast<Instruction>(It.first);
 		auto Dst = cast<Instruction>(It.second);
-		if (Dst) {
-			LI->replaceAllUsesWith(Dst);
-		}
+		LI->replaceAllUsesWith(Dst);
 		LI->eraseFromParent();
 	}
 
@@ -4998,6 +5022,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			errs() << "SRC: " << *It.first << "  BASE: " << *PhiAndSelectMap[Base] << "\n";
 		}
 	}
+
+	removeOnlyNonAccessPtrs(F, TmpSet, UnsafeUses);
 
 
 	DT.recalculate(F);
