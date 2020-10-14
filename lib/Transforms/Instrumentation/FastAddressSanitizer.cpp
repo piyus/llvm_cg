@@ -3638,7 +3638,7 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 	else {
 		if (GetLengths.count(I)) {
 			assert(Val == NULL);
-			Fn = M->getOrInsertFunction("san_page_fault_len", PtrTy, PtrTy, LineTy, NameTy);
+			Fn = M->getOrInsertFunction("san_page_fault_len", IRB.getInt32Ty(), PtrTy, LineTy, NameTy);
 		}
 		else if (!Val) {
 			if (1 /*I->getType()->isPointerTy()*/) {
@@ -4086,6 +4086,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	DenseSet<AllocaInst*> AllocaInsts;
 	DenseMap<Value*, Value*> RepMap;
+	DenseMap<Value*, Value*> LoadMap;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -4096,22 +4097,24 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				LoadInst *LI = dyn_cast<LoadInst>(I);
 				assert(LI);
 				//Oper = LI->getPointerOperand();
-				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
 				//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
-				LI->setOperand(0, Ret);
+
+				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+				LoadMap[LI] = Ret;
+				//LI->setOperand(0, Ret);
 			}
 			else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
 				Oper = LI->getPointerOperand();
-				//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
-				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+				Ret = getNoInteriorMap(F, LI, Oper, RepMap);
+				//Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
 				LI->setOperand(0, Ret);
 			}
 			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
 				//Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
-				Value *Val = SI->getValueOperand();
+				//Value *Val = SI->getValueOperand();
 				Oper = SI->getPointerOperand();
-				//Ret = getNoInteriorMap(F, SI, Oper, RepMap);
-				Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++, Name);
+				Ret = getNoInteriorMap(F, SI, Oper, RepMap);
+				//Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++, Name);
 				SI->setOperand(1, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
@@ -4151,6 +4154,13 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				AllocaInsts.insert(AI);
 			}
 		}
+	}
+
+	for (auto It : LoadMap) {
+		auto LI = cast<Instruction>(It.first);
+		auto Dst = cast<Instruction>(It.second);
+		LI->replaceAllUsesWith(Dst);
+		LI->eraseFromParent();
 	}
 
 	//for (auto AI : AllocaInsts) {
@@ -4398,10 +4408,10 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
           }
 					auto ElemTy = V->getType()->getPointerElementType();
 					if (ElemTy->isSized()) {
-          	uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-						addUnsafePointer(UnsafePointers, V, Sz);
+          	//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+						//addUnsafePointer(UnsafePointers, V, Sz);
 						Stores.insert(SI);
-						UnsafeUses.insert(SI);
+						//UnsafeUses.insert(SI);
 					}
 				}
 				else if (auto PI = dyn_cast<PtrToIntInst>(V)) {
