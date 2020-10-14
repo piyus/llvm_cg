@@ -4216,7 +4216,6 @@ bool llvm::IsNonInteriorIntPtr(Value *V, const DataLayout &DL, bool *hasPtrInt) 
 		}
 
   }
-	errs() << "return true\n";
 
 	return true;
 }

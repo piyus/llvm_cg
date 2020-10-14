@@ -4098,9 +4098,13 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				assert(LI);
 				//Oper = LI->getPointerOperand();
 				//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
-
-				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
-				LoadMap[LI] = Ret;
+				if (!LI->uses().empty()) {
+					Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+					LoadMap[LI] = Ret;
+				}
+				else {
+					LoadMap[LI] = NULL;
+				}
 				//LI->setOperand(0, Ret);
 			}
 			else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
@@ -4159,7 +4163,9 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	for (auto It : LoadMap) {
 		auto LI = cast<Instruction>(It.first);
 		auto Dst = cast<Instruction>(It.second);
-		LI->replaceAllUsesWith(Dst);
+		if (Dst) {
+			LI->replaceAllUsesWith(Dst);
+		}
 		LI->eraseFromParent();
 	}
 
@@ -4345,17 +4351,19 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
               	                                 CS->doesNotAccessMemory()))) {
             			Value *A = *ArgIt;
               		if (A->getType()->isPointerTy()) {
+										CallSites.insert(CS);
 										if (!IsNonInteriorObject(A, DL)) {
-											InteriorPointersSet.insert(A);
+											auto ElemTy = A->getType()->getPointerElementType();
+											if (ElemTy->isSized()) {
+												InteriorPointersSet.insert(A);
+          							uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+												addUnsafePointer(UnsafePointers, A, Sz);
+											}
+											else {
+												errs() << "NO-SIZED1: " << *A << "\n";
+											}
 										}
-										auto ElemTy = A->getType()->getPointerElementType();
-										if (ElemTy->isSized()) {
-          						//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-											//addUnsafePointer(UnsafePointers, A, Sz);
-											//errs() << "Call-Unsafe: " << *A << "\n";
-											CallSites.insert(CS);
-											//UnsafeUses.insert(CS);
-										}
+
               		}
 								}
             	}
@@ -4366,16 +4374,17 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 					Value *RetVal = Ret->getReturnValue();
           if (RetVal && RetVal->getType()->isPointerTy()) {
 						if (!IsNonInteriorObject(RetVal, DL)) {
-							InteriorPointersSet.insert(RetVal);
+							auto ElemTy = RetVal->getType()->getPointerElementType();
+							if (ElemTy->isSized()) {
+          			uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+								InteriorPointersSet.insert(RetVal);
+								addUnsafePointer(UnsafePointers, RetVal, Sz);
+								RetSites.insert(Ret);
+							}
+							else {
+								errs() << "NO-SIZED: " << *RetVal << "\n";
+							}
             }
-						//errs() << "Ret: " << *RetVal << "\n";
-						auto ElemTy = RetVal->getType()->getPointerElementType();
-						if (ElemTy->isSized()) {
-          		//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-							//addUnsafePointer(UnsafePointers, RetVal, Sz);
-							RetSites.insert(Ret);
-							//UnsafeUses.insert(Ret);
-						}
           }
 				}
 				else if (auto Ret = dyn_cast<IntToPtrInst>(&Inst)) {
@@ -4404,20 +4413,33 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 				auto V = SI->getValueOperand();
 				if (V->getType()->isPointerTy()) {
 					if (!IsNonInteriorObject(V, DL)) {
-          	InteriorPointersSet.insert(V);
+						auto ElemTy = V->getType()->getPointerElementType();
+						if (ElemTy->isSized()) {
+          		uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+							addUnsafePointer(UnsafePointers, V, Sz);
+          		InteriorPointersSet.insert(V);
+							Stores.insert(SI);
+						}
+						else {
+							errs() << "NO-SIZED2: " << *V << "\n";
+						}
           }
-					auto ElemTy = V->getType()->getPointerElementType();
-					if (ElemTy->isSized()) {
-          	//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-						//addUnsafePointer(UnsafePointers, V, Sz);
-						Stores.insert(SI);
-						//UnsafeUses.insert(SI);
-					}
 				}
 				else if (auto PI = dyn_cast<PtrToIntInst>(V)) {
-					if (!IsNonInteriorObject(PI->getOperand(0), DL)) {
-          	InteriorPointersSet.insert(V);
-						Stores.insert(SI);
+					auto PO = PI->getOperand(0);
+					if (!IsNonInteriorObject(PO, DL)) {
+
+						auto ElemTy = PO->getType()->getPointerElementType();
+						if (ElemTy->isSized()) {
+          		uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+							addUnsafePointer(UnsafePointers, PO, Sz);
+          		InteriorPointersSet.insert(V);
+							Stores.insert(SI);
+						}
+						else {
+							errs() << "NO-SIZED3: " << *PO << "\n";
+						}
+
           }
 				}
 			}
@@ -4745,7 +4767,7 @@ static void removeRedundentAccesses(Function &F,
 static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
 	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
 	DenseSet<Value*> &InteriorPointerSet,
-  const TargetLibraryInfo *TLI)
+  const TargetLibraryInfo *TLI, DenseSet<Value*> SafePtrs)
 {
 
   //const DataLayout &DL = F.getParent()->getDataLayout();
@@ -4925,6 +4947,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Instruction*> GEPs;
 	DenseSet<Value*> PtrMayBeNull;
 	DenseSet<Instruction*> RestorePoints;
+	DenseSet<Value*> SafePtrs;
 
 	DenseSet<Value*> InteriorPointersSet;
 
@@ -5043,6 +5066,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 		Value *Size;
 		bool MayNull = PtrMayBeNull.count(Ptr) > 0;
+		if (!MayNull) {
+			SafePtrs.insert(Ptr);
+		}
 		if (!BaseToLenMap.count(Base)) {
 			if (!MayNull) {
 				addBoundsCheckWithLen(F, Base, Ptr, TySize,
@@ -5061,7 +5087,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	removeRedundentLengths(F, GetLengths, LenToBaseMap);
 
-	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, InteriorPointersSet, TLI);
+	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafePtrs);
 
 	Value *StackBase = NULL;
 	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
