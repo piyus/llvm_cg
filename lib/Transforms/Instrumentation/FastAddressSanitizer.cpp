@@ -4135,16 +4135,16 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 			}
 			else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
 				Oper = LI->getPointerOperand();
-				Ret = getNoInteriorMap(F, LI, Oper, RepMap);
-				//Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+				//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
+				Ret = addHandler(F, I, Oper, NULL, GetLengths, false, id++, Name);
 				LI->setOperand(0, Ret);
 			}
 			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
 				//Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
-				//Value *Val = SI->getValueOperand();
+				Value *Val = SI->getValueOperand();
 				Oper = SI->getPointerOperand();
-				Ret = getNoInteriorMap(F, SI, Oper, RepMap);
-				//Ret = addHandler(F, I, SI->getPointerOperand(), Val, GetLengths, false, id++, Name);
+				//Ret = getNoInteriorMap(F, SI, Oper, RepMap);
+				Ret = addHandler(F, I, Oper, Val, GetLengths, false, id++, Name);
 				SI->setOperand(1, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
@@ -4380,8 +4380,8 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 											auto ElemTy = A->getType()->getPointerElementType();
 											if (ElemTy->isSized()) {
 												InteriorPointersSet.insert(A);
-          							uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-												addUnsafePointer(UnsafePointers, A, Sz);
+          							//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+												//addUnsafePointer(UnsafePointers, A, Sz);
 											}
 											else {
 												errs() << "NO-SIZED1: " << *A << "\n";
@@ -4400,9 +4400,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 						if (!IsNonInteriorObject(RetVal, DL)) {
 							auto ElemTy = RetVal->getType()->getPointerElementType();
 							if (ElemTy->isSized()) {
-          			uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+          			//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
 								InteriorPointersSet.insert(RetVal);
-								addUnsafePointer(UnsafePointers, RetVal, Sz);
+								//addUnsafePointer(UnsafePointers, RetVal, Sz);
 								RetSites.insert(Ret);
 							}
 							else {
@@ -4439,8 +4439,8 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 					if (!IsNonInteriorObject(V, DL)) {
 						auto ElemTy = V->getType()->getPointerElementType();
 						if (ElemTy->isSized()) {
-          		uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-							addUnsafePointer(UnsafePointers, V, Sz);
+          		//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+							//addUnsafePointer(UnsafePointers, V, Sz);
           		InteriorPointersSet.insert(V);
 							Stores.insert(SI);
 						}
@@ -4455,8 +4455,8 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 
 						auto ElemTy = PO->getType()->getPointerElementType();
 						if (ElemTy->isSized()) {
-          		uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-							addUnsafePointer(UnsafePointers, PO, Sz);
+          		//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
+							//addUnsafePointer(UnsafePointers, PO, Sz);
           		InteriorPointersSet.insert(PO);
 							Stores.insert(SI);
 						}
@@ -4634,7 +4634,8 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap,
 	DenseMap<Value*, Value*> &PtrToBaseMap,
 	DenseSet<Value*> &TmpSet,
-	DominatorTree &DT, DenseMap<Value*, Value*> &ReplacementMap, const TargetLibraryInfo *TLI)
+	DominatorTree &DT, DenseMap<Value*, Value*> &ReplacementMap, const TargetLibraryInfo *TLI,
+	DenseSet<Value*> &InteriorPointersSet)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
 
@@ -4643,6 +4644,9 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 		uint64_t TypeSize = It.second;
 		int64_t Offset;
 
+		if (isa<ConstantExpr>(V)) {
+			continue;
+		}
 
 		Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
 		/*if (Base == NULL) {
@@ -4652,9 +4656,6 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 
 		PtrToBaseMap[V] = Base;
 
-		if (isa<ConstantExpr>(V)) {
-			continue;
-		}
 
 		if (Offset >= 0) {
 			bool Static = false;
@@ -4676,6 +4677,15 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 			Value *Base1 = GetPointerBaseWithConstantOffset(V, Offset, DL);
 			UnsafeMap[V] = std::make_pair(Base1, Offset);
 			TmpSet.insert(V);
+		}
+	}
+
+	for (auto V : InteriorPointersSet) {
+		if (!PtrToBaseMap.count(V)) {
+			int64_t Offset;
+			Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
+			assert(Base);
+			PtrToBaseMap[V] = Base;
 		}
 	}
 }
@@ -5050,7 +5060,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DominatorTree DT(F);
 	//LoopInfo LI(DT);
 
-	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, PtrToBaseMap, TmpSet, DT, ReplacementMap, TLI);
+	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, PtrToBaseMap, TmpSet, DT, ReplacementMap, TLI, InteriorPointersSet);
 	removeRedundentAccesses(F, UnsafeMap, TmpSet, DT, AA);
 
 

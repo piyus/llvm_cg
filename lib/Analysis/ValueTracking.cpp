@@ -3989,6 +3989,7 @@ static bool hasPointerAncestor(Value *V, const DataLayout &DL) {
   while (!Worklist.empty())
 	{
     Value *P = Worklist.pop_back_val();
+
     if (!Visited.insert(P).second)
       continue;
 
@@ -4006,8 +4007,16 @@ static bool hasPointerAncestor(Value *V, const DataLayout &DL) {
       continue;
     }
 
-    if (const Operator *U = dyn_cast<Operator>(V)) {
-			auto Opcode = U->getOpcode(V);
+
+    if (const Operator *U = dyn_cast<Operator>(P)) {
+			auto Opcode = U->getOpcode();
+
+			if (Opcode == Instruction::Load ||
+			    Opcode == Instruction::Call ||
+					Opcode == Instruction::ExtractValue) {
+				continue;
+			}
+
 			if (Opcode == Instruction::PtrToInt) {
 				return true;
 			}
@@ -4022,6 +4031,9 @@ static bool hasPointerAncestor(Value *V, const DataLayout &DL) {
 				if (!(Opcode == Instruction::Add || Opcode == Instruction::And)) {
 					continue;
 				}
+				Worklist.push_back(U->getOperand(0));
+				Worklist.push_back(U->getOperand(1));
+				continue;
 			}
       Worklist.push_back(U->getOperand(0));
 		}
@@ -4065,13 +4077,6 @@ bool llvm::IsNonInteriorObject(Value *V, const DataLayout &DL) {
 					return false;
 				}
 			}
-#if 0
-			Value *OP = IP->getOperand(0);
-			OP = OP->stripPointerCasts();
-			if (auto PI = dyn_cast<PtrToIntInst>(OP)) {
-      	Worklist.push_back(PI->getOperand(0));
-			}
-#endif
 		}
 
   } while (!Worklist.empty());
