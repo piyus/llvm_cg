@@ -4457,7 +4457,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 						if (ElemTy->isSized()) {
           		uint64_t Sz = DL.getTypeAllocSize(ElemTy);
 							addUnsafePointer(UnsafePointers, PO, Sz);
-          		InteriorPointersSet.insert(V);
+          		InteriorPointersSet.insert(PO);
 							Stores.insert(SI);
 						}
 						else {
@@ -4643,17 +4643,19 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 		uint64_t TypeSize = It.second;
 		int64_t Offset;
 
+
+		Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
+		/*if (Base == NULL) {
+			continue;
+		}*/
+		assert(Base);
+
+		PtrToBaseMap[V] = Base;
+
 		if (isa<ConstantExpr>(V)) {
 			continue;
 		}
 
-		Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
-		if (Base == NULL) {
-			continue;
-		}
-		assert(Base);
-
-		PtrToBaseMap[V] = Base;
 		if (Offset >= 0) {
 			bool Static = false;
 			uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
@@ -4788,17 +4790,59 @@ static void removeRedundentAccesses(Function &F,
 	}
 }
 
+
+static Value*
+getInteriorValue(Function &F, Instruction *I, Value *V,
+	DenseSet<Value*> &InteriorPointerSet,
+	DenseSet<Value*> &SafePtrs, DenseMap<Value*, Value*> &PtrToBaseMap,
+	Type *RetTy)
+{
+	IRBuilder<> IRB(I);
+	Value *Ret = NULL;
+	auto M = F.getParent();
+
+	if (RetTy == NULL) {
+		RetTy = V->getType();
+	}
+
+	if (InteriorPointerSet.count(V)) {
+		if (!PtrToBaseMap.count(V)) {
+			errs() << "PTR: " << *V << "\n";
+		}
+		assert(PtrToBaseMap.count(V));
+		auto Base = PtrToBaseMap[V];
+		if (SafePtrs.count(V)) {
+			auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType());
+			Ret = IRB.CreateCall(Fn, {Base, V});
+		}
+		else {
+			auto Fn = M->getOrInsertFunction("san_interior_checked", RetTy, Base->getType(), V->getType());
+			Ret = IRB.CreateCall(Fn, {Base, V});
+		}
+	}
+	else if (isa<Constant>(V) && !isa<GlobalVariable>(V)) {
+		auto Fn = Intrinsic::getDeclaration(M, Intrinsic::ptrunmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
+		Ret = IRB.CreateCall(Fn, {V, ConstantInt::get(IRB.getInt64Ty(), (0x1ULL<<48))});
+	}
+	return Ret;
+}
+
 static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
 	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
 	DenseSet<Value*> &InteriorPointerSet,
-  const TargetLibraryInfo *TLI, DenseSet<Value*> SafePtrs)
+  const TargetLibraryInfo *TLI, DenseSet<Value*> &SafePtrs, DenseMap<Value*, Value*> &PtrToBaseMap)
 {
 
   //const DataLayout &DL = F.getParent()->getDataLayout();
 	for (auto SI : Stores) {
 		auto V = SI->getValueOperand();
-		if (InteriorPointerSet.count(V) || isa<Constant>(V)) {
-			auto Interior = getInterior(F, SI, V);
+		Type *Ty = NULL;
+		if (isa<PtrToIntInst>(V)) {
+			Ty = V->getType();
+			V = cast<Instruction>(V)->getOperand(0);
+		}
+		auto Interior = getInteriorValue(F, SI, V, InteriorPointerSet, SafePtrs, PtrToBaseMap, Ty);
+		if (Interior) {
 			SI->setOperand(0, Interior);
 		}
 	}
@@ -4806,8 +4850,8 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 	for (auto RI : RetSites) {
 		auto V = RI->getReturnValue();
 		assert(V && "return value null!");
-		if (InteriorPointerSet.count(V) || isa<Constant>(V)) {
-			auto Interior = getInterior(F, RI, V);
+		auto Interior = getInteriorValue(F, RI, V, InteriorPointerSet, SafePtrs, PtrToBaseMap, NULL);
+		if (Interior) {
 			RI->setOperand(0, Interior);
 		}
 	}
@@ -4840,7 +4884,8 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 					else {
 						if (InteriorPointerSet.count(A) /*|| isa<Constant>(A)*/) {
 							if (1 /*isIndirect*/) {
-								auto Interior = getInterior(F, CS, A);
+								auto Interior = getInteriorValue(F, CS, A, InteriorPointerSet, SafePtrs, PtrToBaseMap, NULL);
+								assert(Interior);
 								CS->setArgOperand(ArgIt - Start, Interior);
 							}
 							else {
@@ -5113,7 +5158,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	removeRedundentLengths(F, GetLengths, LenToBaseMap);
 
-	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafePtrs);
+	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafePtrs, PtrToBaseMap);
 
 	Value *StackBase = NULL;
 	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
