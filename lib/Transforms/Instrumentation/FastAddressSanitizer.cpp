@@ -4801,6 +4801,7 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 	Value *Ret = NULL;
 	auto M = F.getParent();
 
+
 	if (RetTy == NULL) {
 		RetTy = V->getType();
 	}
@@ -4811,13 +4812,22 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		}
 		assert(PtrToBaseMap.count(V));
 		auto Base = PtrToBaseMap[V];
+		const DataLayout &DL = M->getDataLayout();
+		bool Indefinite = indefiniteBase(Base, DL);
+
 		if (SafePtrs.count(V)) {
 			auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType());
 			Ret = IRB.CreateCall(Fn, {Base, V});
 		}
 		else {
-			auto Fn = M->getOrInsertFunction("san_interior_checked", RetTy, Base->getType(), V->getType());
-			Ret = IRB.CreateCall(Fn, {Base, V});
+			if (Indefinite) {
+				auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType());
+				Ret = IRB.CreateCall(Fn, {Base, V});
+			}
+			else {
+				auto Fn = M->getOrInsertFunction("san_interior_checked", RetTy, Base->getType(), V->getType());
+				Ret = IRB.CreateCall(Fn, {Base, V});
+			}
 		}
 	}
 	else if (isa<Constant>(V) && !isa<GlobalVariable>(V)) {
