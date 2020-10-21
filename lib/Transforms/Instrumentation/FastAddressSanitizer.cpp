@@ -5078,11 +5078,14 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	findPhiAndSelectBases(F, PhiAndSelectNodes, PhiAndSelectMap, ReplacementMap);
 
+	DenseMap<Value*, Value*> PhiOrSelBaseToOrig;
+
 	for (auto It : PtrToBaseMap) {
 		Value *Base = It.second;
 		if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
 			assert(PhiAndSelectMap.count(Base));
 			PtrToBaseMap[It.first] = PhiAndSelectMap[Base];
+			PhiOrSelBaseToOrig[PhiAndSelectMap[Base]] = Base;
 			addUnsafeAllocas(F, PhiAndSelectMap[Base], UnsafeAllocas);
 			errs() << "SRC: " << *It.first << "  BASE: " << *PhiAndSelectMap[Base] << "\n";
 		}
@@ -5138,6 +5141,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (!BaseI) {
 			BaseI = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
 			assert(BaseI);
+		}
+		if (isa<SelectInst>(BaseI) || isa<PHINode>(BaseI)) {
+			assert(PhiOrSelBaseToOrig.count(BaseI));
+			BaseI = cast<Instruction>(PhiOrSelBaseToOrig[BaseI]);
 		}
 
 		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI)) {
