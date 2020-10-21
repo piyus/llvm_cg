@@ -4826,8 +4826,15 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		bool Indefinite = indefiniteBase(Base, DL);
 
 		if (SafePtrs.count(V)) {
-			auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType());
-			Ret = IRB.CreateCall(Fn, {Base, V});
+			// FIXME: USE UPDATED BASE
+			if (Indefinite) {
+				auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType());
+				Ret = IRB.CreateCall(Fn, {Base, V});
+			}
+			else {
+				auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType());
+				Ret = IRB.CreateCall(Fn, {Base, V});
+			}
 		}
 		else {
 			if (Indefinite) {
