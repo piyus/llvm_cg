@@ -3225,6 +3225,22 @@ postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT, D
 	return false;
 }
 
+static bool
+postDominatesAnyStore(Function &F, Value *V, PostDominatorTree &PDT, DenseSet<Instruction*> &Stores, LoopInfo &LI)
+{
+	assert(!Stores.empty());
+	auto I = cast<const Instruction>(V);
+
+	for (auto SI : Stores) {
+		if (PDT.dominates(SI, I)) {
+			if (inSameLoop(I, SI, LI)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 
 static void
 abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value *Ptr8, Value *Limit, Value *PtrLimit, Value *Size, Value *Callsite)
@@ -4804,17 +4820,12 @@ static void removeRedundentAccesses(Function &F,
 static Value*
 getInteriorValue(Function &F, Instruction *I, Value *V,
 	DenseSet<Value*> &InteriorPointerSet,
-	DenseSet<Value*> &SafePtrs, DenseMap<Value*, Value*> &PtrToBaseMap,
-	Type *RetTy)
+	DenseSet<Value*> &SafePtrs, DenseMap<Value*, Value*> &PtrToBaseMap)
 {
 	IRBuilder<> IRB(I);
 	Value *Ret = NULL;
 	auto M = F.getParent();
-
-
-	if (RetTy == NULL) {
-		RetTy = V->getType();
-	}
+	Type *RetTy = V->getType();
 
 	if (InteriorPointerSet.count(V)) {
 		if (!PtrToBaseMap.count(V)) {
@@ -4854,32 +4865,150 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 	return Ret;
 }
 
-static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
+static void collectUnsafeUses(Function &F,
 	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
 	DenseSet<Value*> &InteriorPointerSet,
-  const TargetLibraryInfo *TLI, DenseSet<Value*> &SafePtrs, DenseMap<Value*, Value*> &PtrToBaseMap)
+  DenseMap<Value*, DenseSet<Instruction*>> &InteriorsUseMap,
+	const TargetLibraryInfo *TLI)
 {
-
-  //const DataLayout &DL = F.getParent()->getDataLayout();
+	if (InteriorPointerSet.empty()) {
+		return;
+	}
 	for (auto SI : Stores) {
 		auto V = SI->getValueOperand();
-		Type *Ty = NULL;
 		if (isa<PtrToIntInst>(V)) {
-			Ty = V->getType();
 			V = cast<Instruction>(V)->getOperand(0);
 		}
-		auto Interior = getInteriorValue(F, SI, V, InteriorPointerSet, SafePtrs, PtrToBaseMap, Ty);
-		if (Interior) {
-			SI->setOperand(0, Interior);
+
+		if (InteriorPointerSet.count(V)) {
+			InteriorsUseMap[V].insert(SI);
 		}
 	}
 
 	for (auto RI : RetSites) {
 		auto V = RI->getReturnValue();
 		assert(V && "return value null!");
-		auto Interior = getInteriorValue(F, RI, V, InteriorPointerSet, SafePtrs, PtrToBaseMap, NULL);
+		if (InteriorPointerSet.count(V)) {
+			InteriorsUseMap[V].insert(RI);
+		}
+	}
+
+	for (auto CS : CallSites) {
+		LibFunc Func;
+		bool LibCall = false;
+		if (isa<IntrinsicInst>(CS)) {
+			LibCall = true;
+		}
+    if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
+			if (!TLI->isInteriorSafe(Func)) {
+				LibCall = true;
+			}
+		}
+		DenseMap<Value*, Value*> InteriorToBase;
+    AttributeList PAL = CS->getAttributes();
+    for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
+			if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
+                                       CS->doesNotAccessMemory()))) {
+    		Value *A = *ArgIt;
+      	if (A->getType()->isPointerTy()) {
+					if (!(LibCall || PAL.hasParamAttribute(ArgIt - Start, Attribute::ByVal))) {
+						if (InteriorPointerSet.count(A)) {
+							InteriorsUseMap[A].insert(CS);
+						}
+					}
+      	}
+			}
+		}
+	}
+}
+
+static void collectSafeInteriors(Function &F,
+	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
+	DenseSet<Value*> &InteriorPointerSet,
+  const TargetLibraryInfo *TLI, DenseSet<Value*> &SafeInteriors,
+	PostDominatorTree &PDT, LoopInfo &LI)
+{
+	DenseMap<Value*, DenseSet<Instruction*>> InteriorsUseMap;
+	DenseMap<Value*, Value*> InteriorValues;
+
+	collectUnsafeUses(F, CallSites, RetSites, Stores, InteriorPointerSet, InteriorsUseMap, TLI);
+
+	if (!InteriorsUseMap.empty()) {
+		for (auto It : InteriorsUseMap) {
+			auto V = It.first;
+			auto Uses = It.second;
+			if (isa<Instruction>(V)) {
+				if (postDominatesAnyStore(F, V, PDT, Uses, LI)) {
+					SafeInteriors.insert(V);
+				}
+			}
+		}
+	}
+}
+
+
+static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
+	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
+	DenseSet<Value*> &InteriorPointerSet,
+  const TargetLibraryInfo *TLI, DenseSet<Value*> &SafePtrs, 
+	DenseMap<Value*, Value*> &PtrToBaseMap, DenseSet<Value*> &SafeInteriors)
+{
+	DenseMap<Value*, Value*> InteriorValues;
+	Value *Interior;
+
+	for (auto I : SafeInteriors) {
+		Instruction *InsertPt = cast<Instruction>(I)->getNextNode();
+		if (isa<PHINode>(InsertPt)) {
+			InsertPt = InsertPt->getParent()->getFirstNonPHI();
+		}
+		InteriorValues[I] = getInteriorValue(F, InsertPt, I,
+			InteriorPointerSet, SafePtrs, PtrToBaseMap);
+	}
+
+
+	for (auto SI : Stores) {
+		auto V = SI->getValueOperand();
+		Type *Ty = V->getType();
+		bool IsInt = false;
+		if (isa<PtrToIntInst>(V)) {
+			V = cast<Instruction>(V)->getOperand(0);
+			IsInt = true;
+		}
+		if (InteriorValues.count(V)) {
+			Interior = InteriorValues[V];
+		}
+		else {
+		 	Interior = getInteriorValue(F, SI, V, InteriorPointerSet, SafePtrs, PtrToBaseMap);
+		}
 		if (Interior) {
-			RI->setOperand(0, Interior);
+			if (Interior->getType() != Ty) {
+				IRBuilder<> IRB(SI);
+				auto Op = (IsInt) ? IRB.CreatePtrToInt(Interior, Ty) : IRB.CreateBitCast(Interior, Ty);
+				SI->setOperand(0, Op);
+			}
+			else {
+				SI->setOperand(0, Interior);
+			}
+		}
+	}
+
+	for (auto RI : RetSites) {
+		auto V = RI->getReturnValue();
+		assert(V && "return value null!");
+		if (InteriorValues.count(V)) {
+			Interior = InteriorValues[V];
+		}
+		else {
+			Interior = getInteriorValue(F, RI, V, InteriorPointerSet, SafePtrs, PtrToBaseMap);
+		}
+		if (Interior) {
+			if (Interior->getType() != V->getType()) {
+				IRBuilder<> IRB(RI);
+				RI->setOperand(0, IRB.CreateBitCast(Interior, V->getType()));
+			}
+			else {
+				RI->setOperand(0, Interior);
+			}
 		}
 	}
 
@@ -4896,7 +5025,6 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 				LibCall = true;
 			}
 		}
-		//errs() << "LibCall " << LibCall << "  " << *CS << "\n";
 		DenseMap<Value*, Value*> InteriorToBase;
     AttributeList PAL = CS->getAttributes();
     for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
@@ -4911,9 +5039,21 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 					else {
 						if (InteriorPointerSet.count(A) /*|| isa<Constant>(A)*/) {
 							if (1 /*isIndirect*/) {
-								auto Interior = getInteriorValue(F, CS, A, InteriorPointerSet, SafePtrs, PtrToBaseMap, NULL);
+
+								if (InteriorValues.count(A)) {
+									Interior = InteriorValues[A];
+								}
+								else {
+									Interior = getInteriorValue(F, CS, A, InteriorPointerSet, SafePtrs, PtrToBaseMap);
+								}
 								assert(Interior);
-								CS->setArgOperand(ArgIt - Start, Interior);
+								if (Interior->getType() != A->getType()) {
+									IRBuilder<> IRB(CS);
+									CS->setArgOperand(ArgIt - Start, IRB.CreateBitCast(Interior, A->getType()));
+								}
+								else {
+									CS->setArgOperand(ArgIt - Start, Interior);
+								}
 							}
 							else {
 								//InteriorToBase[A] = Base;
@@ -5105,6 +5245,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	LoopInfo LI(DT);
 	PostDominatorTree PDT(F);
+	DenseSet<Value*> SafeInteriors;
+
+	collectSafeInteriors(F, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafeInteriors, PDT, LI);
+
 	DenseMap<Value*, DenseSet<Value*>> BaseToPtrsMap;
 
 	for (auto Ptr : TmpSet) {
@@ -5192,7 +5336,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	removeRedundentLengths(F, GetLengths, LenToBaseMap);
 
-	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafePtrs, PtrToBaseMap);
+	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafePtrs, PtrToBaseMap, SafeInteriors);
 
 	Value *StackBase = NULL;
 	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
