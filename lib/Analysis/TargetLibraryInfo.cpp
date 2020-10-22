@@ -642,6 +642,8 @@ bool TargetLibraryInfoImpl::isInteriorSafe(LibFunc F) const {
 		case LibFunc_strtok:
 		case LibFunc_qsort:
 		case LibFunc_memchr:
+  	case LibFunc_strtod:
+  	case LibFunc_strtoul:
 			return true;
 		default:
 			return false;
