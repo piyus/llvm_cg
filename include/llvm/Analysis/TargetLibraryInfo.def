@@ -1203,6 +1203,36 @@ TLI_DEFINE_STRING_INTERNAL("pread")
 /// int printf(const char *format, ...);
 TLI_DEFINE_ENUM_INTERNAL(printf)
 TLI_DEFINE_STRING_INTERNAL("printf")
+
+
+TLI_DEFINE_ENUM_INTERNAL(pthread_attr_init)
+TLI_DEFINE_STRING_INTERNAL("pthread_attr_init")
+TLI_DEFINE_ENUM_INTERNAL(pthread_attr_setdetachstate)
+TLI_DEFINE_STRING_INTERNAL("pthread_attr_setdetachstate")
+TLI_DEFINE_ENUM_INTERNAL(pthread_attr_setscope)
+TLI_DEFINE_STRING_INTERNAL("pthread_attr_setscope")
+TLI_DEFINE_ENUM_INTERNAL(pthread_cancel)
+TLI_DEFINE_STRING_INTERNAL("pthread_cancel")
+TLI_DEFINE_ENUM_INTERNAL(pthread_create)
+TLI_DEFINE_STRING_INTERNAL("pthread_create")
+TLI_DEFINE_ENUM_INTERNAL(pthread_getspecific)
+TLI_DEFINE_STRING_INTERNAL("pthread_getspecific")
+TLI_DEFINE_ENUM_INTERNAL(pthread_key_create)
+TLI_DEFINE_STRING_INTERNAL("pthread_key_create")
+TLI_DEFINE_ENUM_INTERNAL(pthread_mutex_destroy)
+TLI_DEFINE_STRING_INTERNAL("pthread_mutex_destroy")
+TLI_DEFINE_ENUM_INTERNAL(pthread_mutex_init)
+TLI_DEFINE_STRING_INTERNAL("pthread_mutex_init")
+TLI_DEFINE_ENUM_INTERNAL(pthread_mutex_lock)
+TLI_DEFINE_STRING_INTERNAL("pthread_mutex_lock")
+TLI_DEFINE_ENUM_INTERNAL(pthread_mutex_unlock)
+TLI_DEFINE_STRING_INTERNAL("pthread_mutex_unlock")
+TLI_DEFINE_ENUM_INTERNAL(pthread_self)
+TLI_DEFINE_STRING_INTERNAL("pthread_self")
+TLI_DEFINE_ENUM_INTERNAL(pthread_setspecific)
+TLI_DEFINE_STRING_INTERNAL("pthread_setspecific")
+
+
 /// int putc(int c, FILE *stream);
 TLI_DEFINE_ENUM_INTERNAL(putc)
 TLI_DEFINE_STRING_INTERNAL("putc")
@@ -1287,8 +1317,25 @@ TLI_DEFINE_ENUM_INTERNAL(scanf)
 TLI_DEFINE_STRING_INTERNAL("scanf")
 /// void setbuf(FILE *stream, char *buf);
 
+
+TLI_DEFINE_ENUM_INTERNAL(sched_getaffinity)
+TLI_DEFINE_STRING_INTERNAL("sched_getaffinity")
+TLI_DEFINE_ENUM_INTERNAL(sched_setaffinity)
+TLI_DEFINE_STRING_INTERNAL("sched_setaffinity")
+
+
 TLI_DEFINE_ENUM_INTERNAL(select)
 TLI_DEFINE_STRING_INTERNAL("select")
+
+TLI_DEFINE_ENUM_INTERNAL(sem_destroy)
+TLI_DEFINE_STRING_INTERNAL("sem_destroy")
+TLI_DEFINE_ENUM_INTERNAL(sem_init)
+TLI_DEFINE_STRING_INTERNAL("sem_init")
+TLI_DEFINE_ENUM_INTERNAL(sem_post)
+TLI_DEFINE_STRING_INTERNAL("sem_post")
+TLI_DEFINE_ENUM_INTERNAL(sem_wait)
+TLI_DEFINE_STRING_INTERNAL("sem_wait")
+
 
 TLI_DEFINE_ENUM_INTERNAL(setbuf)
 TLI_DEFINE_STRING_INTERNAL("setbuf")

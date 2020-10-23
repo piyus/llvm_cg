@@ -709,6 +709,28 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 		return true;
 	case LibFunc_obstack_newchunk:
 		return true;
+
+	case LibFunc_pthread_attr_init:
+	case LibFunc_pthread_attr_setdetachstate:
+	case LibFunc_pthread_attr_setscope:
+	case LibFunc_pthread_cancel:
+	case LibFunc_pthread_create:
+	case LibFunc_pthread_getspecific:
+	case LibFunc_pthread_key_create:
+	case LibFunc_pthread_mutex_destroy:
+	case LibFunc_pthread_mutex_init:
+	case LibFunc_pthread_mutex_lock:
+	case LibFunc_pthread_mutex_unlock:
+	case LibFunc_pthread_self:
+	case LibFunc_pthread_setspecific:
+	case LibFunc_sched_getaffinity:
+	case LibFunc_sched_setaffinity:
+	case LibFunc_sem_destroy:
+	case LibFunc_sem_init:
+	case LibFunc_sem_post:
+	case LibFunc_sem_wait:
+		return true;
+
 	case LibFunc_fxstat:
 	case LibFunc_fxstat64:
 	case LibFunc_fxstatat:
