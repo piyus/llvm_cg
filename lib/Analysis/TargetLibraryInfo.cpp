@@ -645,6 +645,7 @@ bool TargetLibraryInfoImpl::isInteriorSafe(LibFunc F) const {
   	case LibFunc_strtod:
   	case LibFunc_strtol:
   	case LibFunc_strtoul:
+		case LibFunc_pthread_create:
 			return true;
 		default:
 			return false;
