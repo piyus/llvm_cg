@@ -4827,6 +4827,7 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 	auto M = F.getParent();
 	Type *RetTy = V->getType();
 
+
 	if (InteriorPointerSet.count(V)) {
 		if (!PtrToBaseMap.count(V)) {
 			errs() << "PTR: " << *V << "\n";
@@ -4835,12 +4836,15 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		auto Base = PtrToBaseMap[V];
 		const DataLayout &DL = M->getDataLayout();
 		bool Indefinite = indefiniteBase(Base, DL);
+		auto PTy = V->getType()->getPointerElementType();
+		size_t TypeSize = DL.getTypeStoreSize(PTy);
+		auto Int64 = IRB.getInt64Ty();
 
 		if (SafePtrs.count(V)) {
 			// FIXME: USE UPDATED BASE
 			if (Indefinite) {
-				auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType());
-				Ret = IRB.CreateCall(Fn, {Base, V});
+				auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType(), Int64);
+				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize)});
 			}
 			else {
 				auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType());
@@ -4849,12 +4853,12 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		}
 		else {
 			if (Indefinite) {
-				auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType());
-				Ret = IRB.CreateCall(Fn, {Base, V});
+				auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType(), Int64);
+				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize)});
 			}
 			else {
-				auto Fn = M->getOrInsertFunction("san_interior_checked", RetTy, Base->getType(), V->getType());
-				Ret = IRB.CreateCall(Fn, {Base, V});
+				auto Fn = M->getOrInsertFunction("san_interior_checked", RetTy, Base->getType(), V->getType(), Int64);
+				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize)});
 			}
 		}
 	}
