@@ -663,7 +663,10 @@ struct FastAddressSanitizer {
 		DenseSet<Instruction*> &PtrToInt,
 		DenseSet<Instruction*> &RestorePoints,
 		DenseSet<Value*> &InteriorPointersSet,
-		DenseSet<Instruction*> &GEPs);
+		DenseSet<Instruction*> &GEPs,
+		DenseSet<Value*> &LargeBases,
+		const TargetLibraryInfo *TLI
+		);
 	void patchDynamicAlloca(Function &F, AllocaInst *AI);
 	void patchStaticAlloca(Function &F, AllocaInst *AI);
 	//Value* getInterior(Function &F, Instruction *I, Value *V);
@@ -2817,7 +2820,39 @@ void FastAddressSanitizer::markEscapedLocalAllocas(Function &F) {
   }
 }
 
-uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI) {
+static uint64_t
+fetchMallocSize(Value *V, const TargetLibraryInfo *TLI)
+{
+	if (auto CI = dyn_cast<CallInst>(V)) {
+		LibFunc Func;
+		if (TLI->getLibFunc(ImmutableCallSite(CI), Func)) {
+			auto Name = CI->getCalledFunction()->getName();
+			if (Name == "malloc") {
+				auto Sz = CI->getArgOperand(0);
+				return (isa<ConstantInt>(Sz)) ? cast<ConstantInt>(Sz)->getZExtValue() : 0;
+			}
+			else if (Name == "calloc") {
+				IRBuilder<> IRB(CI->getParent());
+				IRB.SetInsertPoint(CI->getNextNode());
+				auto Sz = CI->getArgOperand(0);
+				auto Count = CI->getArgOperand(1);
+				if (isa<ConstantInt>(Sz) && isa<ConstantInt>(Count)) {
+					return (cast<ConstantInt>(Sz)->getZExtValue()) *
+						(cast<ConstantInt>(Count)->getZExtValue());
+				}
+				return 0;
+			}
+			else if (Name == "realloc") {
+				auto Sz = CI->getArgOperand(1);
+				return (isa<ConstantInt>(Sz)) ? cast<ConstantInt>(Sz)->getZExtValue() : 0;
+			}
+		}
+	}
+	return 0;
+}
+
+
+static uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI) {
 	uint64_t Size;
   ObjectSizeOpts Opts;
   Opts.RoundToAlign = true;
@@ -2825,6 +2860,11 @@ uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const Tar
   if (getObjectSize(V, Size, DL, TLI, Opts)) {
 		Static = true;
     return Size;
+	}
+	Size = fetchMallocSize(V, TLI);
+	if (Size) {
+		Static = true;
+		return Size;
 	}
 	Static = false;
 	auto Ty = V->getType()->getPointerElementType();
@@ -4346,6 +4386,27 @@ static void setBoundsForArgv(Function &F, int Sanitizer)
 }
 #endif
 
+
+static bool
+handleLargeBases(Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI, DenseSet<Value*> &LargeBases) {
+	auto S = V->stripPointerCasts();
+	if (S != V) {
+		bool Static;
+		auto ObjSize = getKnownObjSize(S, DL, Static, TLI);
+		auto Ty = V->getType()->getPointerElementType();
+		auto PtrSize = (Ty->isSized()) ? DL.getTypeAllocSize(Ty) : 0;
+		if (ObjSize == 0) {
+			ObjSize = 1;
+		}
+		if (ObjSize < (uint64_t)PtrSize) {
+			errs() << "larger than base: " << *S << " VAL " << *V <<  " SZ1 " << ObjSize << " SZ2 " << PtrSize << "\n";
+			LargeBases.insert(V);
+			return true;
+		}
+	}
+	return false;
+}
+
 void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*> &UnsafeUses,
 	DenseMap<Value*, uint64_t> &UnsafePointers, DenseSet<CallBase*> &CallSites,
 	DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
@@ -4355,7 +4416,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 	DenseSet<Instruction*> &PtrToInt,
 	DenseSet<Instruction*> &RestorePoints,
 	DenseSet<Value*> &InteriorPointersSet,
-	DenseSet<Instruction*> &GEPs)
+	DenseSet<Instruction*> &GEPs,
+	DenseSet<Value*> &LargeBases,
+	const TargetLibraryInfo *TLI)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
   Value *Addr;
@@ -4403,6 +4466,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 												errs() << "NO-SIZED1: " << *A << "\n";
 											}
 										}
+										else {
+											handleLargeBases(A, DL, TLI, LargeBases);
+										}
 
               		}
 								}
@@ -4425,6 +4491,11 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 								errs() << "NO-SIZED: " << *RetVal << "\n";
 							}
             }
+						else {
+							if (handleLargeBases(RetVal, DL, TLI, LargeBases)) {
+								RetSites.insert(Ret);
+							}
+						}
           }
 				}
 				else if (auto Ret = dyn_cast<IntToPtrInst>(&Inst)) {
@@ -4464,6 +4535,11 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 							errs() << "NO-SIZED2: " << *V << "\n";
 						}
           }
+					else {
+						if (handleLargeBases(V, DL, TLI, LargeBases)) {
+							Stores.insert(SI);
+						}
+					}
 				}
 				else if (auto PI = dyn_cast<PtrToIntInst>(V)) {
 					auto PO = PI->getOperand(0);
@@ -5190,6 +5266,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Value*> SafePtrs;
 
 	DenseSet<Value*> InteriorPointersSet;
+	DenseSet<Value*> LargeBases;
 
 	createReplacementMap(&F, ReplacementMap);
 
@@ -5202,7 +5279,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	recordAllUnsafeAccesses(F, UnsafeUses, UnsafePointers, CallSites,
 		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt, RestorePoints, 
-		InteriorPointersSet, GEPs);
+		InteriorPointersSet, GEPs, LargeBases, TLI);
 
 	//if (UnsafePointers.empty()) {
 	//	return true;
