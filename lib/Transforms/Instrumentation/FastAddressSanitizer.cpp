@@ -664,7 +664,7 @@ struct FastAddressSanitizer {
 		DenseSet<Instruction*> &RestorePoints,
 		DenseSet<Value*> &InteriorPointersSet,
 		DenseSet<Instruction*> &GEPs,
-		DenseSet<Value*> &LargeBases,
+		DenseSet<Value*> &LargerThanBase,
 		const TargetLibraryInfo *TLI
 		);
 	void patchDynamicAlloca(Function &F, AllocaInst *AI);
@@ -4435,7 +4435,7 @@ static void setBoundsForArgv(Function &F, int Sanitizer)
 
 
 static bool
-handleLargeBases(Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI, DenseSet<Value*> &LargeBases, uint64_t &PtrSize) {
+handleLargerThanBase(Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI, DenseSet<Value*> &LargerThanBase, uint64_t &PtrSize) {
 	auto S = V->stripPointerCasts();
 	if (S != V) {
 		bool Static;
@@ -4447,7 +4447,7 @@ handleLargeBases(Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI, D
 		}
 		if (ObjSize < (uint64_t)PtrSize) {
 			errs() << "larger than base: " << *S << " VAL " << *V <<  " SZ1 " << ObjSize << " SZ2 " << PtrSize << "\n";
-			LargeBases.insert(V);
+			LargerThanBase.insert(V);
 			return true;
 		}
 	}
@@ -4464,7 +4464,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 	DenseSet<Instruction*> &RestorePoints,
 	DenseSet<Value*> &InteriorPointersSet,
 	DenseSet<Instruction*> &GEPs,
-	DenseSet<Value*> &LargeBases,
+	DenseSet<Value*> &LargerThanBase,
 	const TargetLibraryInfo *TLI)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
@@ -4513,7 +4513,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 											}
 										}
 										else {
-											if (handleLargeBases(A, DL, TLI, LargeBases, PtrSz)) {
+											if (handleLargerThanBase(A, DL, TLI, LargerThanBase, PtrSz)) {
 												// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
 												//addUnsafePointer(UnsafePointers, A, PtrSz);
 												//UnsafeUses.insert(CI);
@@ -4540,7 +4540,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 							}
             }
 						else {
-							if (handleLargeBases(RetVal, DL, TLI, LargeBases, PtrSz)) {
+							if (handleLargerThanBase(RetVal, DL, TLI, LargerThanBase, PtrSz)) {
 								RetSites.insert(Ret);
 								// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
 								//addUnsafePointer(UnsafePointers, RetVal, PtrSz);
@@ -4585,7 +4585,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 						}
           }
 					else {
-						if (handleLargeBases(V, DL, TLI, LargeBases, PtrSz)) {
+						if (handleLargerThanBase(V, DL, TLI, LargerThanBase, PtrSz)) {
 							Stores.insert(SI);
 							// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
 							//addUnsafePointer(UnsafePointers, V, PtrSz);
@@ -4777,7 +4777,8 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 	DenseMap<Value*, Value*> &PtrToBaseMap,
 	DenseSet<Value*> &TmpSet,
 	DominatorTree &DT, DenseMap<Value*, Value*> &ReplacementMap, const TargetLibraryInfo *TLI,
-	DenseSet<Value*> &InteriorPointersSet)
+	DenseSet<Value*> &InteriorPointersSet,
+	DenseSet<Value*> &LargerThanBase)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
 
@@ -4823,6 +4824,15 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 	}
 
 	for (auto V : InteriorPointersSet) {
+		if (!PtrToBaseMap.count(V)) {
+			int64_t Offset;
+			Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
+			assert(Base);
+			PtrToBaseMap[V] = Base;
+		}
+	}
+
+	for (auto V : LargerThanBase) {
 		if (!PtrToBaseMap.count(V)) {
 			int64_t Offset;
 			Value *Base = tryGettingBaseAndOffset(V, Offset, DL, ReplacementMap);
@@ -4995,6 +5005,22 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 	return Ret;
 }
 
+static Value*
+SanCheckSize(Function &F, Instruction *I, Value *V, DenseMap<Value*, Value*> &CheckedValues)
+{
+	if (CheckedValues.count(V)) {
+		return CheckedValues[V];
+	}
+	IRBuilder<> IRB(I);
+	auto M = F.getParent();
+	const DataLayout &DL = M->getDataLayout();
+	auto PTy = V->getType()->getPointerElementType();
+	size_t TypeSize = DL.getTypeStoreSize(PTy);
+	auto Int64 = IRB.getInt64Ty();
+	auto Fn = M->getOrInsertFunction("san_check_size", V->getType(), V->getType(), Int64);
+	return IRB.CreateCall(Fn, {V, ConstantInt::get(Int64, TypeSize)});
+}
+
 static void collectUnsafeUses(Function &F,
 	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
 	DenseSet<Value*> &InteriorPointersSet,
@@ -5052,7 +5078,7 @@ static void collectUnsafeUses(Function &F,
 	}
 }
 
-static void collectSafeInteriors(Function &F,
+static void collectSafeEscapes(Function &F,
 	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
 	DenseSet<Value*> &InteriorPointersSet,
   const TargetLibraryInfo *TLI, DenseSet<Value*> &SafeInteriors,
@@ -5199,6 +5225,80 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 	}
 }
 
+static void handleLargerBase(Function &F,
+	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
+	DenseSet<Value*> &LargerThanBaseSet,
+  const TargetLibraryInfo *TLI, DenseSet<Value*> &SafePtrs,
+	DenseSet<Value*> &SafeLargerThan)
+{
+	DenseSet<Value*> LargerThanBase;
+	DenseMap<Value*, Value*> CheckedValues;
+	Value *CheckedVal;
+
+	for (auto V : LargerThanBaseSet) {
+		if (!SafePtrs.count(V)) {
+			LargerThanBase.insert(V);
+		}
+	}
+
+	for (auto I : SafeLargerThan) {
+		if (!LargerThanBase.count(I)) {
+			continue;
+		}
+		Instruction *InsertPt = cast<Instruction>(I)->getNextNode();
+		if (isa<PHINode>(InsertPt)) {
+			InsertPt = InsertPt->getParent()->getFirstNonPHI();
+		}
+		CheckedVal = SanCheckSize(F, InsertPt, I, CheckedValues);
+		CheckedValues[I] = CheckedVal;
+	}
+
+	for (auto SI : Stores) {
+		auto V = SI->getValueOperand();
+		if (LargerThanBase.count(V)) {
+			CheckedVal = SanCheckSize(F, SI, V, CheckedValues);
+			SI->setOperand(0, CheckedVal);
+		}
+	}
+
+	for (auto RI : RetSites) {
+		auto V = RI->getReturnValue();
+		if (LargerThanBase.count(V)) {
+			CheckedVal = SanCheckSize(F, RI, V, CheckedValues);
+			RI->setOperand(0, CheckedVal);
+		}
+	}
+
+	for (auto CS : CallSites) {
+		LibFunc Func;
+		bool LibCall = false;
+		if (isa<IntrinsicInst>(CS)) {
+			LibCall = true;
+		}
+    if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
+			if (!TLI->isInteriorSafe(Func)) {
+				LibCall = true;
+			}
+		}
+    AttributeList PAL = CS->getAttributes();
+    for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
+			if (!(CS->doesNotCapture(ArgIt - Start) && (CS->doesNotAccessMemory(ArgIt - Start) ||
+                                       CS->doesNotAccessMemory()))) {
+    		Value *A = *ArgIt;
+      	if (A->getType()->isPointerTy()) {
+					if (!(LibCall || PAL.hasParamAttribute(ArgIt - Start, Attribute::ByVal))) {
+						if (LargerThanBase.count(A)) {
+							CheckedVal = SanCheckSize(F, CS, A, CheckedValues);
+							CS->setArgOperand(ArgIt - Start, CheckedVal);
+						}
+					}
+      	}
+			}
+		}
+	}
+
+}
+
 
 static void restoreStack(Function &F, DenseSet<Instruction*> &RestorePoints, Value *StackBase)
 {
@@ -5316,7 +5416,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Value*> SafePtrs;
 
 	DenseSet<Value*> InteriorPointersSet;
-	DenseSet<Value*> LargeBases;
+	DenseSet<Value*> LargerThanBase;
 
 	createReplacementMap(&F, ReplacementMap);
 
@@ -5329,7 +5429,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	recordAllUnsafeAccesses(F, UnsafeUses, UnsafePointers, CallSites,
 		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt, RestorePoints, 
-		InteriorPointersSet, GEPs, LargeBases, TLI);
+		InteriorPointersSet, GEPs, LargerThanBase, TLI);
 
 	//if (UnsafePointers.empty()) {
 	//	return true;
@@ -5338,7 +5438,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DominatorTree DT(F);
 	//LoopInfo LI(DT);
 
-	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, PtrToBaseMap, TmpSet, DT, ReplacementMap, TLI, InteriorPointersSet);
+	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, PtrToBaseMap, TmpSet, DT, ReplacementMap, TLI, InteriorPointersSet, LargerThanBase);
 	removeRedundentAccesses(F, UnsafeMap, TmpSet, DT, AA);
 
 
@@ -5377,8 +5477,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	LoopInfo LI(DT);
 	PostDominatorTree PDT(F);
 	DenseSet<Value*> SafeInteriors;
+	DenseSet<Value*> SafeLargerThan;
 
-	collectSafeInteriors(F, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafeInteriors, PDT, LI);
+	collectSafeEscapes(F, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafeInteriors, PDT, LI);
+	collectSafeEscapes(F, CallSites, RetSites, Stores, LargerThanBase, TLI, SafeLargerThan, PDT, LI);
 
 	DenseMap<Value*, DenseSet<Value*>> BaseToPtrsMap;
 
@@ -5468,6 +5570,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	removeRedundentLengths(F, GetLengths, LenToBaseMap);
 
 	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafePtrs, PtrToBaseMap, SafeInteriors);
+	handleLargerBase(F, CallSites, RetSites, Stores, LargerThanBase, TLI, SafePtrs, SafeLargerThan);
 
 	Value *StackBase = NULL;
 	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
