@@ -3192,6 +3192,7 @@ removeOnlyNonAccessPtrs(Function &F, DenseSet<Value*> &TmpSet, DenseSet<Value*> 
 	DenseSet<Value*> ToDelete;
 	for (auto Ptr : TmpSet) {
 		if (!hasUnsafeUse(F, cast<Instruction>(Ptr), UnsafeUses)) {
+			assert(0);
 			ToDelete.insert(Ptr);
 		}
 	}
@@ -4388,13 +4389,13 @@ static void setBoundsForArgv(Function &F, int Sanitizer)
 
 
 static bool
-handleLargeBases(Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI, DenseSet<Value*> &LargeBases) {
+handleLargeBases(Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI, DenseSet<Value*> &LargeBases, uint64_t &PtrSize) {
 	auto S = V->stripPointerCasts();
 	if (S != V) {
 		bool Static;
 		auto ObjSize = getKnownObjSize(S, DL, Static, TLI);
 		auto Ty = V->getType()->getPointerElementType();
-		auto PtrSize = (Ty->isSized()) ? DL.getTypeAllocSize(Ty) : 0;
+		PtrSize = (Ty->isSized()) ? DL.getTypeAllocSize(Ty) : 0;
 		if (ObjSize == 0) {
 			ObjSize = 1;
 		}
@@ -4426,6 +4427,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
   unsigned Alignment = 0;
   uint64_t TypeSize = 0;
   Value *MaybeMask = nullptr;
+	uint64_t PtrSz;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -4459,15 +4461,15 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 											auto ElemTy = A->getType()->getPointerElementType();
 											if (ElemTy->isSized()) {
 												InteriorPointersSet.insert(A);
-          							//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-												//addUnsafePointer(UnsafePointers, A, Sz);
 											}
 											else {
 												errs() << "NO-SIZED1: " << *A << "\n";
 											}
 										}
 										else {
-											handleLargeBases(A, DL, TLI, LargeBases);
+											if (handleLargeBases(A, DL, TLI, LargeBases, PtrSz)) {
+												//addUnsafePointer(UnsafePointers, A, PtrSz);
+											}
 										}
 
               		}
@@ -4482,9 +4484,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 						if (!IsNonInteriorObject(RetVal, DL)) {
 							auto ElemTy = RetVal->getType()->getPointerElementType();
 							if (ElemTy->isSized()) {
-          			//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
 								InteriorPointersSet.insert(RetVal);
-								//addUnsafePointer(UnsafePointers, RetVal, Sz);
 								RetSites.insert(Ret);
 							}
 							else {
@@ -4492,8 +4492,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 							}
             }
 						else {
-							if (handleLargeBases(RetVal, DL, TLI, LargeBases)) {
+							if (handleLargeBases(RetVal, DL, TLI, LargeBases, PtrSz)) {
 								RetSites.insert(Ret);
+								//addUnsafePointer(UnsafePointers, RetVal, PtrSz);
 							}
 						}
           }
@@ -4526,8 +4527,6 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 					if (!IsNonInteriorObject(V, DL)) {
 						auto ElemTy = V->getType()->getPointerElementType();
 						if (ElemTy->isSized()) {
-          		//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-							//addUnsafePointer(UnsafePointers, V, Sz);
           		InteriorPointersSet.insert(V);
 							Stores.insert(SI);
 						}
@@ -4536,8 +4535,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 						}
           }
 					else {
-						if (handleLargeBases(V, DL, TLI, LargeBases)) {
+						if (handleLargeBases(V, DL, TLI, LargeBases, PtrSz)) {
 							Stores.insert(SI);
+							//addUnsafePointer(UnsafePointers, V, PtrSz);
 						}
 					}
 				}
@@ -4547,8 +4547,6 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 
 						auto ElemTy = PO->getType()->getPointerElementType();
 						if (ElemTy->isSized()) {
-          		//uint64_t Sz = DL.getTypeAllocSize(ElemTy);
-							//addUnsafePointer(UnsafePointers, PO, Sz);
           		InteriorPointersSet.insert(PO);
 							Stores.insert(SI);
 						}
