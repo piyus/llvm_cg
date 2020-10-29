@@ -683,7 +683,7 @@ struct FastAddressSanitizer {
 			Value *Base, Value *Ptr, Value *TySize, Instruction* InstPtr,
 			int &callsites, 
 			DenseSet<Value*> &GetLengths,
-			DenseMap<Value*, Value*> &LenToBaseMap);
+			DenseMap<Value*, Value*> &LenToBaseMap, bool Abort);
 
 	void addBoundsCheckWithLenAtUse(Function &F, 
 			Value *Base, Value *Ptr, Value *TySize,
@@ -3172,6 +3172,7 @@ inSameLoop(const Value *Base, const Value *Ptr, LoopInfo &LI)
 	return true;
 }
 
+#if 0
 static bool
 hasUnsafeUse(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses)
 {
@@ -3202,6 +3203,7 @@ removeOnlyNonAccessPtrs(Function &F, DenseSet<Value*> &TmpSet, DenseSet<Value*> 
 		TmpSet.erase(Ptr);
 	}
 }
+#endif
 
 static bool 
 postDominatesAnyUse(Function &F, Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, LoopInfo &LI)
@@ -3307,6 +3309,37 @@ abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value
   }
 }
 
+#if 0
+static void
+setInvalidBit(Function &F, Instruction *I, Value *Cmp, Value *V) {
+	IRBuilder<> IRB(I);
+	auto InvalidMask = IRB.CreateShl(IRB.CreateZExt(Cmp, IRB.getInt64Ty()), 48);
+	auto TheFn = Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrunmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
+	auto NewV = IRB.CreateCall(TheFn, {V, InvalidMask});
+
+	if (auto Ret = dyn_cast<ReturnInst>(I)) {
+		if (V == Ret->getOperand(0)) {
+			Ret->setOperand(0, NewV);
+		}
+	}
+	else if (auto Call = dyn_cast<CallBase>(I)) {
+		for (unsigned i = 0; i < Call->getNumOperands(); i++) {
+			if (V == Call->getOperand(i)) {
+				Call->setOperand(i, NewV);
+			}
+		}
+	}
+	else if (auto SI = dyn_cast<StoreInst>(I)) {
+		if (V == SI->getOperand(0)) {
+			SI->setOperand(0, NewV);
+		}
+	}
+	else {
+		assert(0);
+	}
+}
+#endif
+
 static void
 instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, Value *Cmp, Value *Base8, Value *Ptr8, Value *Limit, Value *PtrLimit, Value *Size, Value *Callsite) {
 	for (const Use &UI : Ptr->uses()) {
@@ -3314,6 +3347,10 @@ instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, V
 		if (UnsafeUses.count(I)) {
 			if (!isNonAccessInst(I, Ptr)) {
 				abortIfTrue(F, Cmp, I, Base8, Ptr8, Limit, PtrLimit, Size, Callsite);
+			}
+			else {
+				// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
+				//setInvalidBit(F, I, Cmp, Ptr);
 			}
 		}
 	}
@@ -3379,7 +3416,7 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 	Value *Base, Value *Ptr, Value *TySize, Instruction* InstPtr,
 	int &callsites, 
 	DenseSet<Value*> &GetLengths,
-	DenseMap<Value*, Value*> &LenToBaseMap)
+	DenseMap<Value*, Value*> &LenToBaseMap, bool Abort)
 {
 	IRBuilder<> IRB(InstPtr);
 
@@ -3417,7 +3454,13 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
 	assert(CmpInst && "no cmp inst");
-	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
+	if (Abort) {
+		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
+	}
+	else {
+		// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
+		//setInvalidBit(F, InstPtr, Cmp, Ptr);
+	}
 	callsites++;
 }
 
@@ -3430,7 +3473,10 @@ addBoundsCheckWithLenAtUse(Function &F, Value *Base, Value *Ptr, Value *TySize,
 	  auto I = cast<Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
 			if (!isNonAccessInst(I, Ptr)) {
-				addBoundsCheckWithLenAtUseHelper(F, Base, Ptr, TySize, I, callsites, GetLengths, LenToBaseMap);
+				addBoundsCheckWithLenAtUseHelper(F, Base, Ptr, TySize, I, callsites, GetLengths, LenToBaseMap, true);
+			}
+			else {
+				addBoundsCheckWithLenAtUseHelper(F, Base, Ptr, TySize, I, callsites, GetLengths, LenToBaseMap, false);
 			}
 		}
 	}
@@ -4468,7 +4514,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 										}
 										else {
 											if (handleLargeBases(A, DL, TLI, LargeBases, PtrSz)) {
+												// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
 												//addUnsafePointer(UnsafePointers, A, PtrSz);
+												//UnsafeUses.insert(CI);
 											}
 										}
 
@@ -4494,7 +4542,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 						else {
 							if (handleLargeBases(RetVal, DL, TLI, LargeBases, PtrSz)) {
 								RetSites.insert(Ret);
+								// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
 								//addUnsafePointer(UnsafePointers, RetVal, PtrSz);
+								//UnsafeUses.insert(Ret);
 							}
 						}
           }
@@ -4537,7 +4587,9 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 					else {
 						if (handleLargeBases(V, DL, TLI, LargeBases, PtrSz)) {
 							Stores.insert(SI);
+							// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
 							//addUnsafePointer(UnsafePointers, V, PtrSz);
+							//UnsafeUses.insert(SI);
 						}
 					}
 				}
@@ -5313,11 +5365,11 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			PtrToBaseMap[It.first] = PhiAndSelectMap[Base];
 			PhiOrSelBaseToOrig[PhiAndSelectMap[Base]] = Base;
 			addUnsafeAllocas(F, PhiAndSelectMap[Base], UnsafeAllocas);
-			errs() << "SRC: " << *It.first << "  BASE: " << *PhiAndSelectMap[Base] << "\n";
+			//errs() << "SRC: " << *It.first << "  BASE: " << *PhiAndSelectMap[Base] << "\n";
 		}
 	}
 
-	removeOnlyNonAccessPtrs(F, TmpSet, UnsafeUses);
+	//removeOnlyNonAccessPtrs(F, TmpSet, UnsafeUses);
 
 
 	DT.recalculate(F);
