@@ -683,7 +683,7 @@ struct FastAddressSanitizer {
 			Value *Base, Value *Ptr, Value *TySize, Instruction* InstPtr,
 			int &callsites, 
 			DenseSet<Value*> &GetLengths,
-			DenseMap<Value*, Value*> &LenToBaseMap, bool Abort);
+			DenseMap<Value*, Value*> &LenToBaseMap);
 
 	void addBoundsCheckWithLenAtUse(Function &F, 
 			Value *Base, Value *Ptr, Value *TySize,
@@ -708,7 +708,7 @@ private:
                     uint64_t TypeSize) const;
 
 	//uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI);
-	Value *getBaseSize(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *V1);
+	Value *getLimit(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI);
 	Value* getStaticBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI);
 
   /// Helper to cleanup per-function state.
@@ -2965,61 +2965,34 @@ static bool indefiniteBase(Value *V, const DataLayout &DL) {
 }
 
 
-Value* FastAddressSanitizer::getBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI, Value *Ptr)
+Value* FastAddressSanitizer::getLimit(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI)
 {
 	Value *Ret = getStaticBaseSize(F, V1, DL, TLI);
 	assert(Ret == NULL && "static base was possible");
 
 	Value *V = const_cast<Value*>(V1);
-	Instruction *InstPt;
 
-	if (Ptr) {
-		InstPt = dyn_cast<Instruction>(Ptr);
-		assert(InstPt);
+	auto InstPt = dyn_cast<Instruction>(V);
+	if (InstPt == NULL) {
+		assert(isa<Argument>(V) || isa<GlobalVariable>(V));
+		InstPt = &*F.begin()->getFirstInsertionPt();
 	}
 	else {
-		InstPt = dyn_cast<Instruction>(V);
-		if (InstPt == NULL) {
-			assert(isa<Argument>(V) || isa<GlobalVariable>(V));
-			InstPt = &*F.begin()->getFirstInsertionPt();
+		if (isa<PHINode>(InstPt)) {
+			InstPt = InstPt->getParent()->getFirstNonPHI();
 		}
 		else {
-			if (isa<PHINode>(InstPt)) {
-				InstPt = InstPt->getParent()->getFirstNonPHI();
-			}
-			else {
-				InstPt = InstPt->getNextNode();
-			}
+			InstPt = InstPt->getNextNode();
 		}
 	}
 
-	IRBuilder<> IRB(InstPt->getParent());
-	IRB.SetInsertPoint(InstPt);
+	IRBuilder<> IRB(InstPt);
 
 	if (indefiniteBase(V, DL)) {
 		V = sanGetBase(F, V, IRB);
 	}
-
-
-
-	//auto Base8 = IRB.CreateBitCast(V, Int8PtrTy);
-#if 0
-	Function *TheFn =
-      Intrinsic::getDeclaration(F.getParent(), Intrinsic::get_obj_len);
-	return IRB.CreateCall(TheFn, {Base8});
-	//return IRB.CreateIntrinsic(Intrinsic::get_obj_len, {Int8PtrTy, Int64Ty}, {Base8});
-#endif
-
-//#if 0
-	/*if (V->getType()->isIntegerTy()) {
-		V = IRB.CreateIntToPtr(V, Int8PtrTy);
-	}*/
-
-	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
-																 IRB.CreateBitCast(V, Int32PtrTy),
-																 ConstantInt::get(Int32Ty, -1));
-	return IRB.CreateLoad(Int32Ty, SizeLoc);
-//#endif
+	auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
+	return IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(V, Int8PtrPtrTy));
 }
 
 bool FastAddressSanitizer::isSafeAlloca(const AllocaInst *AllocaPtr) {
@@ -3286,19 +3259,19 @@ postDominatesAnyStore(Function &F, Value *V, PostDominatorTree &PDT, DenseSet<In
 
 
 static void
-abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base8, Value *Ptr8, Value *Limit, Value *PtrLimit, Value *Size, Value *Callsite)
+abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base,
+	Value *Ptr, Value *Limit, Value *PtrLimit, Value *Callsite)
 {
-	auto Int8PtrTy = Base8->getType();
+	auto Int8PtrTy = Base->getType();
 	auto M = F.getParent();
   //auto &C = M->getContext();
 
 	Instruction *Then =
         SplitBlockAndInsertIfThen(Cond, InsertPt, false);    //,
                                   //MDBuilder(C).createBranchWeights(1, 100000));
-	IRBuilder<> IRB(Then->getParent());
-	IRB.SetInsertPoint(Then);
-	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Size->getType(), Callsite->getType());
-	auto Call = IRB.CreateCall(Fn, {Base8, Ptr8, Limit, PtrLimit, Size, Callsite});
+	IRBuilder<> IRB(Then);
+	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Callsite->getType());
+	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, PtrLimit, Callsite});
 	//auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy());
 	//auto Call = IRB.CreateCall(Fn, {});
 	//Call->addAttribute(AttributeList::FunctionIndex, Attribute::Cold);
@@ -3341,12 +3314,14 @@ setInvalidBit(Function &F, Instruction *I, Value *Cmp, Value *V) {
 #endif
 
 static void
-instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, Value *Cmp, Value *Base8, Value *Ptr8, Value *Limit, Value *PtrLimit, Value *Size, Value *Callsite) {
+instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, Value *Cmp,
+	Value *Base8, Value *Ptr8, Value *Limit, Value *PtrLimit, Value *Callsite) {
+
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
 			if (!isNonAccessInst(I, Ptr)) {
-				abortIfTrue(F, Cmp, I, Base8, Ptr8, Limit, PtrLimit, Size, Callsite);
+				abortIfTrue(F, Cmp, I, Base8, Ptr8, Limit, PtrLimit, Callsite);
 			}
 			else {
 				// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
@@ -3357,7 +3332,7 @@ instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, V
 }
 
 void FastAddressSanitizer::
-addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size, 
+addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit, 
 	Value *TySize, DenseSet<Value*> &UnsafeUses, int &callsites,
 	bool MayNull)
 {
@@ -3367,9 +3342,9 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 
 	if (isa<PHINode>(Ptr)) {
 		auto BaseI = dyn_cast<PHINode>(Base);
-		auto SizeI = dyn_cast<Instruction>(Size);
-		if (SizeI && BaseI && BaseI->getParent() == InstPtr->getParent()) {
-			IRB.SetInsertPoint(SizeI->getNextNode());
+		auto LimitI = dyn_cast<Instruction>(Limit);
+		if (LimitI && BaseI && BaseI->getParent() == InstPtr->getParent()) {
+			IRB.SetInsertPoint(LimitI->getNextNode());
 		}
 		else {
 			IRB.SetInsertPoint(InstPtr->getParent()->getFirstNonPHI());
@@ -3382,11 +3357,12 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
-
-	Value *Limit = IRB.CreateGEP(Int8Ty, Base8, Size);
 	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
+	if (Limit->getType()->isIntegerTy()) {
+		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
+	}
+	assert(Limit->getType() == Int8PtrTy);
 
-	
 	auto Cmp1 = IRB.CreateICmpULT(Ptr8, Base8);
 	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
 	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
@@ -3403,10 +3379,10 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Size,
 	}
 
 	if (!MayNull) {
-		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
+		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, ConstantInt::get(Int32Ty, callsites));
 	}
 	else {
-		instrumentAllUses(F, InstPtr, UnsafeUses, Cmp, Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
+		instrumentAllUses(F, InstPtr, UnsafeUses, Cmp, Base8, Ptr8, Limit, PtrLimit, ConstantInt::get(Int32Ty, callsites));
 	}
 	callsites++;
 }
@@ -3416,7 +3392,7 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 	Value *Base, Value *Ptr, Value *TySize, Instruction* InstPtr,
 	int &callsites, 
 	DenseSet<Value*> &GetLengths,
-	DenseMap<Value*, Value*> &LenToBaseMap, bool Abort)
+	DenseMap<Value*, Value*> &LenToBaseMap)
 {
 	IRBuilder<> IRB(InstPtr);
 
@@ -3426,12 +3402,12 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 		Base = sanGetBase(F, Base, IRB);
 	}
 
-	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
-																 IRB.CreateBitCast(Base, Int32PtrTy),
-																 ConstantInt::get(Int32Ty, -1));
-	auto Size = IRB.CreateLoad(Int32Ty, SizeLoc);
-	GetLengths.insert(Size);
-	LenToBaseMap[Size] = Base;
+	auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
+	auto Limit = IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(Base, Int8PtrPtrTy));
+
+
+	GetLengths.insert(Limit);
+	LenToBaseMap[Limit] = Base;
 
 	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
 	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
@@ -3444,23 +3420,15 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
-
-	Value *Limit = IRB.CreateGEP(Int8Ty, Base8, Size);
 	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
-
 	
 	auto Cmp1 = IRB.CreateICmpULT(Ptr8, Base8);
 	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
 	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
 	assert(CmpInst && "no cmp inst");
-	if (Abort) {
-		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
-	}
-	else {
-		// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
-		//setInvalidBit(F, InstPtr, Cmp, Ptr);
-	}
+
+	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, ConstantInt::get(Int32Ty, callsites));
 	callsites++;
 }
 
@@ -3473,10 +3441,10 @@ addBoundsCheckWithLenAtUse(Function &F, Value *Base, Value *Ptr, Value *TySize,
 	  auto I = cast<Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
 			if (!isNonAccessInst(I, Ptr)) {
-				addBoundsCheckWithLenAtUseHelper(F, Base, Ptr, TySize, I, callsites, GetLengths, LenToBaseMap, true);
+				addBoundsCheckWithLenAtUseHelper(F, Base, Ptr, TySize, I, callsites, GetLengths, LenToBaseMap);
 			}
 			else {
-				addBoundsCheckWithLenAtUseHelper(F, Base, Ptr, TySize, I, callsites, GetLengths, LenToBaseMap, false);
+				// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
 			}
 		}
 	}
@@ -3505,16 +3473,11 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 		Base = sanGetBase(F, Base, IRB);
 	}
 
-	/*if (Base->getType()->isIntegerTy()) {
-		Base = IRB.CreateIntToPtr(Base, Int8PtrTy);
-	}*/
+	auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
+	auto Limit = IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(Base, Int8PtrPtrTy));
 
-	Value *SizeLoc = IRB.CreateGEP(Int32Ty,
-																 IRB.CreateBitCast(Base, Int32PtrTy),
-																 ConstantInt::get(Int32Ty, -1));
-	auto Size = IRB.CreateLoad(Int32Ty, SizeLoc);
-	GetLengths.insert(Size);
-	LenToBaseMap[Size] = Base;
+	GetLengths.insert(Limit);
+	LenToBaseMap[Limit] = Base;
 
 	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
 	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
@@ -3525,11 +3488,8 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 		//}
 	}
 
-
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
-
-	Value *Limit = IRB.CreateGEP(Int8Ty, Base8, Size);
 	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
 
 	
@@ -3539,7 +3499,7 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
 	assert(CmpInst && "no cmp inst");
 
-	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, Size, ConstantInt::get(Int32Ty, callsites));
+	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, ConstantInt::get(Int32Ty, callsites));
 	callsites++;
 }
 
@@ -3771,7 +3731,7 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 	else {
 		if (GetLengths.count(I)) {
 			assert(Val == NULL);
-			Fn = M->getOrInsertFunction("san_page_fault_len", IRB.getInt32Ty(), PtrTy, LineTy, NameTy);
+			Fn = M->getOrInsertFunction("san_page_fault_limit", IRB.getInt8PtrTy(), PtrTy, LineTy, NameTy);
 		}
 		else if (!Val) {
 			if (1 /*I->getType()->isPointerTy()*/) {
@@ -4211,7 +4171,9 @@ static Value* getNoInteriorMap(Function &F, Instruction *Unused, Value *Oper, De
 }
 
  
-static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths, DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites) {
+static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths,
+	DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites)
+{
 	int id = 0;
 	Instruction *Entry = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
 	assert(Entry);
@@ -5533,7 +5495,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI)) {
 			assert(!BaseToLenMap.count(Base));
-			BaseToLenMap[Base] = getBaseSize(F, Base, DL, TLI, NULL);
+			BaseToLenMap[Base] = getLimit(F, Base, DL, TLI);
 			GetLengths.insert(BaseToLenMap[Base]);
 		}
 	}
@@ -5543,11 +5505,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Value* Base = PtrToBaseMap[Ptr];
 		uint64_t TypeSize = UnsafePointers[Ptr];
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
-		if (1 || F.getName() == "interconnects__inner") {
-			//errs() << "PTR: " << *Ptr << " BASEVAL: " << *Base << "\n";
-		}
-		Value *Size;
 		bool MayNull = PtrMayBeNull.count(Ptr) > 0;
+
 		if (!MayNull) {
 			SafePtrs.insert(Ptr);
 		}
@@ -5562,8 +5521,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			}
 		}
 		else {
-			Size = BaseToLenMap[Base];
-			addBoundsCheck(F, Base, Ptr, Size, TySize, UnsafeUses, callsites, MayNull);
+			auto Limit = BaseToLenMap[Base];
+			addBoundsCheck(F, Base, Ptr, Limit, TySize, UnsafeUses, callsites, MayNull);
 		}
 	}
 
