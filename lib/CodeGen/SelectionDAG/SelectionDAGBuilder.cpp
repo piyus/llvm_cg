@@ -5799,6 +5799,16 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     visitTargetIntrinsic(I, Intrinsic);
     return;
 
+	/*case Intrinsic::san_check1:
+		errs() << "adding bounds check1\n";
+		return;
+	case Intrinsic::san_check2:
+		errs() << "adding bounds check2\n";
+		return;
+	case Intrinsic::san_check3:
+		errs() << "adding bounds check3\n";
+		return;*/
+
 	case Intrinsic::sbounds:
 		setValue(&I, DAG.getNode(ISD::BOUNDS_CHECK, sdl,
                              MVT::Other,

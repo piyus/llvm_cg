@@ -5064,7 +5064,7 @@ static void collectSafeEscapes(Function &F,
 	}
 }
 
-static void
+static Value*
 insertBoundsCheck(Function &F, CallBase *I, bool Intrin) {
 	int NumPointerArgs = 0;
 	bool is_strlen = false;
@@ -5098,18 +5098,22 @@ insertBoundsCheck(Function &F, CallBase *I, bool Intrin) {
 		auto Ptr2 = I->getOperand(1);
 		auto Len = I->getOperand(2);
 
-		Function *TheFn =
-      Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check2, {Ptr1->getType(), Ptr2->getType(), Len->getType()});
-		IRB.CreateCall(TheFn, {Ptr1, Ptr2, Len});
+		//Function *TheFn =
+      //Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check2, {Ptr1->getType(), Ptr2->getType(), Len->getType()});
+		auto TheFn = F.getParent()->getOrInsertFunction("san_check2", IRB.getVoidTy(),
+			Ptr1->getType(), Ptr2->getType(), Len->getType());
+		return IRB.CreateCall(TheFn, {Ptr1, Ptr2, Len});
 	}
 	else if (NumPointerArgs == 1) {
 		IRBuilder<> IRB(I);
 		auto Ptr1 = I->getOperand(0);
 		auto Len = I->getOperand(2);
 
-		Function *TheFn =
-      Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check1, {Ptr1->getType(), Len->getType()});
-		IRB.CreateCall(TheFn, {Ptr1, Len});
+		//Function *TheFn =
+      //Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check1, {Ptr1->getType(), Len->getType()});
+		auto TheFn = F.getParent()->getOrInsertFunction("san_check1", IRB.getVoidTy(),
+			Ptr1->getType(), Len->getType());
+		return IRB.CreateCall(TheFn, {Ptr1, Len});
 	}
 	else {
 		if (is_strcpy) {
@@ -5117,20 +5121,25 @@ insertBoundsCheck(Function &F, CallBase *I, bool Intrin) {
 			auto Ptr1 = I->getOperand(0);
 			auto Ptr2 = I->getOperand(1);
 
-			Function *TheFn =
-      	Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check3, {Ptr1->getType(), Ptr2->getType()});
-			IRB.CreateCall(TheFn, {Ptr1, Ptr2});
+			//Function *TheFn =
+      	//Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check3, {Ptr1->getType(), Ptr2->getType()});
+			auto TheFn = F.getParent()->getOrInsertFunction("san_check3", IRB.getVoidTy(),
+				Ptr1->getType(), Ptr2->getType());
+			return IRB.CreateCall(TheFn, {Ptr1, Ptr2});
 		}
 		else if (is_strlen) {
 			IRBuilder<> IRB(I->getNextNode());
 			auto Ptr1 = I->getOperand(0);
 			auto Len = I;
 
-			Function *TheFn =
-      	Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check1, {Ptr1->getType(), Len->getType()});
-			IRB.CreateCall(TheFn, {Ptr1, Len});
+			//Function *TheFn =
+      	//Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check1, {Ptr1->getType(), Len->getType()});
+			auto TheFn = F.getParent()->getOrInsertFunction("san_check4", IRB.getVoidTy(),
+				Ptr1->getType(), Len->getType());
+			return IRB.CreateCall(TheFn, {Ptr1, Len});
 		}
 	}
+	return NULL;
 }
 
 static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
@@ -5198,6 +5207,9 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		}
 	}
 
+	DenseSet<Value*> LibCalls;
+	DenseSet<Value*> NewCalls;
+
 	for (auto CS : CallSites) {
 		LibFunc Func;
 		bool LibCall = false;
@@ -5206,11 +5218,27 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			LibCall = true;
 			Intrin = true;
 		}
-    if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
+    else if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
 			if (!TLI->isInteriorSafe(Func)) {
 				LibCall = true;
 			}
 		}
+		if (LibCall) {
+			LibCalls.insert(CS);
+			auto Check = insertBoundsCheck(F, CS, Intrin);
+			if (Check) {
+				NewCalls.insert(Check);
+			}
+		}
+	}
+
+	for (auto Calls : NewCalls) {
+		CallSites.insert(cast<CallBase>(Calls));
+	}
+
+	for (auto CS : CallSites) {
+		bool LibCall = LibCalls.count(CS) > 0;
+
 		DenseMap<Value*, Value*> InteriorToBase;
     AttributeList PAL = CS->getAttributes();
     for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
@@ -5219,9 +5247,6 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
     		Value *A = *ArgIt;
       	if (A->getType()->isPointerTy()) {
 					if (LibCall || PAL.hasParamAttribute(ArgIt - Start, Attribute::ByVal)) {
-						if (LibCall) {
-							insertBoundsCheck(F, CS, Intrin);
-						}
 						auto Interior = getNoInterior(F, CS, A);
 						CS->setArgOperand(ArgIt - Start, Interior);
 					}
