@@ -1143,6 +1143,15 @@ def int_ptrunmask: Intrinsic<[llvm_anyptr_ty], [llvm_anyptr_ty, llvm_anyint_ty],
 def int_ptrunmask1: Intrinsic<[llvm_anyint_ty], [llvm_anyint_ty, llvm_anyint_ty],
                            [IntrNoMem, IntrSpeculatable, IntrWillReturn]>;
 
+def int_san_check1: Intrinsic<[], [llvm_anyptr_ty, llvm_anyint_ty],
+                           [IntrNoMem, IntrSpeculatable, IntrWillReturn]>;
+
+def int_san_check2: Intrinsic<[], [llvm_anyptr_ty, llvm_anyptr_ty, llvm_anyint_ty],
+                           [IntrNoMem, IntrSpeculatable, IntrWillReturn]>;
+
+def int_san_check3: Intrinsic<[], [llvm_anyptr_ty, llvm_anyptr_ty],
+                           [IntrNoMem, IntrSpeculatable, IntrWillReturn]>;
+
 //===-------------------------- Masked Intrinsics -------------------------===//
 //
 def int_masked_store : Intrinsic<[], [llvm_anyvector_ty,

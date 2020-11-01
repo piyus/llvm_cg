@@ -5064,6 +5064,74 @@ static void collectSafeEscapes(Function &F,
 	}
 }
 
+static void
+insertBoundsCheck(Function &F, CallBase *I, bool Intrin) {
+	int NumPointerArgs = 0;
+	bool is_strlen = false;
+	bool is_strcpy = false;
+
+	if (Intrin) {
+		if (auto MI = dyn_cast<MemIntrinsic>(I)) {
+			if (MI->getIntrinsicID() == Intrinsic::memset) {
+				NumPointerArgs = 1;
+			}
+			else {
+				NumPointerArgs = 2;
+			}
+		}
+	}
+	else {
+		auto Name = I->getCalledFunction()->getName();
+		if (Name == "memcmp") {
+			NumPointerArgs = 2;
+		}
+		else if (Name == "strlen") {
+			is_strlen = true;
+		}
+		else if (Name == "strcpy") {
+			is_strcpy = true;
+		}
+	}
+	if (NumPointerArgs == 2) {
+		IRBuilder<> IRB(I);
+		auto Ptr1 = I->getOperand(0);
+		auto Ptr2 = I->getOperand(1);
+		auto Len = I->getOperand(2);
+
+		Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check2, {Ptr1->getType(), Ptr2->getType(), Len->getType()});
+		IRB.CreateCall(TheFn, {Ptr1, Ptr2, Len});
+	}
+	else if (NumPointerArgs == 1) {
+		IRBuilder<> IRB(I);
+		auto Ptr1 = I->getOperand(0);
+		auto Len = I->getOperand(2);
+
+		Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check1, {Ptr1->getType(), Len->getType()});
+		IRB.CreateCall(TheFn, {Ptr1, Len});
+	}
+	else {
+		if (is_strcpy) {
+			IRBuilder<> IRB(I);
+			auto Ptr1 = I->getOperand(0);
+			auto Ptr2 = I->getOperand(1);
+
+			Function *TheFn =
+      	Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check3, {Ptr1->getType(), Ptr2->getType()});
+			IRB.CreateCall(TheFn, {Ptr1, Ptr2});
+		}
+		else if (is_strlen) {
+			IRBuilder<> IRB(I->getNextNode());
+			auto Ptr1 = I->getOperand(0);
+			auto Len = I;
+
+			Function *TheFn =
+      	Intrinsic::getDeclaration(F.getParent(), Intrinsic::san_check1, {Ptr1->getType(), Len->getType()});
+			IRB.CreateCall(TheFn, {Ptr1, Len});
+		}
+	}
+}
 
 static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
 	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
@@ -5132,11 +5200,11 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 
 	for (auto CS : CallSites) {
 		LibFunc Func;
-		//bool isIndirect = CS->isIndirectCall();
 		bool LibCall = false;
+		bool Intrin = false;
 		if (isa<IntrinsicInst>(CS)) {
-			//continue;
 			LibCall = true;
+			Intrin = true;
 		}
     if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
 			if (!TLI->isInteriorSafe(Func)) {
@@ -5151,30 +5219,27 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
     		Value *A = *ArgIt;
       	if (A->getType()->isPointerTy()) {
 					if (LibCall || PAL.hasParamAttribute(ArgIt - Start, Attribute::ByVal)) {
+						if (LibCall) {
+							insertBoundsCheck(F, CS, Intrin);
+						}
 						auto Interior = getNoInterior(F, CS, A);
 						CS->setArgOperand(ArgIt - Start, Interior);
 					}
 					else {
-						if (InteriorPointersSet.count(A) /*|| isa<Constant>(A)*/) {
-							if (1 /*isIndirect*/) {
-
-								if (InteriorValues.count(A)) {
-									Interior = InteriorValues[A];
-								}
-								else {
-									Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap);
-								}
-								assert(Interior);
-								if (Interior->getType() != A->getType()) {
-									IRBuilder<> IRB(CS);
-									CS->setArgOperand(ArgIt - Start, IRB.CreateBitCast(Interior, A->getType()));
-								}
-								else {
-									CS->setArgOperand(ArgIt - Start, Interior);
-								}
+						if (InteriorPointersSet.count(A)) {
+							if (InteriorValues.count(A)) {
+								Interior = InteriorValues[A];
 							}
 							else {
-								//InteriorToBase[A] = Base;
+								Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap);
+							}
+							assert(Interior);
+							if (Interior->getType() != A->getType()) {
+								IRBuilder<> IRB(CS);
+								CS->setArgOperand(ArgIt - Start, IRB.CreateBitCast(Interior, A->getType()));
+							}
+							else {
+								CS->setArgOperand(ArgIt - Start, Interior);
 							}
 						}
 					}
