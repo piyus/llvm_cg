@@ -2532,12 +2532,12 @@ static bool updateInitializer(Constant *Initializer, LLVMContext &C, DenseSet<Va
 		if (BaseTy != Int8PtrTy) {
 			//errs() << "Base: " << *Base << "\n";
 			Res = ConstantExpr::getBitCast(Base, Int8PtrTy);
-    	Res = ConstantExpr::getGetElementPtr(Int8Ty, Res, ConstantInt::get(Int64Ty, (0xcabaULL<<48)));
+    	Res = ConstantExpr::getGetElementPtr(Int8Ty, Res, ConstantInt::get(Int64Ty, (0xFFFEULL<<48)));
     	Res = ConstantExpr::getBitCast(Res, BaseTy);
 			//errs() << "Res: " << *Res << "\n";
 		}
 		else {
-    	Res = ConstantExpr::getGetElementPtr(Int8Ty, Base, ConstantInt::get(Int64Ty, (0xcabaULL<<48)));
+    	Res = ConstantExpr::getGetElementPtr(Int8Ty, Base, ConstantInt::get(Int64Ty, (0xFFFEULL<<48)));
 		}
 		//errs() << "Res: " << *Res << "\n";
 		CE->handleOperandChange(Base, Res);
@@ -3066,6 +3066,7 @@ static void addUnsafePointer(DenseMap<Value*, uint64_t> &Map, Value *V, uint64_t
 	}
 }
 
+#if 0
 Value* getInteriorVal(Function &F, Value *V)
 {
 	Instruction *I = dyn_cast<Instruction>(V);
@@ -3086,7 +3087,6 @@ Value* getInteriorVal(Function &F, Value *V)
 	auto Interior = IRB.CreateOr(VInt, (0xcabaULL << 48));
 	return IRB.CreateIntToPtr(Interior, V->getType());
 }
-
 
 Value* getInterior(Function &F, Instruction *I, Value *V)
 {
@@ -3111,6 +3111,7 @@ Value* getInterior(Function &F, Instruction *I, Value *V)
 	return IRB.CreateIntToPtr(Interior, V->getType());
 #endif
 }
+#endif
 
 static bool
 isNonAccessInst(const Instruction *I, Value *Ptr) {
