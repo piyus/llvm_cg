@@ -710,6 +710,11 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 		return true;
 	case LibFunc_obstack_newchunk:
 		return true;
+	case LibFunc_getopt_long:
+		return true;
+	case LibFunc_setlocale:
+		return true;
+
 
 	case LibFunc_pthread_attr_init:
 	case LibFunc_pthread_attr_setdetachstate:

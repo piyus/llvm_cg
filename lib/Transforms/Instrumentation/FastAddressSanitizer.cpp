@@ -4961,6 +4961,14 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		}
 	}
 	else if (isa<Constant>(V) && !isa<GlobalVariable>(V)) {
+  	const DataLayout &DL = F.getParent()->getDataLayout();
+		if (isa<ConstantExpr>(V)) {
+			int64_t Offset = 0;
+			Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
+			if (isa<GlobalVariable>(Base) && Offset == 0) {
+				return Ret;
+			}
+		}
 		auto Fn = Intrinsic::getDeclaration(M, Intrinsic::ptrunmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
 		Ret = IRB.CreateCall(Fn, {V, ConstantInt::get(IRB.getInt64Ty(), (0x1ULL<<48))});
 	}
@@ -5251,20 +5259,21 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 						CS->setArgOperand(ArgIt - Start, Interior);
 					}
 					else {
-						if (InteriorPointersSet.count(A)) {
+						if (InteriorPointersSet.count(A) || (isa<Constant>(A) && !isa<GlobalVariable>(A))) {
 							if (InteriorValues.count(A)) {
 								Interior = InteriorValues[A];
 							}
 							else {
 								Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap);
 							}
-							assert(Interior);
-							if (Interior->getType() != A->getType()) {
-								IRBuilder<> IRB(CS);
-								CS->setArgOperand(ArgIt - Start, IRB.CreateBitCast(Interior, A->getType()));
-							}
-							else {
-								CS->setArgOperand(ArgIt - Start, Interior);
+							if (Interior) {
+								if (Interior->getType() != A->getType()) {
+									IRBuilder<> IRB(CS);
+									CS->setArgOperand(ArgIt - Start, IRB.CreateBitCast(Interior, A->getType()));
+								}
+								else {
+									CS->setArgOperand(ArgIt - Start, Interior);
+								}
 							}
 						}
 					}

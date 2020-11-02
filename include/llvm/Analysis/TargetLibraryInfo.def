@@ -982,6 +982,11 @@ TLI_DEFINE_STRING_INTERNAL("getitimer")
 TLI_DEFINE_ENUM_INTERNAL(getlogin_r)
 TLI_DEFINE_STRING_INTERNAL("getlogin_r")
 /// struct passwd *getpwnam(const char *name);
+
+TLI_DEFINE_ENUM_INTERNAL(getopt_long)
+TLI_DEFINE_STRING_INTERNAL("getopt_long")
+
+
 TLI_DEFINE_ENUM_INTERNAL(getpwnam)
 TLI_DEFINE_STRING_INTERNAL("getpwnam")
 
@@ -1343,6 +1348,10 @@ TLI_DEFINE_STRING_INTERNAL("setbuf")
 ///               struct itimerval *ovalue);
 TLI_DEFINE_ENUM_INTERNAL(setitimer)
 TLI_DEFINE_STRING_INTERNAL("setitimer")
+
+
+TLI_DEFINE_ENUM_INTERNAL(setlocale)
+TLI_DEFINE_STRING_INTERNAL("setlocale")
 
 TLI_DEFINE_ENUM_INTERNAL(setrlimit)
 TLI_DEFINE_STRING_INTERNAL("setrlimit")
