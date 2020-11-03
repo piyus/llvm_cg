@@ -2928,10 +2928,10 @@ Value* FastAddressSanitizer::getStaticBaseSize(Function &F, const Value *V1, con
 	return NULL;
 }
 
-static Value* sanGetBase(Function &F, Value *V, IRBuilder<> &IRB)
+static Value* sanGetLimit(Function &F, Value *V, IRBuilder<> &IRB)
 {
 	auto M = F.getParent();
-	auto Fn = M->getOrInsertFunction("san_get_base", V->getType(), V->getType());
+	auto Fn = M->getOrInsertFunction("san_get_limit", IRB.getInt8PtrTy(), V->getType());
 	return IRB.CreateCall(Fn, {V});
 }
 
@@ -2989,7 +2989,8 @@ Value* FastAddressSanitizer::getLimit(Function &F, const Value *V1, const DataLa
 	IRBuilder<> IRB(InstPt);
 
 	if (indefiniteBase(V, DL)) {
-		V = sanGetBase(F, V, IRB);
+		//V = sanGetBase(F, V, IRB);
+		return sanGetLimit(F, V, IRB);
 	}
 	auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
 	return IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(V, Int8PtrPtrTy));
@@ -3266,12 +3267,19 @@ abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base,
 	auto Int8PtrTy = Base->getType();
 	auto M = F.getParent();
   //auto &C = M->getContext();
+	const DataLayout &DL = F.getParent()->getDataLayout();
 
 	Instruction *Then =
         SplitBlockAndInsertIfThen(Cond, InsertPt, false);    //,
                                   //MDBuilder(C).createBranchWeights(1, 100000));
 	IRBuilder<> IRB(Then);
-	auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Callsite->getType());
+	FunctionCallee Fn;
+	if (!indefiniteBase(Base, DL)) {
+		Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Callsite->getType());
+	}
+	else {
+		Fn = M->getOrInsertFunction("san_abort3", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Callsite->getType());
+	}
 	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, PtrLimit, Callsite});
 	//auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy());
 	//auto Call = IRB.CreateCall(Fn, {});
@@ -3399,12 +3407,15 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 
 
 	const DataLayout &DL = F.getParent()->getDataLayout();
-	if (indefiniteBase(Base, DL)) {
-		Base = sanGetBase(F, Base, IRB);
-	}
+	Value *Limit;
 
-	auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
-	auto Limit = IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(Base, Int8PtrPtrTy));
+	if (indefiniteBase(Base, DL)) {
+		Limit = sanGetLimit(F, Base, IRB);
+	}
+	else {
+		auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
+		Limit = IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(Base, Int8PtrPtrTy));
+	}
 
 
 	GetLengths.insert(Limit);
@@ -3470,12 +3481,15 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	}
 
 	const DataLayout &DL = F.getParent()->getDataLayout();
-	if (indefiniteBase(Base, DL)) {
-		Base = sanGetBase(F, Base, IRB);
-	}
+	Value *Limit;
 
-	auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
-	auto Limit = IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(Base, Int8PtrPtrTy));
+	if (indefiniteBase(Base, DL)) {
+		Limit = sanGetLimit(F, Base, IRB);
+	}
+	else {
+		auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
+		Limit = IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(Base, Int8PtrPtrTy));
+	}
 
 	GetLengths.insert(Limit);
 	LenToBaseMap[Limit] = Base;
@@ -4195,13 +4209,17 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 			Value *Oper;
 			if (GetLengths.count(I)) {
 				LoadInst *LI = dyn_cast<LoadInst>(I);
-				assert(LI);
-				//Oper = LI->getPointerOperand();
-				//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
-				assert(!LI->uses().empty());
-				Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
-				LoadMap[LI] = Ret;
-				//LI->setOperand(0, Ret);
+				if (LI) {
+					//Oper = LI->getPointerOperand();
+					//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
+					assert(!LI->uses().empty());
+					Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
+					LoadMap[LI] = Ret;
+					//LI->setOperand(0, Ret);
+				}
+				else {
+					assert(isa<CallBase>(I));
+				}
 			}
 			else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
 				Oper = LI->getPointerOperand();
