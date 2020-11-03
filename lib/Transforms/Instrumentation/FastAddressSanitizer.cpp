@@ -3684,6 +3684,10 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 			Offset = INVALID_OFFSET;
 			return Ret;
 		}
+		if (isa<Constant>(Ret) && !isa<GlobalVariable>(Ret)) {
+			Offset = INVALID_OFFSET;
+			return Constant::getNullValue(V->getType());
+		}
 
 		assert(!isa<PHINode>(Ret) && !isa<SelectInst>(Ret));
 		Value *Base = GetPointerBaseWithConstantOffset(V, Offset, DL);
