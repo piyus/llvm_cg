@@ -4205,7 +4205,6 @@ static Value* getNoInteriorMap(Function &F, Instruction *Unused, Value *Oper, De
 	return Ret;
 }
 
- 
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths,
 	DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites)
 {
