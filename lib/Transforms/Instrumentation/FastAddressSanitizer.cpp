@@ -3944,6 +3944,22 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 
 	Function *TheFn =
       Intrinsic::getDeclaration(F.getParent(), Intrin, {V->getType(), V->getType(), IRB.getInt64Ty()});
+	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<49)-1)});
+	return V;
+
+	//auto VInt = IRB.CreatePtrToInt(V, IRB.getInt64Ty());
+	//auto Interior = IRB.CreateAnd(VInt, (1ULL << 63) - 1);
+	//return IRB.CreateIntToPtr(Interior, V->getType());
+}
+
+static Value* getNoInteriorCall(Function &F, Instruction *I, Value *V)
+{
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+	auto Intrin = (isa<PtrToIntInst>(V)) ? Intrinsic::ptrmask1 : Intrinsic::ptrmask;
+
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrin, {V->getType(), V->getType(), IRB.getInt64Ty()});
 	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48)-1)});
 	return V;
 
@@ -4223,16 +4239,16 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 			}
 			else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
 				Oper = LI->getPointerOperand();
-				//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
-				Ret = addHandler(F, I, Oper, NULL, GetLengths, false, id++, Name);
+				Ret = getNoInteriorMap(F, LI, Oper, RepMap);
+				//Ret = addHandler(F, I, Oper, NULL, GetLengths, false, id++, Name);
 				LI->setOperand(0, Ret);
 			}
 			else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
 				//Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
-				Value *Val = SI->getValueOperand();
+				//Value *Val = SI->getValueOperand();
 				Oper = SI->getPointerOperand();
-				//Ret = getNoInteriorMap(F, SI, Oper, RepMap);
-				Ret = addHandler(F, I, Oper, Val, GetLengths, false, id++, Name);
+				Ret = getNoInteriorMap(F, SI, Oper, RepMap);
+				//Ret = addHandler(F, I, Oper, Val, GetLengths, false, id++, Name);
 				SI->setOperand(1, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
@@ -4251,7 +4267,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				if (CI->isIndirectCall()) {
 					//Ret = addHandler(F, I, CI->getCalledOperand(), NULL, GetLengths, true, id++, Name);
 					Oper = CI->getCalledOperand();
-					Ret = getNoInteriorMap(F, CI, Oper, RepMap);
+					Ret = getNoInteriorCall(F, CI, Oper);
 					CI->setCalledOperand(Ret);
 				}
 				else {
