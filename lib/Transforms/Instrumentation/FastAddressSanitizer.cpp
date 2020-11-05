@@ -3147,8 +3147,7 @@ inSameLoop(const Value *Base, const Value *Ptr, LoopInfo &LI)
 	return true;
 }
 
-static Value*
-baseIsOutSideLoop(Instruction *Base, const Instruction *Ptr, LoopInfo &LI, PostDominatorTree &PDT)
+static Loop* baseIsOutSideLoopHelper(Instruction *Base, const Instruction *Ptr, LoopInfo &LI)
 {
 	auto L2 = LI.getLoopFor(cast<Instruction>(Ptr)->getParent());
 	if (L2 == NULL) {
@@ -3156,7 +3155,7 @@ baseIsOutSideLoop(Instruction *Base, const Instruction *Ptr, LoopInfo &LI, PostD
 	}
 	auto L1 = LI.getLoopFor(cast<Instruction>(Base)->getParent());
 	if (L1 == NULL) {
-		goto out;
+		return L2;
 	}
 	if (L1 == L2) {
 		return NULL;
@@ -3164,12 +3163,26 @@ baseIsOutSideLoop(Instruction *Base, const Instruction *Ptr, LoopInfo &LI, PostD
 	if (LI.isNotAlreadyContainedIn(L2, L1)) {
 		return NULL;
 	}
-out:
+	return L2;
+}
 
+static Value*
+baseIsOutSideLoop(Instruction *Base, const Instruction *Ptr, LoopInfo &LI, PostDominatorTree &PDT, bool &NeedRecurrence)
+{
+	auto L2 = baseIsOutSideLoopHelper(Base, Ptr, LI);
+	if (L2 == NULL) {
+		return NULL;
+	}
 	auto Header = L2->getLoopPreheader();
 	if (PDT.dominates(Ptr->getParent(), Header)) {
 		//errs() << "Can be moved in the header: " << *Header << "\n";
+		if (baseIsOutSideLoopHelper(Base, Header->getFirstNonPHI(), LI)) {
+			NeedRecurrence = true;
+		}
 		return Header;
+	}
+	else {
+		NeedRecurrence = true;
 	}
 	return NULL;
 }
@@ -3267,9 +3280,14 @@ postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT,
 			}
 		}
 		else {
-			auto Header = baseIsOutSideLoop(Base, I, LI, PDT);
+			bool NeedRecurrence = false;
+			auto Header = baseIsOutSideLoop(Base, I, LI, PDT, NeedRecurrence);
 			if (Header) {
 				LoopUsages[V] = Header;
+			}
+			if (NeedRecurrence) {
+				//errs() << "Need Recurrence For: " << *V << "\n";
+				//errs() << F << "\n";
 			}
 		}
 	}
