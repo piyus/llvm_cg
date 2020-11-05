@@ -676,7 +676,7 @@ struct FastAddressSanitizer {
 	void addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 		Value *TySize,
 		int &callsites, DenseSet<Value*> &GetLengths,
-		DenseMap<Value*, Value*> &LenToBaseMap
+		DenseMap<Value*, Value*> &LenToBaseMap, DenseMap<Value*, Value*> &LoopUsages
 		);
 
 	void addBoundsCheckWithLenAtUseHelper(Function &F, 
@@ -3147,6 +3147,33 @@ inSameLoop(const Value *Base, const Value *Ptr, LoopInfo &LI)
 	return true;
 }
 
+static Value*
+baseIsOutSideLoop(Instruction *Base, const Instruction *Ptr, LoopInfo &LI, PostDominatorTree &PDT)
+{
+	auto L2 = LI.getLoopFor(cast<Instruction>(Ptr)->getParent());
+	if (L2 == NULL) {
+		return NULL;
+	}
+	auto L1 = LI.getLoopFor(cast<Instruction>(Base)->getParent());
+	if (L1 == NULL) {
+		goto out;
+	}
+	if (L1 == L2) {
+		return NULL;
+	}
+	if (LI.isNotAlreadyContainedIn(L2, L1)) {
+		return NULL;
+	}
+out:
+
+	auto Header = L2->getLoopPreheader();
+	if (PDT.dominates(Ptr->getParent(), Header)) {
+		//errs() << "Can be moved in the header: " << *Header << "\n";
+		return Header;
+	}
+	return NULL;
+}
+
 #if 0
 static bool
 hasUnsafeUse(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses)
@@ -3215,7 +3242,8 @@ mayBeNull(Instruction *Ptr) {
 }
 
 static bool
-postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT, DenseSet<Value*> &Ptrs, LoopInfo &LI)
+postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT,
+	DenseSet<Value*> &Ptrs, LoopInfo &LI, DenseMap<Value*, Value*> &LoopUsages)
 {
 	//errs() << "CHECKING2 : " << *Base << "\n";
 	assert(!Ptrs.empty());
@@ -3236,6 +3264,12 @@ postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT, D
 		if (PDT.dominates(I, Base)) {
 			if (inSameLoop(Base, I, LI)) {
 				return true;
+			}
+		}
+		else {
+			auto Header = baseIsOutSideLoop(Base, I, LI, PDT);
+			if (Header) {
+				LoopUsages[V] = Header;
 			}
 		}
 	}
@@ -3467,18 +3501,27 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	Value *TySize,
 	int &callsites,
 	DenseSet<Value*> &GetLengths, 
-	DenseMap<Value*, Value*> &LenToBaseMap)
+	DenseMap<Value*, Value*> &LenToBaseMap, DenseMap<Value*, Value*> &LoopUsages)
 {
-	auto InstPtr = dyn_cast<Instruction>(Ptr);
-	assert(InstPtr && "Invalid Ptr");
-	IRBuilder<> IRB(InstPtr->getParent());
+	Instruction *InstPtr;
+	Instruction *InstPtr1;
 
+	InstPtr = dyn_cast<Instruction>(Ptr);
+	assert(InstPtr && "Invalid Ptr");
 	if (isa<PHINode>(Ptr)) {
-		IRB.SetInsertPoint(InstPtr->getParent()->getFirstNonPHI());
+		InstPtr = InstPtr->getParent()->getFirstNonPHI();
 	}
 	else {
-		IRB.SetInsertPoint(InstPtr->getNextNode());
+		InstPtr = InstPtr->getNextNode();
 	}
+	InstPtr1 = InstPtr;
+
+	if (LoopUsages.count(Ptr)) {
+		InstPtr = cast<BasicBlock>(LoopUsages[Ptr])->getFirstNonPHI();
+		errs() << "Inserting length at " << *InstPtr << "\n";
+	}
+
+	IRBuilder<> IRB(InstPtr);
 
 	const DataLayout &DL = F.getParent()->getDataLayout();
 	Value *Limit;
@@ -3501,6 +3544,9 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 			errs() << F << "\n";
 			assert(0);
 		//}
+	}
+	if (InstPtr != InstPtr1) {
+		IRB.SetInsertPoint(InstPtr1);
 	}
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
@@ -5617,6 +5663,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	}
 
+	DenseMap<Value*, Value*> LoopUsages;
+
 	for (auto &It : BaseToPtrsMap) {
 		Value* Base = It.first;
 		DenseSet<Value*> &ValSet = It.second;
@@ -5630,7 +5678,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			BaseI = cast<Instruction>(PhiOrSelBaseToOrig[BaseI]);
 		}
 
-		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI)) {
+		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, LoopUsages)) {
 			assert(!BaseToLenMap.count(Base));
 			BaseToLenMap[Base] = getLimit(F, Base, DL, TLI);
 			GetLengths.insert(BaseToLenMap[Base]);
@@ -5650,7 +5698,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (!BaseToLenMap.count(Base)) {
 			if (!MayNull) {
 				addBoundsCheckWithLen(F, Base, Ptr, TySize,
-					callsites, GetLengths, LenToBaseMap);
+					callsites, GetLengths, LenToBaseMap, LoopUsages);
 			}
 			else {
 				addBoundsCheckWithLenAtUse(F, Base, Ptr, TySize, UnsafeUses,
