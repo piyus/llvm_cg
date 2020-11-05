@@ -676,7 +676,9 @@ struct FastAddressSanitizer {
 	void addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 		Value *TySize,
 		int &callsites, DenseSet<Value*> &GetLengths,
-		DenseMap<Value*, Value*> &LenToBaseMap, DenseMap<Value*, Value*> &LoopUsages
+		DenseSet<Value*> &GetLengthsCond,
+		DenseMap<Value*, Value*> &LenToBaseMap, DenseMap<Value*, Value*> &LoopUsages,
+		DenseSet<Value*> &CondLoop
 		);
 
 	void addBoundsCheckWithLenAtUseHelper(Function &F, 
@@ -3256,7 +3258,8 @@ mayBeNull(Instruction *Ptr) {
 
 static bool
 postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT,
-	DenseSet<Value*> &Ptrs, LoopInfo &LI, DenseMap<Value*, Value*> &LoopUsages)
+	DenseSet<Value*> &Ptrs, LoopInfo &LI, DenseMap<Value*, Value*> &LoopUsages,
+	DenseSet<Value*> &CondLoop)
 {
 	//errs() << "CHECKING2 : " << *Base << "\n";
 	assert(!Ptrs.empty());
@@ -3286,6 +3289,7 @@ postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT,
 				LoopUsages[V] = Header;
 			}
 			if (NeedRecurrence) {
+				CondLoop.insert(V);
 				//errs() << "Need Recurrence For: " << *V << "\n";
 				//errs() << F << "\n";
 			}
@@ -3518,8 +3522,11 @@ void FastAddressSanitizer::
 addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	Value *TySize,
 	int &callsites,
-	DenseSet<Value*> &GetLengths, 
-	DenseMap<Value*, Value*> &LenToBaseMap, DenseMap<Value*, Value*> &LoopUsages)
+	DenseSet<Value*> &GetLengths,
+	DenseSet<Value*> &GetLengthsCond,
+	DenseMap<Value*, Value*> &LenToBaseMap,
+	DenseMap<Value*, Value*> &LoopUsages,
+	DenseSet<Value*> &CondLoop)
 {
 	Instruction *InstPtr;
 	Instruction *InstPtr1;
@@ -3536,7 +3543,7 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 
 	if (LoopUsages.count(Ptr)) {
 		InstPtr = cast<BasicBlock>(LoopUsages[Ptr])->getFirstNonPHI();
-		errs() << "Inserting length at " << *InstPtr << "\n";
+		//errs() << "Inserting length at " << *InstPtr << "\n";
 	}
 
 	IRBuilder<> IRB(InstPtr);
@@ -3550,6 +3557,10 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	else {
 		auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
 		Limit = IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(Base, Int8PtrPtrTy));
+	}
+
+	if (CondLoop.count(Ptr)) {
+		GetLengthsCond.insert(Limit);
 	}
 
 	GetLengths.insert(Limit);
@@ -3790,6 +3801,75 @@ static Value* tryGettingBaseAndOffset(Value *V, int64_t &Offset, const DataLayou
 	return Ret;
 }
 
+static Value* emitCall(Function &F, Instruction *I, Value *Ptr, Value *Name, int LineNum)
+{
+	FunctionCallee Fn;
+	IRBuilder<> IRB(I);
+	auto PtrTy = Ptr->getType();
+	auto LineTy = IRB.getInt32Ty();
+	auto M = F.getParent();
+	auto NameTy = Name->getType();
+
+	Fn = M->getOrInsertFunction("san_page_fault_limit", IRB.getInt8PtrTy(), PtrTy, LineTy, NameTy);
+	auto *Line = ConstantInt::get(LineTy, LineNum);
+	auto Call = IRB.CreateCall(Fn, {Ptr, Line, Name});
+
+	if (F.getSubprogram()) {
+    if (auto DL = I->getDebugLoc()) {
+      Call->setDebugLoc(DL);
+		}
+  }
+	return Call;
+}
+
+static Value* createCondLimit(Function &F, Instruction *I,
+	Value *Ptr, int id, Value *Name, bool Conditional)
+{
+	int LineNum = 0;
+	if (F.getSubprogram() && I->getDebugLoc()) {
+		LineNum = I->getDebugLoc()->getLine();
+	}
+	LineNum = (LineNum << 16) | id;
+	if (!Conditional) {
+		return emitCall(F, I, Ptr, Name, LineNum);
+	}
+
+	auto Base = Ptr->stripPointerCasts();
+	if (isa<Argument>(Base) || isa<GlobalVariable>(Base)) {
+		Base = F.begin()->getFirstNonPHI();
+	}
+	else if (isa<PHINode>(Base)) {
+		Base = cast<Instruction>(Base)->getParent()->getFirstNonPHI();
+	}
+	else {
+		Base = cast<Instruction>(Base)->getNextNode();
+	}
+
+	IRBuilder<> IRB(cast<Instruction>(Base));
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Tmp = IRB.CreateAlloca(Int8PtrTy);
+	IRB.CreateStore(Constant::getNullValue(Int8PtrTy), Tmp);
+
+	IRB.SetInsertPoint(I);
+
+	auto Limit = IRB.CreateLoad(Tmp);
+	auto Cmp = IRB.CreateICmpEQ(Limit, Constant::getNullValue(Int8PtrTy));
+	Instruction *Term = SplitBlockAndInsertIfThen(Cmp, I, false);
+	auto Call = emitCall(F, Term, Ptr, Name, LineNum);
+	IRB.SetInsertPoint(Term);
+	IRB.CreateStore(Call, Tmp);
+
+	IRB.SetInsertPoint(I);
+
+  PHINode *PHI = IRB.CreatePHI(Int8PtrTy, 2);
+  BasicBlock *CondBlock = cast<Instruction>(Cmp)->getParent();
+  PHI->addIncoming(Limit, CondBlock);
+  BasicBlock *ThenBlock = Term->getParent();
+  PHI->addIncoming(Call, ThenBlock);
+  return PHI;
+}
+
+#if 0
 static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, DenseSet<Value*> &GetLengths, 
 	bool call, int id, Value *Name)
 {
@@ -3845,6 +3925,7 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
   }
 	return Call;
 }
+#endif
 
 #if 0
 static uint64_t getAllocaSizeInBytes1(const AllocaInst &AI)
@@ -4270,6 +4351,7 @@ static Value* getNoInteriorMap(Function &F, Instruction *Unused, Value *Oper, De
 }
 
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths,
+	DenseSet<Value*> &GetLengthsCond,
 	DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites)
 {
 	int id = 0;
@@ -4279,7 +4361,8 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	DenseSet<AllocaInst*> AllocaInsts;
 	DenseMap<Value*, Value*> RepMap;
-	DenseMap<Value*, Value*> LoadMap;
+	//DenseMap<Value*, Value*> LoadMap;
+	DenseSet<LoadInst*> LoadSet;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -4292,8 +4375,8 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 					//Oper = LI->getPointerOperand();
 					//Ret = getNoInteriorMap(F, LI, Oper, RepMap);
 					assert(!LI->uses().empty());
-					Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
-					LoadMap[LI] = Ret;
+					LoadSet.insert(LI);
+					//Ret = addHandler(F, I, LI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
 					//LI->setOperand(0, Ret);
 				}
 				else {
@@ -4353,13 +4436,22 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 		}
 	}
 
+	for (auto LI : LoadSet) {
+		auto Ret = createCondLimit(F, LI, LI->getPointerOperand(), id++, Name, GetLengthsCond.count(LI) > 0);
+		LI->replaceAllUsesWith(Ret);
+		LI->eraseFromParent();
+	}
+
+#if 0
+	errs() << "LINE17\n";
 	for (auto It : LoadMap) {
 		auto LI = cast<Instruction>(It.first);
 		auto Dst = cast<Instruction>(It.second);
 		LI->replaceAllUsesWith(Dst);
 		LI->eraseFromParent();
 	}
-
+	errs() << "LINE18\n";
+#endif
 	//for (auto AI : AllocaInsts) {
 		//addAlloca(F, AI, id++, Name);
 	//}
@@ -5570,6 +5662,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseMap<Value*, Value*> ReplacementMap;
 	DenseMap<Value*, Value*> PtrToBaseMap;
 	DenseSet<Value*> GetLengths;
+	DenseSet<Value*> GetLengthsCond;
 	DenseSet<Instruction*> ICmpOrSub;
 	DenseSet<Instruction*> IntToPtr;
 	DenseSet<Instruction*> PtrToInt;
@@ -5682,6 +5775,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	DenseMap<Value*, Value*> LoopUsages;
+	DenseSet<Value*> CondLoop;
 
 	for (auto &It : BaseToPtrsMap) {
 		Value* Base = It.first;
@@ -5696,7 +5790,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			BaseI = cast<Instruction>(PhiOrSelBaseToOrig[BaseI]);
 		}
 
-		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, LoopUsages)) {
+		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, LoopUsages, CondLoop)) {
 			assert(!BaseToLenMap.count(Base));
 			BaseToLenMap[Base] = getLimit(F, Base, DL, TLI);
 			GetLengths.insert(BaseToLenMap[Base]);
@@ -5716,7 +5810,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (!BaseToLenMap.count(Base)) {
 			if (!MayNull) {
 				addBoundsCheckWithLen(F, Base, Ptr, TySize,
-					callsites, GetLengths, LenToBaseMap, LoopUsages);
+					callsites, GetLengths, GetLengthsCond, LenToBaseMap, LoopUsages, CondLoop);
 			}
 			else {
 				addBoundsCheckWithLenAtUse(F, Base, Ptr, TySize, UnsafeUses,
@@ -5752,7 +5846,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	//instrumentPtrToInt(F, PtrToInt, GEPs, DL);
-	instrumentPageFaultHandler(F, GetLengths, Stores, CallSites);
+	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites);
 	//instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
 	if (!RestorePoints.empty()) {
