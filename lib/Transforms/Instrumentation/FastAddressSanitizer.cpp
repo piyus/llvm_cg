@@ -4697,6 +4697,27 @@ static void removeRedundentAccesses(Function &F,
 	}
 }
 
+static Value *
+checkSizeWithLimit(Function &F, Instruction *I, Value *V, Value *Limit,
+	IRBuilder<> &IRB, size_t TypeSize, Type *RetTy)
+{
+	auto Int64 = IRB.getInt64Ty();
+	auto Int8Ty = IRB.getInt8Ty();
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	//auto LI = dyn_cast<Instruction>(Limit);
+	//if (LI && LI->getType()->isPointerTy() && LI->getParent() == I->getParent()) {
+		//IRB.SetInsertPoint(LI->getNextNode());
+	//}
+	V = IRB.CreateBitCast(V, Int8PtrTy);
+	if (Limit->getType()->isIntegerTy()) {
+		Limit = IRB.CreateGEP(Int8Ty, V, Limit);
+	}
+	assert(Limit->getType() == Int8PtrTy);
+	Limit = IRB.CreateGEP(Int8Ty, Limit, ConstantInt::get(Int64, -TypeSize));
+	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", RetTy, Int8PtrTy, Int8PtrTy);
+	return IRB.CreateCall(Fn, {V, Limit});
+}
+
 
 static Value*
 getInteriorValue(Function &F, Instruction *I, Value *V,
@@ -4739,8 +4760,15 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize)});
 			}
 			else {
-				auto Fn = M->getOrInsertFunction("san_interior_checked", RetTy, Base->getType(), V->getType(), Int64);
-				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize)});
+				if (!Limit) {
+					auto Fn = M->getOrInsertFunction("san_interior_checked", RetTy, Base->getType(), V->getType(), Int64);
+					Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize)});
+				}
+				else {
+					Ret = checkSizeWithLimit(F, I, V, Limit, IRB, TypeSize, RetTy);
+					auto Fn = M->getOrInsertFunction("san_interior5", RetTy, Base->getType(), V->getType(), Ret->getType());
+					Ret = IRB.CreateCall(Fn, {Base, V, Ret});
+				}
 			}
 		}
 	}
@@ -4768,8 +4796,14 @@ SanCheckSize(Function &F, Instruction *I, Value *V, Value *Limit)
 	auto PTy = V->getType()->getPointerElementType();
 	size_t TypeSize = DL.getTypeStoreSize(PTy);
 	auto Int64 = IRB.getInt64Ty();
-	auto Fn = M->getOrInsertFunction("san_check_size", V->getType(), V->getType(), Int64);
-	return IRB.CreateCall(Fn, {V, ConstantInt::get(Int64, TypeSize)});
+
+	if (!Limit) {
+		auto Fn = M->getOrInsertFunction("san_check_size", V->getType(), V->getType(), Int64);
+		return IRB.CreateCall(Fn, {V, ConstantInt::get(Int64, TypeSize)});
+	}
+	else {
+		return checkSizeWithLimit(F, I, V, Limit, IRB, TypeSize, V->getType());
+	}
 }
 
 static void collectUnsafeUses(Function &F,
