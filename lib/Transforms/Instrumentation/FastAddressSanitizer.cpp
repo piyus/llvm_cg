@@ -3835,19 +3835,23 @@ static Value* createCondLimit(Function &F, Instruction *I,
 	}
 
 	auto Base = Ptr->stripPointerCasts();
-	if (isa<Argument>(Base) || isa<GlobalVariable>(Base)) {
-		Base = F.begin()->getFirstNonPHI();
-	}
-	else if (isa<PHINode>(Base)) {
-		Base = cast<Instruction>(Base)->getParent()->getFirstNonPHI();
-	}
-	else {
-		Base = cast<Instruction>(Base)->getNextNode();
-	}
+	auto Entry = F.begin()->getFirstNonPHI();
 
-	IRBuilder<> IRB(cast<Instruction>(Base));
+	IRBuilder<> IRB(cast<Instruction>(Entry));
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	auto Tmp = IRB.CreateAlloca(Int8PtrTy);
+
+	if (isa<Argument>(Base) || isa<GlobalVariable>(Base)) {
+	}
+	else if (isa<PHINode>(Base)) {
+		auto InstPt = cast<Instruction>(Base)->getParent()->getFirstNonPHI();
+		IRB.SetInsertPoint(InstPt);
+	}
+	else {
+		auto InstPt = cast<Instruction>(Base)->getNextNode();
+		IRB.SetInsertPoint(InstPt);
+	}
+
 	IRB.CreateStore(Constant::getNullValue(Int8PtrTy), Tmp);
 
 	IRB.SetInsertPoint(I);
@@ -3862,10 +3866,18 @@ static Value* createCondLimit(Function &F, Instruction *I,
 	IRB.SetInsertPoint(I);
 
   PHINode *PHI = IRB.CreatePHI(Int8PtrTy, 2);
+
   BasicBlock *CondBlock = cast<Instruction>(Cmp)->getParent();
   PHI->addIncoming(Limit, CondBlock);
   BasicBlock *ThenBlock = Term->getParent();
   PHI->addIncoming(Call, ThenBlock);
+
+/*
+	auto Call1 = emitCall(F, I, Ptr, Name, LineNum);
+	auto Cmp1 = IRB.CreateICmpNE(Call1, PHI);
+	Instruction *Term1 = SplitBlockAndInsertIfThen(Cmp1, I, false);
+	emitCall(F, Term1, Constant::getNullValue(Int8PtrTy), Name, LineNum);
+*/
   return PHI;
 }
 
