@@ -4577,7 +4577,10 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 }
 
 static void removeRedundentLengths(Function &F, DenseSet<Value*> &GetLengths,
-	DenseMap<Value*, Value*> &LenToBaseMap) {
+	DenseMap<Value*, Value*> &LenToBaseMap,
+	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap
+	)
+{
 	DominatorTree DT(F);
 	DenseSet<Instruction*> ToDelete;
 	for (auto itr1 = GetLengths.begin(); itr1 != GetLengths.end(); itr1++) {
@@ -4607,6 +4610,14 @@ static void removeRedundentLengths(Function &F, DenseSet<Value*> &GetLengths,
 		assert(GetLengths.count(len));
 		GetLengths.erase(len);
 		len->eraseFromParent();
+	}
+
+	for (auto itr1 = GetLengths.begin(); itr1 != GetLengths.end(); itr1++) {
+		Instruction *len1 = cast<Instruction>(*itr1);
+		if (LenToBaseMap.count(len1)) {
+			auto Base = LenToBaseMap[len1];
+			BaseToLenSetMap[Base].insert(len1);
+		}
 	}
 }
 
@@ -4922,12 +4933,27 @@ insertBoundsCheck(Function &F, CallBase *I, bool Intrin) {
 	return NULL;
 }
 
+static Value* getLimitIfAvailable(Function &F,
+	DominatorTree &DT,
+	Value *Ptr,
+	Instruction *I,
+	DenseMap<Value*, Value*> &PtrToBaseMap,
+	DenseMap<Value*, Value*> &BaseToLenMap,
+	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap)
+{
+}
+
 static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
 	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
 	DenseSet<Value*> &InteriorPointersSet,
   const TargetLibraryInfo *TLI, DenseSet<Value*> &SafePtrs, 
-	DenseMap<Value*, Value*> &PtrToBaseMap, DenseSet<Value*> &SafeInteriors)
+	DenseMap<Value*, Value*> &PtrToBaseMap,
+	DenseSet<Value*> &SafeInteriors,
+	DenseMap<Value*, Value*> &BaseToLenMap,
+	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap
+	)
 {
+	DominatorTree DT(F);
 	DenseMap<Value*, Value*> InteriorValues;
 	Value *Interior;
 
@@ -5059,11 +5085,19 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 }
 
 static void handleLargerBase(Function &F,
-	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
+	DenseSet<CallBase*> &CallSites,
+	DenseSet<ReturnInst*> &RetSites,
+	DenseSet<StoreInst*> &Stores,
 	DenseSet<Value*> &LargerThanBaseSet,
-  const TargetLibraryInfo *TLI, DenseSet<Value*> &SafePtrs,
-	DenseSet<Value*> &SafeLargerThan)
+  const TargetLibraryInfo *TLI,
+	DenseSet<Value*> &SafePtrs,
+	DenseMap<Value*, Value*> &PtrToBaseMap,
+	DenseSet<Value*> &SafeLargerThan,
+	DenseMap<Value*, Value*> &BaseToLenMap,
+	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap
+	)
 {
+	DominatorTree DT(F);
 	DenseSet<Value*> LargerThanBase;
 	DenseMap<Value*, Value*> CheckedValues;
 	Value *CheckedVal;
@@ -5401,10 +5435,17 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
-	removeRedundentLengths(F, GetLengths, LenToBaseMap);
+	DenseMap<Value*, DenseSet<Value*>> BaseToLenSetMap;
 
-	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafePtrs, PtrToBaseMap, SafeInteriors);
-	handleLargerBase(F, CallSites, RetSites, Stores, LargerThanBase, TLI, SafePtrs, SafeLargerThan);
+	removeRedundentLengths(F, GetLengths, LenToBaseMap, BaseToLenSetMap);
+
+	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores,
+		InteriorPointersSet, TLI, SafePtrs, PtrToBaseMap,
+		SafeInteriors, BaseToLenMap, BaseToLenSetMap);
+
+	handleLargerBase(F, CallSites, RetSites, Stores,
+		LargerThanBase, TLI, SafePtrs, PtrToBaseMap,
+		SafeLargerThan, BaseToLenMap, BaseToLenSetMap);
 
 	Value *StackBase = NULL;
 	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
