@@ -4759,11 +4759,8 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 }
 
 static Value*
-SanCheckSize(Function &F, Instruction *I, Value *V, DenseMap<Value*, Value*> &CheckedValues)
+SanCheckSize(Function &F, Instruction *I, Value *V)
 {
-	if (CheckedValues.count(V)) {
-		return CheckedValues[V];
-	}
 	IRBuilder<> IRB(I);
 	auto M = F.getParent();
 	const DataLayout &DL = M->getDataLayout();
@@ -5116,14 +5113,19 @@ static void handleLargerBase(Function &F,
 		if (isa<PHINode>(InsertPt)) {
 			InsertPt = InsertPt->getParent()->getFirstNonPHI();
 		}
-		CheckedVal = SanCheckSize(F, InsertPt, I, CheckedValues);
+		CheckedVal = SanCheckSize(F, InsertPt, I);
 		CheckedValues[I] = CheckedVal;
 	}
 
 	for (auto SI : Stores) {
 		auto V = SI->getValueOperand();
 		if (LargerThanBase.count(V)) {
-			CheckedVal = SanCheckSize(F, SI, V, CheckedValues);
+			if (CheckedValues.count(V)) {
+				CheckedVal = CheckedValues[V];
+			}
+			else {
+				CheckedVal = SanCheckSize(F, SI, V);
+			}
 			SI->setOperand(0, CheckedVal);
 		}
 	}
@@ -5131,7 +5133,12 @@ static void handleLargerBase(Function &F,
 	for (auto RI : RetSites) {
 		auto V = RI->getReturnValue();
 		if (LargerThanBase.count(V)) {
-			CheckedVal = SanCheckSize(F, RI, V, CheckedValues);
+			if (CheckedValues.count(V)) {
+				CheckedVal = CheckedValues[V];
+			}
+			else {
+				CheckedVal = SanCheckSize(F, RI, V);
+			}
 			RI->setOperand(0, CheckedVal);
 		}
 	}
@@ -5155,7 +5162,13 @@ static void handleLargerBase(Function &F,
       	if (A->getType()->isPointerTy()) {
 					if (!(LibCall || PAL.hasParamAttribute(ArgIt - Start, Attribute::ByVal))) {
 						if (LargerThanBase.count(A)) {
-							CheckedVal = SanCheckSize(F, CS, A, CheckedValues);
+
+							if (CheckedValues.count(A)) {
+								CheckedVal = CheckedValues[A];
+							}
+							else {
+								CheckedVal = SanCheckSize(F, CS, A);
+							}
 							CS->setArgOperand(ArgIt - Start, CheckedVal);
 						}
 					}
