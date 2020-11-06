@@ -4701,7 +4701,8 @@ static void removeRedundentAccesses(Function &F,
 static Value*
 getInteriorValue(Function &F, Instruction *I, Value *V,
 	DenseSet<Value*> &InteriorPointersSet,
-	DenseSet<Value*> &SafePtrs, DenseMap<Value*, Value*> &PtrToBaseMap)
+	DenseSet<Value*> &SafePtrs, DenseMap<Value*, Value*> &PtrToBaseMap,
+	Value *Limit)
 {
 	IRBuilder<> IRB(I);
 	Value *Ret = NULL;
@@ -4759,7 +4760,7 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 }
 
 static Value*
-SanCheckSize(Function &F, Instruction *I, Value *V)
+SanCheckSize(Function &F, Instruction *I, Value *V, Value *Limit)
 {
 	IRBuilder<> IRB(I);
 	auto M = F.getParent();
@@ -4930,28 +4931,64 @@ insertBoundsCheck(Function &F, CallBase *I, bool Intrin) {
 	return NULL;
 }
 
+
+static bool checkWithinRange(Function &F,
+	Value *Base,
+	Value *Ptr,
+	Value *Limit)
+{
+	if (!isa<ConstantInt>(Limit)) {
+		return false;
+	}
+	const DataLayout &DL = F.getParent()->getDataLayout();
+	int64_t Offset = cast<ConstantInt>(Limit)->getZExtValue();
+	int64_t CurOffset = 0;
+	auto PTy = Ptr->getType()->getPointerElementType();
+	int64_t Off = DL.getTypeStoreSize(PTy);
+
+  Value *B = GetPointerBaseWithConstantOffset(Ptr, CurOffset, DL);
+	if (B != Base) {
+		return false;
+	}
+	return CurOffset + Off <= Offset;
+}
+
 static Value* getLimitIfAvailable(Function &F,
 	DominatorTree &DT,
 	Value *Ptr,
 	Instruction *I,
 	Value *Base,
 	DenseMap<Value*, Value*> &BaseToLenMap,
-	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap)
+	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap,
+	bool &WithinRange)
 {
+	WithinRange = false;
+	Value *Ret = NULL;
 	if (BaseToLenMap.count(Base)) {
-		return BaseToLenMap[Base];
+		Ret = BaseToLenMap[Base];
 	}
-	if (BaseToLenSetMap.count(Base)) {
+	else if (BaseToLenSetMap.count(Base)) {
 		auto LenSet = BaseToLenSetMap[Base];
 		for (auto Len : LenSet) {
 			if (DT.dominates(cast<Instruction>(Len)->getParent(), I->getParent())) {
-				return Len;
+				Ret = Len;
+				break;
 			}
 		}
 	}
-	errs() << "Limit Was Not Found: " << *Base << "  Ptr: " << *Ptr << "\n";
-	return NULL;
+	if (Ret) {
+		if (checkWithinRange(F, Base, Ptr, Ret)) {
+			WithinRange = true;
+			errs() << "WithinRange is True: " << *Base << " PTR: " << *Ptr << "\n";
+		}
+	}
+	else {
+		errs() << "Limit Was Not Found: " << *Base << "  Ptr: " << *Ptr << "\n";
+	}
+	return Ret;
 }
+
+
 
 static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
 	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
@@ -4966,6 +5003,8 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 	DominatorTree DT(F);
 	DenseMap<Value*, Value*> InteriorValues;
 	Value *Interior;
+	bool InRange;
+	Value *Limit;
 
 	for (auto I : SafeInteriors) {
 		Instruction *InsertPt = cast<Instruction>(I)->getNextNode();
@@ -4976,14 +5015,14 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		if (InteriorPointersSet.count(I)) {
 			assert(PtrToBaseMap.count(I));
 			auto Base = PtrToBaseMap[I];
-			auto Lim = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap);
-			if (Lim) {
-				errs() << "Found Limit1: " << *Lim << "\n";
+			Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+			if (InRange) {
+				SafePtrs.insert(I);
 			}
 		}
 
 		InteriorValues[I] = getInteriorValue(F, InsertPt, I,
-			InteriorPointersSet, SafePtrs, PtrToBaseMap);
+			InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
 	}
 
 
@@ -5004,14 +5043,14 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			if (InteriorPointersSet.count(V)) {
 				assert(PtrToBaseMap.count(V));
 				auto Base = PtrToBaseMap[V];
-				auto Lim = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap);
-				if (Lim) {
-					errs() << "Found Limit2: " << *Lim << "\n";
+				Limit = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+				if (InRange) {
+					SafePtrs.insert(V);
 				}
 			}
 
 
-		 	Interior = getInteriorValue(F, SI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap);
+		 	Interior = getInteriorValue(F, SI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
 		}
 		if (Interior) {
 			if (Interior->getType() != Ty) {
@@ -5036,14 +5075,14 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			if (InteriorPointersSet.count(V)) {
 				assert(PtrToBaseMap.count(V));
 				auto Base = PtrToBaseMap[V];
-				auto Lim = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap);
-				if (Lim) {
-					errs() << "Found Limit3: " << *Lim << "\n";
+				Limit = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+				if (InRange) {
+					SafePtrs.insert(V);
 				}
 			}
 
 
-			Interior = getInteriorValue(F, RI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap);
+			Interior = getInteriorValue(F, RI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
 		}
 		if (Interior) {
 			if (Interior->getType() != V->getType()) {
@@ -5109,13 +5148,13 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 								if (InteriorPointersSet.count(A)) {
 									assert(PtrToBaseMap.count(A));
 									auto Base = PtrToBaseMap[A];
-									auto Lim = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap);
-									if (Lim) {
-										errs() << "Found Limit4: " << *Lim << "\n";
+									Limit = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+									if (InRange) {
+										SafePtrs.insert(A);
 									}
 								}
 
-								Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap);
+								Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
 							}
 							if (Interior) {
 								if (Interior->getType() != A->getType()) {
@@ -5154,6 +5193,7 @@ static void handleLargerBase(Function &F,
 	DenseSet<Value*> LargerThanBase;
 	DenseMap<Value*, Value*> CheckedValues;
 	Value *CheckedVal;
+	bool InRange;
 
 	for (auto V : LargerThanBaseSet) {
 		if (!SafePtrs.count(V)) {
@@ -5171,14 +5211,11 @@ static void handleLargerBase(Function &F,
 		}
 
 		auto Base = I->stripPointerCasts();
-		auto Lim = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap);
-		if (Lim) {
-			errs() << "Found Limit11: " << *Lim << "\n";
+		auto Lim = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+		if (!InRange) {
+			CheckedVal = SanCheckSize(F, InsertPt, I, Lim);
+			CheckedValues[I] = CheckedVal;
 		}
-
-
-		CheckedVal = SanCheckSize(F, InsertPt, I);
-		CheckedValues[I] = CheckedVal;
 	}
 
 	for (auto SI : Stores) {
@@ -5186,18 +5223,16 @@ static void handleLargerBase(Function &F,
 		if (LargerThanBase.count(V)) {
 			if (CheckedValues.count(V)) {
 				CheckedVal = CheckedValues[V];
+				SI->setOperand(0, CheckedVal);
 			}
 			else {
-
 				auto Base = V->stripPointerCasts();
-				auto Lim = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap);
-				if (Lim) {
-					errs() << "Found Limit22: " << *Lim << "\n";
+				auto Lim = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+				if (!InRange) {
+					CheckedVal = SanCheckSize(F, SI, V, Lim);
+					SI->setOperand(0, CheckedVal);
 				}
-
-				CheckedVal = SanCheckSize(F, SI, V);
 			}
-			SI->setOperand(0, CheckedVal);
 		}
 	}
 
@@ -5206,18 +5241,17 @@ static void handleLargerBase(Function &F,
 		if (LargerThanBase.count(V)) {
 			if (CheckedValues.count(V)) {
 				CheckedVal = CheckedValues[V];
+				RI->setOperand(0, CheckedVal);
 			}
 			else {
 
 				auto Base = V->stripPointerCasts();
-				auto Lim = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap);
-				if (Lim) {
-					errs() << "Found Limit33: " << *Lim << "\n";
+				auto Lim = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+				if (!InRange) {
+					CheckedVal = SanCheckSize(F, RI, V, Lim);
+					RI->setOperand(0, CheckedVal);
 				}
-
-				CheckedVal = SanCheckSize(F, RI, V);
 			}
-			RI->setOperand(0, CheckedVal);
 		}
 	}
 
@@ -5243,20 +5277,18 @@ static void handleLargerBase(Function &F,
 
 							if (CheckedValues.count(A)) {
 								CheckedVal = CheckedValues[A];
+								CS->setArgOperand(ArgIt - Start, CheckedVal);
 							}
 							else {
 
 								auto Base = A->stripPointerCasts();
-								auto Lim = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap);
-								if (Lim) {
-									errs() << "Found Limit44: " << *Lim << "\n";
+								auto Lim = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+								if (!InRange) {
+									CheckedVal = SanCheckSize(F, CS, A, Lim);
+									CS->setArgOperand(ArgIt - Start, CheckedVal);
 								}
-
-
-
-								CheckedVal = SanCheckSize(F, CS, A);
 							}
-							CS->setArgOperand(ArgIt - Start, CheckedVal);
+
 						}
 					}
       	}
