@@ -5008,14 +5008,15 @@ static Value* getLimitIfAvailable(Function &F,
 	Value *Base,
 	DenseMap<Value*, Value*> &BaseToLenMap,
 	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap,
-	bool &WithinRange)
+	bool &WithinRange,
+	bool CheckSet)
 {
 	WithinRange = false;
 	Value *Ret = NULL;
 	if (BaseToLenMap.count(Base)) {
 		Ret = BaseToLenMap[Base];
 	}
-	else if (BaseToLenSetMap.count(Base)) {
+	else if (CheckSet && BaseToLenSetMap.count(Base)) {
 		auto LenSet = BaseToLenSetMap[Base];
 		for (auto Len : LenSet) {
 			if (DT.dominates(cast<Instruction>(Len), I)) {
@@ -5060,7 +5061,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		if (InteriorPointersSet.count(I) && !SafePtrs.count(I)) {
 			assert(PtrToBaseMap.count(I));
 			auto Base = PtrToBaseMap[I];
-			Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+			Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange, false);
 			if (InRange) {
 				SafePtrs.insert(I);
 			}
@@ -5093,7 +5094,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			if (InteriorPointersSet.count(V) && !SafePtrs.count(V)) {
 				assert(PtrToBaseMap.count(V));
 				auto Base = PtrToBaseMap[V];
-				Limit = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+				Limit = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
 				if (InRange) {
 					SafePtrs.insert(V);
 				}
@@ -5125,7 +5126,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			if (InteriorPointersSet.count(V) && !SafePtrs.count(V)) {
 				assert(PtrToBaseMap.count(V));
 				auto Base = PtrToBaseMap[V];
-				Limit = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+				Limit = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
 				if (InRange) {
 					SafePtrs.insert(V);
 				}
@@ -5197,7 +5198,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 								if (InteriorPointersSet.count(A) && !SafePtrs.count(A)) {
 									assert(PtrToBaseMap.count(A));
 									auto Base = PtrToBaseMap[A];
-									Limit = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+									Limit = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
 									if (InRange) {
 										SafePtrs.insert(A);
 									}
@@ -5259,7 +5260,7 @@ static void handleLargerBase(Function &F,
 		}
 
 		auto Base = I->stripPointerCasts();
-		auto Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+		auto Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange, false);
 		if (!InRange) {
 
 			if (Limit && isa<Instruction>(Limit) &&
@@ -5270,6 +5271,9 @@ static void handleLargerBase(Function &F,
 
 			CheckedVal = SanCheckSize(F, InsertPt, I, Limit);
 			CheckedValues[I] = CheckedVal;
+		}
+		else {
+			LargerThanBase.erase(I);
 		}
 	}
 
@@ -5282,7 +5286,8 @@ static void handleLargerBase(Function &F,
 			}
 			else {
 				auto Base = V->stripPointerCasts();
-				auto Lim = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+				auto Lim = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+				assert(!InRange);
 				if (!InRange) {
 					CheckedVal = SanCheckSize(F, SI, V, Lim);
 					SI->setOperand(0, CheckedVal);
@@ -5301,7 +5306,8 @@ static void handleLargerBase(Function &F,
 			else {
 
 				auto Base = V->stripPointerCasts();
-				auto Lim = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+				auto Lim = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+				assert(!InRange);
 				if (!InRange) {
 					CheckedVal = SanCheckSize(F, RI, V, Lim);
 					RI->setOperand(0, CheckedVal);
@@ -5337,7 +5343,8 @@ static void handleLargerBase(Function &F,
 							else {
 
 								auto Base = A->stripPointerCasts();
-								auto Lim = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+								auto Lim = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+								assert(!InRange);
 								if (!InRange) {
 									CheckedVal = SanCheckSize(F, CS, A, Lim);
 									CS->setArgOperand(ArgIt - Start, CheckedVal);
