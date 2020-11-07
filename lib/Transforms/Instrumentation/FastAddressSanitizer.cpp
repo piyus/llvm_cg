@@ -5009,14 +5009,20 @@ static Value* getLimitIfAvailable(Function &F,
 {
 	WithinRange = false;
 	Value *Ret = NULL;
-	return Ret;
 	if (BaseToLenMap.count(Base)) {
 		Ret = BaseToLenMap[Base];
+		if (isa<PHINode>(Base) && !DT.dominates(cast<Instruction>(Ret), I)) {
+			Ret = NULL;
+		}
+		else {
+			errs() << "RET:: " << *Ret << "  Base:: " << *Base << "\n";
+		}
 	}
 	else if (BaseToLenSetMap.count(Base)) {
 		auto LenSet = BaseToLenSetMap[Base];
 		for (auto Len : LenSet) {
 			if (DT.dominates(cast<Instruction>(Len), I)) {
+				errs() << "LEN:: " << *Len << "  I:: " << *I << "\n";
 				Ret = Len;
 				break;
 			}
@@ -5027,9 +5033,6 @@ static Value* getLimitIfAvailable(Function &F,
 			WithinRange = true;
 			errs() << "WithinRange is True: " << *Base << " PTR: " << *Ptr << "\n";
 		}
-	}
-	else {
-		errs() << "Limit Was Not Found: " << *Base << "  Ptr: " << *Ptr << "\n";
 	}
 	return Ret;
 }
@@ -5059,7 +5062,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		}
 
 		Limit = NULL;
-		if (InteriorPointersSet.count(I)) {
+		if (InteriorPointersSet.count(I) && !SafePtrs.count(I)) {
 			assert(PtrToBaseMap.count(I));
 			auto Base = PtrToBaseMap[I];
 			Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange);
@@ -5087,7 +5090,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		else {
 
 			Limit = NULL;
-			if (InteriorPointersSet.count(V)) {
+			if (InteriorPointersSet.count(V) && !SafePtrs.count(V)) {
 				assert(PtrToBaseMap.count(V));
 				auto Base = PtrToBaseMap[V];
 				Limit = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
@@ -5119,7 +5122,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		else {
 
 			Limit = NULL;
-			if (InteriorPointersSet.count(V)) {
+			if (InteriorPointersSet.count(V) && !SafePtrs.count(V)) {
 				assert(PtrToBaseMap.count(V));
 				auto Base = PtrToBaseMap[V];
 				Limit = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
@@ -5191,7 +5194,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 							else {
 
 								Limit = NULL;
-								if (InteriorPointersSet.count(A)) {
+								if (InteriorPointersSet.count(A) && !SafePtrs.count(A)) {
 									assert(PtrToBaseMap.count(A));
 									auto Base = PtrToBaseMap[A];
 									Limit = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange);
