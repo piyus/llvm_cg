@@ -5013,13 +5013,11 @@ static Value* getLimitIfAvailable(Function &F,
 	Value *Ret = NULL;
 	if (BaseToLenMap.count(Base)) {
 		Ret = BaseToLenMap[Base];
-		errs() << "RET:: " << *Ret << "  Base:: " << *Base << "\n";
 	}
 	else if (BaseToLenSetMap.count(Base)) {
 		auto LenSet = BaseToLenSetMap[Base];
 		for (auto Len : LenSet) {
 			if (DT.dominates(cast<Instruction>(Len), I)) {
-				errs() << "LEN:: " << *Len << "  I:: " << *I << "\n";
 				Ret = Len;
 				break;
 			}
@@ -5028,7 +5026,6 @@ static Value* getLimitIfAvailable(Function &F,
 	if (Ret) {
 		if (checkWithinRange(F, Base, Ptr, Ret)) {
 			WithinRange = true;
-			errs() << "WithinRange is True: " << *Base << " PTR: " << *Ptr << "\n";
 		}
 	}
 	return Ret;
