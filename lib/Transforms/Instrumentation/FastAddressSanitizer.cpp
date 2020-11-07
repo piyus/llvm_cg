@@ -4709,8 +4709,8 @@ static void removeRedundentAccesses(Function &F,
 }
 
 static Value *
-checkSizeWithLimit(Function &F, Instruction *I, Value *V, Value *Limit,
-	IRBuilder<> &IRB, size_t TypeSize, Type *RetTy)
+checkSizeWithLimit(Function &F, Instruction *I, Value *Base, Value *Limit,
+	IRBuilder<> &IRB, size_t TypeSize, Type *RetTy, Value *V)
 {
 	auto Int64 = IRB.getInt64Ty();
 	auto Int8Ty = IRB.getInt8Ty();
@@ -4719,14 +4719,18 @@ checkSizeWithLimit(Function &F, Instruction *I, Value *V, Value *Limit,
 	//if (LI && LI->getType()->isPointerTy() && LI->getParent() == I->getParent()) {
 		//IRB.SetInsertPoint(LI->getNextNode());
 	//}
-	V = IRB.CreateBitCast(V, Int8PtrTy);
+	Base = IRB.CreateBitCast(Base, Int8PtrTy);
 	if (Limit->getType()->isIntegerTy()) {
-		Limit = IRB.CreateGEP(Int8Ty, V, Limit);
+		Limit = IRB.CreateGEP(Int8Ty, Base, Limit);
 	}
 	assert(Limit->getType() == Int8PtrTy);
 	Limit = IRB.CreateGEP(Int8Ty, Limit, ConstantInt::get(Int64, -TypeSize));
+	if (Base != V) {
+		auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit_with_offset", RetTy, Int8PtrTy, V->getType(), Int8PtrTy);
+		return IRB.CreateCall(Fn, {Base, V, Limit});
+	}
 	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", RetTy, Int8PtrTy, Int8PtrTy);
-	return IRB.CreateCall(Fn, {V, Limit});
+	return IRB.CreateCall(Fn, {Base, Limit});
 }
 
 
@@ -4776,9 +4780,7 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 					Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize)});
 				}
 				else {
-					Ret = checkSizeWithLimit(F, I, V, Limit, IRB, TypeSize, RetTy);
-					auto Fn = M->getOrInsertFunction("san_interior5", RetTy, Base->getType(), V->getType(), Ret->getType());
-					Ret = IRB.CreateCall(Fn, {Base, V, Ret});
+					return checkSizeWithLimit(F, I, Base, Limit, IRB, TypeSize, RetTy, V);
 				}
 			}
 		}
@@ -4813,7 +4815,7 @@ SanCheckSize(Function &F, Instruction *I, Value *V, Value *Limit)
 		return IRB.CreateCall(Fn, {V, ConstantInt::get(Int64, TypeSize)});
 	}
 	else {
-		return checkSizeWithLimit(F, I, V, Limit, IRB, TypeSize, V->getType());
+		return checkSizeWithLimit(F, I, V, Limit, IRB, TypeSize, V->getType(), V);
 	}
 }
 
@@ -5011,12 +5013,7 @@ static Value* getLimitIfAvailable(Function &F,
 	Value *Ret = NULL;
 	if (BaseToLenMap.count(Base)) {
 		Ret = BaseToLenMap[Base];
-		if (isa<PHINode>(Base) && !DT.dominates(cast<Instruction>(Ret), I)) {
-			Ret = NULL;
-		}
-		else {
-			errs() << "RET:: " << *Ret << "  Base:: " << *Base << "\n";
-		}
+		errs() << "RET:: " << *Ret << "  Base:: " << *Base << "\n";
 	}
 	else if (BaseToLenSetMap.count(Base)) {
 		auto LenSet = BaseToLenSetMap[Base];
@@ -5069,6 +5066,11 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			if (InRange) {
 				SafePtrs.insert(I);
 			}
+		}
+		if (Limit && isa<Instruction>(Limit) &&
+				isa<PHINode>(I) &&
+				cast<Instruction>(I)->getParent() == cast<Instruction>(Limit)->getParent()) {
+			InsertPt = cast<Instruction>(Limit)->getNextNode();
 		}
 
 		InteriorValues[I] = getInteriorValue(F, InsertPt, I,
@@ -5259,9 +5261,16 @@ static void handleLargerBase(Function &F,
 		}
 
 		auto Base = I->stripPointerCasts();
-		auto Lim = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange);
+		auto Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange);
 		if (!InRange) {
-			CheckedVal = SanCheckSize(F, InsertPt, I, Lim);
+
+			if (Limit && isa<Instruction>(Limit) &&
+					isa<PHINode>(I) &&
+					cast<Instruction>(I)->getParent() == cast<Instruction>(Limit)->getParent()) {
+				InsertPt = cast<Instruction>(Limit)->getNextNode();
+			}
+
+			CheckedVal = SanCheckSize(F, InsertPt, I, Limit);
 			CheckedValues[I] = CheckedVal;
 		}
 	}
