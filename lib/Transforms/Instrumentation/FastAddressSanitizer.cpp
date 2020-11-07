@@ -5067,7 +5067,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		}
 		if (Limit && isa<Instruction>(Limit) &&
 				isa<PHINode>(I) &&
-				cast<Instruction>(I)->getParent() == cast<Instruction>(Limit)->getParent()) {
+				DT.dominates(cast<Instruction>(I), cast<Instruction>(Limit))) {
 			InsertPt = cast<Instruction>(Limit)->getNextNode();
 		}
 
@@ -5264,7 +5264,7 @@ static void handleLargerBase(Function &F,
 
 			if (Limit && isa<Instruction>(Limit) &&
 					isa<PHINode>(I) &&
-					cast<Instruction>(I)->getParent() == cast<Instruction>(Limit)->getParent()) {
+					DT.dominates(cast<Instruction>(I), cast<Instruction>(Limit))) {
 				InsertPt = cast<Instruction>(Limit)->getNextNode();
 			}
 
