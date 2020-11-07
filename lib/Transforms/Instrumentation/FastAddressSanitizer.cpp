@@ -3412,8 +3412,12 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 	DenseSet<Value*> &GetLengths,
 	DenseMap<Value*, Value*> &LenToBaseMap)
 {
-	IRBuilder<> IRB(InstPtr);
+	auto Start = InstPtr->getParent()->getFirstNonPHI();
+	IRBuilder<> IRB(Start);
 
+	if (isa<Instruction>(Base) && InstPtr->getParent() == cast<Instruction>(Base)->getParent()) {
+		IRB.SetInsertPoint(InstPtr);
+	}
 
 	const DataLayout &DL = F.getParent()->getDataLayout();
 	Value *Limit;
@@ -3425,6 +3429,8 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 		auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
 		Limit = IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(Base, Int8PtrPtrTy));
 	}
+
+	IRB.SetInsertPoint(InstPtr);
 
 
 	GetLengths.insert(Limit);
@@ -3497,6 +3503,11 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 	if (LoopUsages.count(Ptr)) {
 		InstPtr = cast<BasicBlock>(LoopUsages[Ptr])->getFirstNonPHI();
 		//errs() << "Inserting length at " << *InstPtr << "\n";
+	}
+	else {
+		if (!isa<Instruction>(Base) || InstPtr->getParent() != cast<Instruction>(Base)->getParent()) {
+			InstPtr = InstPtr->getParent()->getFirstNonPHI();
+		}
 	}
 
 	IRBuilder<> IRB(InstPtr);
@@ -4998,13 +5009,14 @@ static Value* getLimitIfAvailable(Function &F,
 {
 	WithinRange = false;
 	Value *Ret = NULL;
+	return Ret;
 	if (BaseToLenMap.count(Base)) {
 		Ret = BaseToLenMap[Base];
 	}
 	else if (BaseToLenSetMap.count(Base)) {
 		auto LenSet = BaseToLenSetMap[Base];
 		for (auto Len : LenSet) {
-			if (DT.dominates(cast<Instruction>(Len)->getParent(), I->getParent())) {
+			if (DT.dominates(cast<Instruction>(Len), I)) {
 				Ret = Len;
 				break;
 			}
@@ -5046,6 +5058,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			InsertPt = InsertPt->getParent()->getFirstNonPHI();
 		}
 
+		Limit = NULL;
 		if (InteriorPointersSet.count(I)) {
 			assert(PtrToBaseMap.count(I));
 			auto Base = PtrToBaseMap[I];
@@ -5073,7 +5086,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		}
 		else {
 
-
+			Limit = NULL;
 			if (InteriorPointersSet.count(V)) {
 				assert(PtrToBaseMap.count(V));
 				auto Base = PtrToBaseMap[V];
@@ -5082,7 +5095,6 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 					SafePtrs.insert(V);
 				}
 			}
-
 
 		 	Interior = getInteriorValue(F, SI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
 		}
@@ -5106,6 +5118,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		}
 		else {
 
+			Limit = NULL;
 			if (InteriorPointersSet.count(V)) {
 				assert(PtrToBaseMap.count(V));
 				auto Base = PtrToBaseMap[V];
@@ -5114,8 +5127,6 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 					SafePtrs.insert(V);
 				}
 			}
-
-
 			Interior = getInteriorValue(F, RI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
 		}
 		if (Interior) {
@@ -5179,6 +5190,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 							}
 							else {
 
+								Limit = NULL;
 								if (InteriorPointersSet.count(A)) {
 									assert(PtrToBaseMap.count(A));
 									auto Base = PtrToBaseMap[A];
@@ -5187,7 +5199,6 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 										SafePtrs.insert(A);
 									}
 								}
-
 								Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
 							}
 							if (Interior) {
@@ -5577,6 +5588,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	DenseMap<Value*, Value*> LoopUsages;
 	DenseSet<Value*> CondLoop;
+	DenseSet<Value*> SafeBases;
 
 	for (auto &It : BaseToPtrsMap) {
 		Value* Base = It.first;
@@ -5592,10 +5604,14 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 
 		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, LoopUsages, CondLoop)) {
-			assert(!BaseToLenMap.count(Base));
-			BaseToLenMap[Base] = getLimit(F, Base, DL, TLI);
-			GetLengths.insert(BaseToLenMap[Base]);
+			SafeBases.insert(Base);
 		}
+	}
+
+	for (auto Base : SafeBases) {
+		assert(!BaseToLenMap.count(Base));
+		BaseToLenMap[Base] = getLimit(F, Base, DL, TLI);
+		GetLengths.insert(BaseToLenMap[Base]);
 	}
 
 	for (auto Ptr : TmpSet) {
