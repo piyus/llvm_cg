@@ -4712,6 +4712,7 @@ static Value *
 checkSizeWithLimit(Function &F, Instruction *I, Value *Base, Value *Limit,
 	IRBuilder<> &IRB, size_t TypeSize, Type *RetTy, Value *V)
 {
+	bool CheckOffset = Base != V;
 	auto Int64 = IRB.getInt64Ty();
 	auto Int8Ty = IRB.getInt8Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
@@ -4725,7 +4726,7 @@ checkSizeWithLimit(Function &F, Instruction *I, Value *Base, Value *Limit,
 	}
 	assert(Limit->getType() == Int8PtrTy);
 	Limit = IRB.CreateGEP(Int8Ty, Limit, ConstantInt::get(Int64, -TypeSize));
-	if (Base != V) {
+	if (CheckOffset) {
 		auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit_with_offset", RetTy, Int8PtrTy, V->getType(), Int8PtrTy);
 		return IRB.CreateCall(Fn, {Base, V, Limit});
 	}
