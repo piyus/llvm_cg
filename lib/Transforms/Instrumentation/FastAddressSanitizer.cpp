@@ -4712,7 +4712,7 @@ static Value *
 checkSizeWithLimit(Function &F, Instruction *I, Value *Base, Value *Limit,
 	IRBuilder<> &IRB, size_t TypeSize, Type *RetTy, Value *V)
 {
-	bool CheckOffset = Base != V;
+	bool CheckOffset = (Base != V);
 	auto Int64 = IRB.getInt64Ty();
 	auto Int8Ty = IRB.getInt8Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
