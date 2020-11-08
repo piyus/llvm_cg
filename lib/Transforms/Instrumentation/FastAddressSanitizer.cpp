@@ -4774,7 +4774,7 @@ static Value*
 getInteriorValue(Function &F, Instruction *I, Value *V,
 	DenseSet<Value*> &InteriorPointersSet,
 	DenseSet<Value*> &SafePtrs, DenseMap<Value*, Value*> &PtrToBaseMap,
-	Value *Limit)
+	Value *Limit, int ID)
 {
 	IRBuilder<> IRB(I);
 	Value *Ret = NULL;
@@ -4797,23 +4797,23 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		if (SafePtrs.count(V)) {
 			// FIXME: USE UPDATED BASE
 			if (Indefinite) {
-				auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType(), Int64);
-				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize)});
+				auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType(), Int64, Int64);
+				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize), ConstantInt::get(Int64, ID)});
 			}
 			else {
-				auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType());
-				Ret = IRB.CreateCall(Fn, {Base, V});
+				auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType(), Int64);
+				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, ID)});
 			}
 		}
 		else {
 			if (Indefinite) {
-				auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType(), Int64);
-				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize)});
+				auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType(), Int64, Int64);
+				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize), ConstantInt::get(Int64, ID)});
 			}
 			else {
 				if (!Limit) {
-					auto Fn = M->getOrInsertFunction("san_interior_checked", RetTy, Base->getType(), V->getType(), Int64);
-					Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize)});
+					auto Fn = M->getOrInsertFunction("san_interior_checked", RetTy, Base->getType(), V->getType(), Int64, Int64);
+					Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize), ConstantInt::get(Int64, ID)});
 				}
 				else {
 					return checkSizeWithLimit(F, I, Base, Limit, IRB, TypeSize, RetTy, V);
@@ -5085,6 +5085,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 	Value *Interior;
 	bool InRange;
 	Value *Limit;
+	int ID = 0;
 
 	for (auto I : SafeInteriors) {
 		Instruction *InsertPt = cast<Instruction>(I)->getNextNode();
@@ -5108,7 +5109,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		}
 
 		InteriorValues[I] = getInteriorValue(F, InsertPt, I,
-			InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
+			InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++);
 	}
 
 
@@ -5135,7 +5136,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 				}
 			}
 
-		 	Interior = getInteriorValue(F, SI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
+		 	Interior = getInteriorValue(F, SI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++);
 		}
 		if (Interior) {
 			if (Interior->getType() != Ty) {
@@ -5166,7 +5167,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 					SafePtrs.insert(V);
 				}
 			}
-			Interior = getInteriorValue(F, RI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
+			Interior = getInteriorValue(F, RI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++);
 		}
 		if (Interior) {
 			if (Interior->getType() != V->getType()) {
@@ -5238,7 +5239,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 										SafePtrs.insert(A);
 									}
 								}
-								Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit);
+								Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++);
 							}
 							if (Interior) {
 								if (Interior->getType() != A->getType()) {
@@ -5682,7 +5683,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		Value* Base = It.first;
 		DenseSet<Value*> &ValSet = It.second;
 		if (ValSet.size() <= 1) {
-			continue;
+			//continue;
 		}
 		Instruction *BaseI = dyn_cast<Instruction>(Base);
 		if (!BaseI) {
