@@ -4760,13 +4760,12 @@ checkSizeWithLimit(Function &F, Instruction *I, Value *Base, Value *Limit,
 		Limit = IRB.CreateGEP(Int8Ty, Base, Limit);
 	}
 	assert(Limit->getType() == Int8PtrTy);
-	Limit = IRB.CreateGEP(Int8Ty, Limit, ConstantInt::get(Int64, -TypeSize));
 	if (CheckOffset) {
-		auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit_with_offset", RetTy, Int8PtrTy, V->getType(), Int8PtrTy);
-		return IRB.CreateCall(Fn, {Base, V, Limit});
+		auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit_with_offset", RetTy, Int8PtrTy, V->getType(), Int8PtrTy, Int64);
+		return IRB.CreateCall(Fn, {Base, V, Limit, ConstantInt::get(Int64, TypeSize)});
 	}
-	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", RetTy, Int8PtrTy, Int8PtrTy);
-	return IRB.CreateCall(Fn, {Base, Limit});
+	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", RetTy, Int8PtrTy, Int8PtrTy, Int64);
+	return IRB.CreateCall(Fn, {Base, Limit, ConstantInt::get(Int64, TypeSize)});
 }
 
 
