@@ -5876,21 +5876,21 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 
-	DenseSet<Value*> IGetLengths;
-	DenseMap<Value*, Value*> ILenToBaseMap;
+	//DenseSet<Value*> IGetLengths;
+	//DenseMap<Value*, Value*> ILenToBaseMap;
 
 	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores,
 		InteriorPointersSet, TLI, SafePtrs, PtrToBaseMap,
 		SafeInteriors, BaseToLenMap, BaseToLenSetMap, ILoopUsages, ICondLoop,
-		IGetLengths, ILenToBaseMap);
+		GetLengths, LenToBaseMap);
 
 	handleLargerBase(F, CallSites, RetSites, Stores,
 		LargerThanBase, TLI, SafePtrs, PtrToBaseMap,
 		SafeLargerThan, BaseToLenMap, BaseToLenSetMap, ILoopUsages, ICondLoop,
-		IGetLengths, ILenToBaseMap);
+		GetLengths, LenToBaseMap);
 
 
-	removeRedundentLengths(F, IGetLengths, ILenToBaseMap);
+	removeRedundentLengths(F, GetLengths, LenToBaseMap);
 
 	Value *StackBase = NULL;
 	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
