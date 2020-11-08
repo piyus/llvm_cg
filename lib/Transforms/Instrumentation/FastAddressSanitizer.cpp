@@ -4759,8 +4759,9 @@ checkSizeWithLimit(Function &F, Value *Base, Value *Limit,
 }
 
 
-static Value* createCondSafeLimitHelper(Function &F, Instruction *InstPt, Value *Base, bool MustCheck)
+static void createCondCall(Function &F, Instruction *_Call, Value *Base)
 {
+	auto Call = cast<CallInst>(_Call);
 	auto Entry = F.begin()->getFirstNonPHI();
 	IRBuilder<> IRB(cast<Instruction>(Entry));
 	auto Int8PtrTy = IRB.getInt8PtrTy();
@@ -4779,33 +4780,27 @@ static Value* createCondSafeLimitHelper(Function &F, Instruction *InstPt, Value 
 
 	IRB.CreateStore(Constant::getNullValue(Int8PtrTy), Tmp);
 
-	IRB.SetInsertPoint(InstPt);
+	IRB.SetInsertPoint(Call);
 
 	auto Limit = IRB.CreateLoad(Tmp);
 	auto Cmp = IRB.CreateICmpEQ(Limit, Constant::getNullValue(Int8PtrTy));
-	Instruction *Term = SplitBlockAndInsertIfThen(Cmp, InstPt, false);
+	Instruction *Term = SplitBlockAndInsertIfThen(Cmp, Call, false);
 	IRB.SetInsertPoint(Term);
-	FunctionCallee Fn;
 
-	if (MustCheck) {
-		Fn = F.getParent()->getOrInsertFunction("san_get_limit_must_check", IRB.getInt8PtrTy(), Base->getType());
-	}
-	else {
-		Fn = F.getParent()->getOrInsertFunction("san_get_limit_check", IRB.getInt8PtrTy(), Base->getType());
-	}
-	auto Call = IRB.CreateCall(Fn, {Base});
-	IRB.CreateStore(Call, Tmp);
+	Instruction *NewCall = Call->clone();
+	NewCall->insertBefore(Term);
+	IRB.CreateStore(NewCall, Tmp);
 
-	IRB.SetInsertPoint(InstPt);
+	IRB.SetInsertPoint(Call);
 
   PHINode *PHI = IRB.CreatePHI(Int8PtrTy, 2);
 
   BasicBlock *CondBlock = cast<Instruction>(Cmp)->getParent();
   PHI->addIncoming(Limit, CondBlock);
   BasicBlock *ThenBlock = Term->getParent();
-  PHI->addIncoming(Call, ThenBlock);
-
-  return PHI;
+  PHI->addIncoming(NewCall, ThenBlock);
+	Call->replaceAllUsesWith(PHI);
+  Call->eraseFromParent();
 }
 
 static Value* createCondSafeLimit(Function &F, Instruction *InsertPt, Value *Base, bool NeedRecurrance, bool MustCheck)
@@ -4813,7 +4808,7 @@ static Value* createCondSafeLimit(Function &F, Instruction *InsertPt, Value *Bas
 	IRBuilder<> IRB(InsertPt);
 	Value *Limit;
 	if (NeedRecurrance) {
-		Limit = createCondSafeLimitHelper(F, InsertPt, Base, MustCheck);
+		assert(0);
 	}
 	else {
 		FunctionCallee Fn;
@@ -5909,9 +5904,19 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
+
 	//instrumentPtrToInt(F, PtrToInt, GEPs, DL);
 	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites);
 	//instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
+
+	for (auto Limit : GetLengths) {
+		auto Call = dyn_cast<CallBase>(Limit);
+		if (Call && ICondLoop.count(Call))  {
+			assert(LenToBaseMap.count(Call));
+			auto Base = LenToBaseMap[Call];
+			createCondCall(F, Call, Base);
+		}
+	}
 
 	if (!RestorePoints.empty()) {
 		restoreStack(F, RestorePoints, StackBase);
