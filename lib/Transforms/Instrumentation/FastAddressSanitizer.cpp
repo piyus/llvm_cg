@@ -4623,8 +4623,7 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 }
 
 static void removeRedundentLengths(Function &F, DenseSet<Value*> &GetLengths,
-	DenseMap<Value*, Value*> &LenToBaseMap,
-	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap
+	DenseMap<Value*, Value*> &LenToBaseMap
 	)
 {
 	DominatorTree DT(F);
@@ -4656,14 +4655,6 @@ static void removeRedundentLengths(Function &F, DenseSet<Value*> &GetLengths,
 		assert(GetLengths.count(len));
 		GetLengths.erase(len);
 		len->eraseFromParent();
-	}
-
-	for (auto itr1 = GetLengths.begin(); itr1 != GetLengths.end(); itr1++) {
-		Instruction *len1 = cast<Instruction>(*itr1);
-		if (LenToBaseMap.count(len1)) {
-			auto Base = LenToBaseMap[len1];
-			BaseToLenSetMap[Base].insert(len1);
-		}
 	}
 }
 
@@ -4744,10 +4735,9 @@ static void removeRedundentAccesses(Function &F,
 }
 
 static Value *
-checkSizeWithLimit(Function &F, Instruction *I, Value *Base, Value *Limit,
-	IRBuilder<> &IRB, size_t TypeSize, Type *RetTy, Value *V)
+checkSizeWithLimit(Function &F, Value *Base, Value *Limit,
+	IRBuilder<> &IRB, size_t TypeSize, Type *RetTy, Value *V, bool CheckOffset)
 {
-	bool CheckOffset = (Base != V);
 	auto Int64 = IRB.getInt64Ty();
 	auto Int8Ty = IRB.getInt8Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
@@ -4769,16 +4759,88 @@ checkSizeWithLimit(Function &F, Instruction *I, Value *Base, Value *Limit,
 }
 
 
+static Value* createCondSafeLimitHelper(Function &F, Instruction *InstPt, Value *Base, bool MustCheck)
+{
+	auto Entry = F.begin()->getFirstNonPHI();
+	IRBuilder<> IRB(cast<Instruction>(Entry));
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Tmp = IRB.CreateAlloca(Int8PtrTy);
+
+	if (isa<Argument>(Base) || isa<GlobalVariable>(Base)) {
+	}
+	else if (isa<PHINode>(Base)) {
+		auto InstPt = cast<Instruction>(Base)->getParent()->getFirstNonPHI();
+		IRB.SetInsertPoint(InstPt);
+	}
+	else {
+		auto InstPt = cast<Instruction>(Base)->getNextNode();
+		IRB.SetInsertPoint(InstPt);
+	}
+
+	IRB.CreateStore(Constant::getNullValue(Int8PtrTy), Tmp);
+
+	IRB.SetInsertPoint(InstPt);
+
+	auto Limit = IRB.CreateLoad(Tmp);
+	auto Cmp = IRB.CreateICmpEQ(Limit, Constant::getNullValue(Int8PtrTy));
+	Instruction *Term = SplitBlockAndInsertIfThen(Cmp, InstPt, false);
+	IRB.SetInsertPoint(Term);
+	FunctionCallee Fn;
+
+	if (MustCheck) {
+		Fn = F.getParent()->getOrInsertFunction("san_get_limit_must_check", IRB.getInt8PtrTy(), Base->getType());
+	}
+	else {
+		Fn = F.getParent()->getOrInsertFunction("san_get_limit_check", IRB.getInt8PtrTy(), Base->getType());
+	}
+	auto Call = IRB.CreateCall(Fn, {Base});
+	IRB.CreateStore(Call, Tmp);
+
+	IRB.SetInsertPoint(InstPt);
+
+  PHINode *PHI = IRB.CreatePHI(Int8PtrTy, 2);
+
+  BasicBlock *CondBlock = cast<Instruction>(Cmp)->getParent();
+  PHI->addIncoming(Limit, CondBlock);
+  BasicBlock *ThenBlock = Term->getParent();
+  PHI->addIncoming(Call, ThenBlock);
+
+  return PHI;
+}
+
+static Value* createCondSafeLimit(Function &F, Instruction *InsertPt, Value *Base, bool NeedRecurrance, bool MustCheck)
+{
+	IRBuilder<> IRB(InsertPt);
+	Value *Limit;
+	if (NeedRecurrance) {
+		Limit = createCondSafeLimitHelper(F, InsertPt, Base, MustCheck);
+	}
+	else {
+		FunctionCallee Fn;
+		if (MustCheck) {
+			Fn = F.getParent()->getOrInsertFunction("san_get_limit_must_check", IRB.getInt8PtrTy(), Base->getType());
+		}
+		else {
+			Fn = F.getParent()->getOrInsertFunction("san_get_limit_check", IRB.getInt8PtrTy(), Base->getType());
+		}
+		Limit = IRB.CreateCall(Fn, {Base});
+	}
+	return Limit;
+}
+
+
+
 static Value*
 getInteriorValue(Function &F, Instruction *I, Value *V,
 	DenseSet<Value*> &InteriorPointersSet,
 	DenseSet<Value*> &SafePtrs, DenseMap<Value*, Value*> &PtrToBaseMap,
 	Value *Limit, int ID,
 	DenseMap<Value*, Value*> &ILoopUsages,
-  DenseSet<Value*> &ICondLoop
+  DenseSet<Value*> &ICondLoop,
+	DenseSet<Value*> &IGetLengths,
+	DenseMap<Value*, Value*> &ILenToBaseMap
 	)
 {
-	IRBuilder<> IRB(I);
 	Value *Ret = NULL;
 	auto M = F.getParent();
 	Type *RetTy = V->getType();
@@ -4795,49 +4857,59 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 			LoopHeader = cast<BasicBlock>(ILoopUsages[V])->getFirstNonPHI();
 		}
 
+		bool NeedRecurrance = false; //ICondLoop.count(V) > 0;
+		if (NeedRecurrance) {
+			errs() << "Need Recurrance: " << *V << "\n";
+		}
+
 		auto Base = PtrToBaseMap[V];
 		const DataLayout &DL = M->getDataLayout();
 		bool Indefinite = indefiniteBase(Base, DL);
 		auto PTy = V->getType()->getPointerElementType();
 		size_t TypeSize = DL.getTypeStoreSize(PTy);
-		auto Int64 = IRB.getInt64Ty();
 
 
 		if (Indefinite) {
-			if (LoopHeader) {
-				IRB.SetInsertPoint(LoopHeader);
+			auto InsertPt = (LoopHeader) ? LoopHeader : I;
+			Limit = createCondSafeLimit(F, InsertPt, Base, false, true);
+			IGetLengths.insert(Limit);
+			ILenToBaseMap[Limit] = Base;
+			if (ICondLoop.count(V)) {
+				ICondLoop.insert(Limit);
 			}
-			auto Fn = M->getOrInsertFunction("san_get_limit_must_check", IRB.getInt8PtrTy(), Base->getType());
-			Limit = IRB.CreateCall(Fn, {Base});
-			if (LoopHeader) {
-				IRB.SetInsertPoint(I);
-			}
-			Ret = checkSizeWithLimit(F, I, Base, Limit, IRB, TypeSize, RetTy, V);
+
+			IRBuilder<> IRB(I);
+			Ret = checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, RetTy, V, true);
 		}
 		else {
 			if (SafePtrs.count(V)) {
-				auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType(), Int64);
-				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, ID)});
+				IRBuilder<> IRB(I);
+				auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType(), IRB.getInt64Ty());
+				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(IRB.getInt64Ty(), ID)});
 			}
 			else {
 				if (!Limit) {
-					if (LoopHeader) {
-						IRB.SetInsertPoint(LoopHeader);
+					auto InsertPt = (LoopHeader) ? LoopHeader : I;
+					Limit = createCondSafeLimit(F, InsertPt, Base, false, false);
+					IGetLengths.insert(Limit);
+					ILenToBaseMap[Limit] = Base;
+					if (ICondLoop.count(V)) {
+						ICondLoop.insert(Limit);
 					}
-					auto Fn = M->getOrInsertFunction("san_get_limit_check", IRB.getInt8PtrTy(), Base->getType());
-					Limit = IRB.CreateCall(Fn, {Base});
-					if (LoopHeader) {
-						IRB.SetInsertPoint(I);
-					}
-					Ret = checkSizeWithLimit(F, I, Base, Limit, IRB, TypeSize, RetTy, V);
+
+
+					IRBuilder<> IRB(I);
+					Ret = checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, RetTy, V, true);
 				}
 				else {
-					return checkSizeWithLimit(F, I, Base, Limit, IRB, TypeSize, RetTy, V);
+					IRBuilder<> IRB(I);
+					return checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, RetTy, V, true);
 				}
 			}
 		}
 	}
 	else if (isa<Constant>(V) && !isa<GlobalVariable>(V)) {
+		IRBuilder<> IRB(I);
   	const DataLayout &DL = F.getParent()->getDataLayout();
 		if (isa<ConstantExpr>(V)) {
 			int64_t Offset = 0;
@@ -4855,36 +4927,38 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 static Value*
 SanCheckSize(Function &F, Instruction *I, Value *V, Value *Limit,
 	DenseMap<Value*, Value*> &ILoopUsages,
-  DenseSet<Value*> &ICondLoop
+  DenseSet<Value*> &ICondLoop,
+	DenseSet<Value*> &IGetLengths,
+	DenseMap<Value*, Value*> &ILenToBaseMap
 )
 {
-	IRBuilder<> IRB(I);
 	auto M = F.getParent();
 	const DataLayout &DL = M->getDataLayout();
 	auto PTy = V->getType()->getPointerElementType();
 	size_t TypeSize = DL.getTypeStoreSize(PTy);
+	auto Base = V->stripPointerCasts();
 
 	Instruction *LoopHeader = NULL;
 	if (ILoopUsages.count(V)) {
 		errs() << "USED_IN_LOOP: " << *V << "\n";
 		LoopHeader = cast<BasicBlock>(ILoopUsages[V])->getFirstNonPHI();
 	}
-	bool NeedRecurrance = ICondLoop.count(V) > 0;
+	bool NeedRecurrance = false; //ICondLoop.count(V) > 0;
 	if (NeedRecurrance) {
 		errs() << "Need Recurrance: " << *V << "\n";
 	}
 
 	if (!Limit) {
-		if (LoopHeader) {
-			IRB.SetInsertPoint(LoopHeader);
-		}
-		auto Fn = M->getOrInsertFunction("san_get_limit_check", IRB.getInt8PtrTy(), V->getType());
-		Limit = IRB.CreateCall(Fn, {V});
-		if (LoopHeader) {
-			IRB.SetInsertPoint(I);
+		auto InsertPt = (LoopHeader) ? LoopHeader : I;
+		Limit = createCondSafeLimit(F, InsertPt, Base, false, false);
+		IGetLengths.insert(Limit);
+		ILenToBaseMap[Limit] = Base;
+		if (ICondLoop.count(V)) {
+			ICondLoop.insert(Limit);
 		}
 	}
-	return checkSizeWithLimit(F, I, V, Limit, IRB, TypeSize, V->getType(), V);
+	IRBuilder<> IRB(I);
+	return checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, V->getType(), V, false);
 }
 
 static void collectUnsafeUses(Function &F,
@@ -5111,7 +5185,9 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 	DenseMap<Value*, Value*> &BaseToLenMap,
 	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap,
 	DenseMap<Value*, Value*> &ILoopUsages,
-	DenseSet<Value*> &ICondLoop
+	DenseSet<Value*> &ICondLoop,
+	DenseSet<Value*> &IGetLength,
+	DenseMap<Value*, Value*> &ILenToBaseMap
 	)
 {
 	DominatorTree DT(F);
@@ -5144,7 +5220,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 
 		InteriorValues[I] = getInteriorValue(F, InsertPt, I,
 			InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++,
-			ILoopUsages, ICondLoop);
+			ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 	}
 
 
@@ -5172,7 +5248,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			}
 
 		 	Interior = getInteriorValue(F, SI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++,
-				ILoopUsages, ICondLoop);
+				ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 		}
 		if (Interior) {
 			if (Interior->getType() != Ty) {
@@ -5204,7 +5280,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 				}
 			}
 			Interior = getInteriorValue(F, RI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++,
-				ILoopUsages, ICondLoop);
+				ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 		}
 		if (Interior) {
 			if (Interior->getType() != V->getType()) {
@@ -5277,7 +5353,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 									}
 								}
 								Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++,
-									ILoopUsages, ICondLoop);
+									ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 							}
 							if (Interior) {
 								if (Interior->getType() != A->getType()) {
@@ -5311,7 +5387,9 @@ static void handleLargerBase(Function &F,
 	DenseMap<Value*, Value*> &BaseToLenMap,
 	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap,
 	DenseMap<Value*, Value*> &ILoopUsages,
-  DenseSet<Value*> &ICondLoop
+  DenseSet<Value*> &ICondLoop,
+	DenseSet<Value*> &IGetLength,
+	DenseMap<Value*, Value*> &ILenToBaseMap
 	)
 {
 	DominatorTree DT(F);
@@ -5345,7 +5423,7 @@ static void handleLargerBase(Function &F,
 				InsertPt = cast<Instruction>(Limit)->getNextNode();
 			}
 
-			CheckedVal = SanCheckSize(F, InsertPt, I, Limit, ILoopUsages, ICondLoop);
+			CheckedVal = SanCheckSize(F, InsertPt, I, Limit, ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 			CheckedValues[I] = CheckedVal;
 		}
 		else {
@@ -5365,7 +5443,7 @@ static void handleLargerBase(Function &F,
 				auto Lim = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
 				assert(!InRange);
 				if (!InRange) {
-					CheckedVal = SanCheckSize(F, SI, V, Lim, ILoopUsages, ICondLoop);
+					CheckedVal = SanCheckSize(F, SI, V, Lim, ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 					SI->setOperand(0, CheckedVal);
 				}
 			}
@@ -5385,7 +5463,7 @@ static void handleLargerBase(Function &F,
 				auto Lim = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
 				assert(!InRange);
 				if (!InRange) {
-					CheckedVal = SanCheckSize(F, RI, V, Lim, ILoopUsages, ICondLoop);
+					CheckedVal = SanCheckSize(F, RI, V, Lim, ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 					RI->setOperand(0, CheckedVal);
 				}
 			}
@@ -5422,7 +5500,7 @@ static void handleLargerBase(Function &F,
 								auto Lim = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
 								assert(!InRange);
 								if (!InRange) {
-									CheckedVal = SanCheckSize(F, CS, A, Lim, ILoopUsages, ICondLoop);
+									CheckedVal = SanCheckSize(F, CS, A, Lim, ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 									CS->setArgOperand(ArgIt - Start, CheckedVal);
 								}
 							}
@@ -5784,17 +5862,35 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
+
+	removeRedundentLengths(F, GetLengths, LenToBaseMap);
+
 	DenseMap<Value*, DenseSet<Value*>> BaseToLenSetMap;
 
-	removeRedundentLengths(F, GetLengths, LenToBaseMap, BaseToLenSetMap);
+	for (auto itr1 = GetLengths.begin(); itr1 != GetLengths.end(); itr1++) {
+		Instruction *len1 = cast<Instruction>(*itr1);
+		if (LenToBaseMap.count(len1)) {
+			auto Base = LenToBaseMap[len1];
+			BaseToLenSetMap[Base].insert(len1);
+		}
+	}
+
+
+	DenseSet<Value*> IGetLengths;
+	DenseMap<Value*, Value*> ILenToBaseMap;
 
 	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores,
 		InteriorPointersSet, TLI, SafePtrs, PtrToBaseMap,
-		SafeInteriors, BaseToLenMap, BaseToLenSetMap, ILoopUsages, ICondLoop);
+		SafeInteriors, BaseToLenMap, BaseToLenSetMap, ILoopUsages, ICondLoop,
+		IGetLengths, ILenToBaseMap);
 
 	handleLargerBase(F, CallSites, RetSites, Stores,
 		LargerThanBase, TLI, SafePtrs, PtrToBaseMap,
-		SafeLargerThan, BaseToLenMap, BaseToLenSetMap, ILoopUsages, ICondLoop);
+		SafeLargerThan, BaseToLenMap, BaseToLenSetMap, ILoopUsages, ICondLoop,
+		IGetLengths, ILenToBaseMap);
+
+
+	removeRedundentLengths(F, IGetLengths, ILenToBaseMap);
 
 	Value *StackBase = NULL;
 	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
