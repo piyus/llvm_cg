@@ -711,6 +711,7 @@ private:
 
 	//uint64_t getKnownObjSize(Value *V, const DataLayout &DL, bool &Static, const TargetLibraryInfo *TLI);
 	Value *getLimit(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI);
+	Value *getLimitSafe(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI);
 	Value* getStaticBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI);
 
   /// Helper to cleanup per-function state.
@@ -2964,6 +2965,40 @@ static bool indefiniteBase(Value *V, const DataLayout &DL) {
 	}
 
 	return false;
+}
+
+Value* FastAddressSanitizer::getLimitSafe(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI)
+{
+	Value *Ret = getStaticBaseSize(F, V1, DL, TLI);
+	assert(Ret == NULL && "static base was possible");
+
+	Value *V = const_cast<Value*>(V1);
+
+	auto InstPt = dyn_cast<Instruction>(V);
+	if (InstPt == NULL) {
+		assert(isa<Argument>(V) || isa<GlobalVariable>(V));
+		InstPt = &*F.begin()->getFirstInsertionPt();
+	}
+	else {
+		if (isa<PHINode>(InstPt)) {
+			InstPt = InstPt->getParent()->getFirstNonPHI();
+		}
+		else {
+			InstPt = InstPt->getNextNode();
+		}
+	}
+
+	IRBuilder<> IRB(InstPt);
+
+	auto M = F.getParent();
+
+	if (indefiniteBase(V, DL)) {
+		auto Fn = M->getOrInsertFunction("san_get_limit_must_check", IRB.getInt8PtrTy(), V->getType());
+		return IRB.CreateCall(Fn, {V});
+	}
+
+	auto Fn = M->getOrInsertFunction("san_get_limit_check", IRB.getInt8PtrTy(), V->getType());
+	return IRB.CreateCall(Fn, {V});
 }
 
 
@@ -5443,7 +5478,6 @@ addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
 	}
 }
 
-
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
@@ -5538,11 +5572,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	LoopInfo LI(DT);
 	PostDominatorTree PDT(F);
-	DenseSet<Value*> SafeInteriors;
-	DenseSet<Value*> SafeLargerThan;
 
-	collectSafeEscapes(F, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafeInteriors, PDT, LI);
-	collectSafeEscapes(F, CallSites, RetSites, Stores, LargerThanBase, TLI, SafeLargerThan, PDT, LI);
 
 	DenseMap<Value*, DenseSet<Value*>> BaseToPtrsMap;
 
@@ -5580,29 +5610,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	}
 
-	for (auto Ptr : InteriorPointersSet) {
-		assert(PtrToBaseMap.count(Ptr));
-		Value* Base = PtrToBaseMap[Ptr];
-		if (BaseToLenMap.count(Base)) {
-			continue;
-		}
-		auto Size = getStaticBaseSize(F, Base, DL, TLI);
-		if (Size) {
-			BaseToLenMap[Base] = Size;
-		}
-	}
-
-	for (auto Ptr : LargerThanBase) {
-		Value* Base = Ptr->stripPointerCasts();
-		if (BaseToLenMap.count(Base)) {
-			continue;
-		}
-		auto Size = getStaticBaseSize(F, Base, DL, TLI);
-		if (Size) {
-			BaseToLenMap[Base] = Size;
-		}
-	}
-
 	DenseMap<Value*, Value*> LoopUsages;
 	DenseSet<Value*> CondLoop;
 	DenseSet<Value*> SafeBases;
@@ -5625,11 +5632,90 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
+
+
+
+	DenseSet<Value*> SafeInteriors;
+	DenseSet<Value*> SafeLargerThan;
+
+	collectSafeEscapes(F, CallSites, RetSites, Stores, InteriorPointersSet, TLI, SafeInteriors, PDT, LI);
+	collectSafeEscapes(F, CallSites, RetSites, Stores, LargerThanBase, TLI, SafeLargerThan, PDT, LI);
+
+	DenseSet<Value*> NonAccessSet;
+
+	for (auto Ptr : InteriorPointersSet) {
+		NonAccessSet.insert(Ptr);
+	}
+	for (auto Ptr : LargerThanBase) {
+		NonAccessSet.insert(Ptr);
+		if (!PtrToBaseMap.count(Ptr)) {
+			PtrToBaseMap[Ptr] = Ptr->stripPointerCasts();
+		}
+	}
+
+	DenseMap<Value*, DenseSet<Value*>> IBaseToPtrMap;
+
+	for (auto Ptr : NonAccessSet) {
+		assert(PtrToBaseMap.count(Ptr));
+		Value* Base = PtrToBaseMap[Ptr];
+		if (BaseToLenMap.count(Base)) {
+			continue;
+		}
+		auto Size = getStaticBaseSize(F, Base, DL, TLI);
+		if (Size) {
+			BaseToLenMap[Base] = Size;
+		}
+		else {
+			if (isa<Instruction>(Ptr)) {
+				if (SafeInteriors.count(Ptr) || SafeLargerThan.count(Ptr)) {
+					IBaseToPtrMap[Base].insert(Ptr);
+				}
+			}
+		}
+	}
+
+	DenseMap<Value*, Value*> ILoopUsages;
+	DenseSet<Value*> ICondLoop;
+	DenseSet<Value*> ISafeBases;
+
+	for (auto &It : IBaseToPtrMap) {
+		Value* Base = It.first;
+		DenseSet<Value*> &ValSet = It.second;
+		if (ValSet.size() <= 1) {
+			continue;
+		}
+		Instruction *BaseI = dyn_cast<Instruction>(Base);
+		if (!BaseI) {
+			BaseI = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+			assert(BaseI);
+		}
+		if (isa<SelectInst>(BaseI) || isa<PHINode>(BaseI)) {
+			assert(PhiOrSelBaseToOrig.count(BaseI));
+			BaseI = cast<Instruction>(PhiOrSelBaseToOrig[BaseI]);
+		}
+
+		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, ILoopUsages, ICondLoop)) {
+			ISafeBases.insert(Base);
+		}
+	}
+
+
+
+
 	for (auto Base : SafeBases) {
 		assert(!BaseToLenMap.count(Base));
 		BaseToLenMap[Base] = getLimit(F, Base, DL, TLI);
 		GetLengths.insert(BaseToLenMap[Base]);
 	}
+
+
+	for (auto Base : ISafeBases) {
+		if (!BaseToLenMap.count(Base)) {
+			BaseToLenMap[Base] = getLimitSafe(F, Base, DL, TLI);
+			GetLengths.insert(BaseToLenMap[Base]);
+		}
+	}
+
 
 	for (auto Ptr : TmpSet) {
 		assert(PtrToBaseMap.count(Ptr));
