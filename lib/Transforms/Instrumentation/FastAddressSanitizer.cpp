@@ -3942,6 +3942,12 @@ static void addReturn(Function &F, Instruction *I, Value *Ptr, Value *Name) {
 
 static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 {
+	if (V->getType()->isPointerTy()) {
+		auto Ptr = V->stripPointerCasts();
+		if (isa<AllocaInst>(Ptr) || isa<GlobalVariable>(Ptr)) {
+			return V;
+		}
+	}
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 	auto Intrin = (isa<PtrToIntInst>(V)) ? Intrinsic::ptrmask1 : Intrinsic::ptrmask;
