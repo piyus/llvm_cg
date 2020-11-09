@@ -4888,12 +4888,25 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 			else {
 				if (!Limit) {
 					auto InsertPt = (LoopHeader) ? LoopHeader : I;
+					if (ICondLoop.count(V)) {
+						if (!isa<Instruction>(Base)) {
+							InsertPt = cast<Instruction>(F.begin()->getFirstInsertionPt());
+						}
+						else {
+							if (isa<PHINode>(Base)) {
+								InsertPt = cast<PHINode>(Base)->getParent()->getFirstNonPHI();
+							}
+							else {
+								InsertPt = cast<Instruction>(Base)->getNextNode();
+							}
+						}
+					}
 					Limit = createCondSafeLimit(F, InsertPt, Base, false, false);
 					IGetLengths.insert(Limit);
 					ILenToBaseMap[Limit] = Base;
-					if (ICondLoop.count(V)) {
-						ICondLoop.insert(Limit);
-					}
+					//if (ICondLoop.count(V)) {
+					//	ICondLoop.insert(Limit);
+					//}
 
 
 					IRBuilder<> IRB(I);
@@ -4944,12 +4957,28 @@ SanCheckSize(Function &F, Instruction *I, Value *V, Value *Limit,
 
 	if (!Limit) {
 		auto InsertPt = (LoopHeader) ? LoopHeader : I;
+
+		if (ICondLoop.count(V)) {
+			if (!isa<Instruction>(Base)) {
+				InsertPt = cast<Instruction>(F.begin()->getFirstInsertionPt());
+			}
+			else {
+				if (isa<PHINode>(Base)) {
+					InsertPt = cast<PHINode>(Base)->getParent()->getFirstNonPHI();
+				}
+				else {
+					InsertPt = cast<Instruction>(Base)->getNextNode();
+				}
+			}
+		}
+
+
 		Limit = createCondSafeLimit(F, InsertPt, Base, false, false);
 		IGetLengths.insert(Limit);
 		ILenToBaseMap[Limit] = Base;
-		if (ICondLoop.count(V)) {
-			ICondLoop.insert(Limit);
-		}
+		//if (ICondLoop.count(V)) {
+		//	ICondLoop.insert(Limit);
+		//}
 	}
 	IRBuilder<> IRB(I);
 	return checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, V->getType(), V, false);
