@@ -5628,6 +5628,73 @@ addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
 	}
 }
 
+static void optimizeLimit(Function &F, CallInst *CI)
+{
+	IRBuilder<> IRB(CI);
+	auto Base = CI->getArgOperand(0);
+	auto Int8Ty = IRB.getInt8Ty();
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Int64Ty = IRB.getInt64Ty();
+	auto Int32Ty = IRB.getInt32Ty();
+	auto Int32PtrTy = Int32Ty->getPointerTo();
+
+	auto BaseInt = IRB.CreatePtrToInt(Base, Int64Ty);
+	auto Offset = IRB.CreateLShr(BaseInt, 49);
+
+  auto SlowPath = IRB.CreateICmp(ICmpInst::ICMP_UGE, Offset, ConstantInt::get(Int64Ty, ((1ULL<<15)-1)));
+	Instruction *IfTerm, *ElseTerm;
+
+  SplitBlockAndInsertIfThenElse(SlowPath, CI, &IfTerm, &ElseTerm);
+	IRB.SetInsertPoint(IfTerm);
+
+	Instruction *NewCall = CI->clone();
+  NewCall->insertBefore(IfTerm);
+
+	IRB.SetInsertPoint(ElseTerm);
+
+	auto NewBase = IRB.CreateAnd(BaseInt, ConstantInt::get(Int64Ty, (0x1ULL<<49)-1));
+	NewBase = IRB.CreateSub(NewBase, Offset);
+	NewBase = IRB.CreateIntToPtr(NewBase, Int32PtrTy);
+	auto Size = IRB.CreateLoad(IRB.CreateGEP(Int32Ty, NewBase, ConstantInt::get(Int64Ty, -1)));
+	auto Limit = IRB.CreateGEP(Int8Ty, IRB.CreateBitCast(NewBase, Int8PtrTy), Size);
+	Offset = IRB.CreateShl(Offset, 49);
+	Limit = IRB.CreateGEP(Int8Ty, Limit, Offset);
+
+	IRB.SetInsertPoint(CI);
+
+  PHINode *PHI = IRB.CreatePHI(Int8PtrTy, 2);
+
+  BasicBlock *IfBlock = IfTerm->getParent();
+  PHI->addIncoming(NewCall, IfBlock);
+  BasicBlock *ElseBlock = ElseTerm->getParent();
+  PHI->addIncoming(Limit, ElseBlock);
+
+	CI->replaceAllUsesWith(PHI);
+	CI->eraseFromParent();
+}
+
+static void optimizeHandlers(Function &F)
+{
+	DenseSet<CallInst*> LimitCalls;
+	for (auto &BB : F) {
+		for (auto &II : BB) {
+			auto CI = dyn_cast<CallInst>(&II);
+			if (CI) {
+				auto Target = CI->getCalledFunction();
+				if (Target) {
+					if (Target->getName()  == "san_page_fault_limit") {
+						LimitCalls.insert(CI);
+					}
+				}
+			}
+		}
+	}
+
+	for (auto LC : LimitCalls) {
+		optimizeLimit(F, LC);
+	}
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA) {
@@ -5958,6 +6025,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	if (!RestorePoints.empty()) {
 		restoreStack(F, RestorePoints, StackBase);
 	}
+
+
+	optimizeHandlers(F);
 
   if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
 		errs() << "After San\n" << F << "\n";
