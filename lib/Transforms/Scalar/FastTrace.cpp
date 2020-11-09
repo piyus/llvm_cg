@@ -128,7 +128,7 @@ static Value* getLineNo(Function &F, Instruction *I, Type *LineTy) {
 #define PTR_TO_INT_TY 5
 #define	SUB_TY 6
 
-static void insertTraceCall(Function &F, Instruction *I, Value *Val, int RecTy, bool InsertAfter)
+static void insertTraceCall(Function &F, Instruction *I, Value *Val1, Value *Val2, int RecTy, bool InsertAfter)
 {
 	auto InsertPt = (InsertAfter) ? I->getNextNode() : I;
 	IRBuilder<> IRB(InsertPt);
@@ -138,15 +138,12 @@ static void insertTraceCall(Function &F, Instruction *I, Value *Val, int RecTy, 
 	auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	Value *Line = getLineNo(F, I, IntTy);
 
-	if (Val->getType()->isPointerTy()) {
-		//Val = ConstantInt::get(IntTy, 0);
-	}
-	else if (Val->getType()->isIntegerTy()) {
-		Val = IRB.CreateZExtOrTrunc(Val, IRB.getInt64Ty());
+	if (Val2 == NULL) {
+		Val2 = ConstantInt::get(IntTy, 0);
 	}
 
-	Fn = M->getOrInsertFunction("san_trace", IRB.getVoidTy(), Name->getType(), IntTy, IntTy, Val->getType());
-	IRB.CreateCall(Fn, {Name, Line, ConstantInt::get(IntTy, RecTy), Val});
+	Fn = M->getOrInsertFunction("san_trace", IRB.getVoidTy(), Name->getType(), IntTy, IntTy, Val1->getType(), Val2->getType());
+	IRB.CreateCall(Fn, {Name, Line, ConstantInt::get(IntTy, RecTy), Val1, Val2});
 }
 
 static void traceFunction(Function &F) {
@@ -154,7 +151,7 @@ static void traceFunction(Function &F) {
 	auto Int64Ty = Type::getInt64Ty(F.getContext());
 
 	// void san_trace(char *name, int line, int record_ty, int64 val);
-	insertTraceCall(F, I, ConstantInt::get(Int64Ty, 0), ENTRY_TY, false);
+	insertTraceCall(F, I, ConstantInt::get(Int64Ty, 0), NULL, ENTRY_TY, false);
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -163,24 +160,24 @@ static void traceFunction(Function &F) {
 				if (!RetVal) {
 					RetVal = ConstantInt::get(Int64Ty, 0);
 				}
-				insertTraceCall(F, RI, RetVal, EXIT_TY, false);
+				insertTraceCall(F, RI, RetVal, NULL, EXIT_TY, false);
 			}
 			else if (auto ICmp = dyn_cast<ICmpInst>(&Inst)) {
-				insertTraceCall(F, ICmp, ICmp, ICMP_TY, true);
+				insertTraceCall(F, ICmp, ICmp, NULL, ICMP_TY, true);
 			}
 			else if (auto LI = dyn_cast<LoadInst>(&Inst)) {
-				insertTraceCall(F, LI, LI, LOAD_TY, true);
+				insertTraceCall(F, LI, LI, LI->getPointerOperand(), LOAD_TY, true);
 			}
 			else if (auto SI = dyn_cast<StoreInst>(&Inst)) {
 				auto V = SI->getValueOperand();
-				insertTraceCall(F, SI, V, STORE_TY, false);
+				insertTraceCall(F, SI, V, SI->getPointerOperand(), STORE_TY, false);
 			}
 			else if (auto PI = dyn_cast<PtrToIntInst>(&Inst)) {
-				insertTraceCall(F, PI, PI, PTR_TO_INT_TY, true);
+				insertTraceCall(F, PI, PI, NULL, PTR_TO_INT_TY, true);
 			}
 			else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
         if (BO->getOpcode() == Instruction::Sub) {
-					insertTraceCall(F, BO, BO, SUB_TY, true);
+					insertTraceCall(F, BO, BO, NULL, SUB_TY, true);
 				}
 			}
 		}
