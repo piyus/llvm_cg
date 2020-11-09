@@ -150,8 +150,15 @@ static void traceFunction(Function &F) {
   Instruction *I = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
 	auto Int64Ty = Type::getInt64Ty(F.getContext());
 
+	Value *Args[2] = {ConstantInt::get(Int64Ty, 0), NULL};
+	int iter = 0;
+	for (Argument &A : F.args()) {
+		if (iter < 2) {
+			Args[iter++] = &A;
+		}
+	}
 	// void san_trace(char *name, int line, int record_ty, int64 val);
-	insertTraceCall(F, I, ConstantInt::get(Int64Ty, 0), NULL, ENTRY_TY, false);
+	insertTraceCall(F, I, Args[0], Args[1], ENTRY_TY, false);
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -178,6 +185,14 @@ static void traceFunction(Function &F) {
 			else if (auto BO = dyn_cast<BinaryOperator>(&Inst)) {
         if (BO->getOpcode() == Instruction::Sub) {
 					insertTraceCall(F, BO, BO, NULL, SUB_TY, true);
+				}
+			}
+			else if (auto CI = dyn_cast<CallInst>(&Inst)) {
+				if (!isa<IntrinsicInst>(CI) && CI->getCalledFunction()) {
+					auto Name = CI->getCalledFunction()->getName();
+      		if (!Name.startswith("san") && !Name.startswith("__assert")) { 
+						insertTraceCall(F, CI, ConstantInt::get(Int64Ty, -1), ConstantInt::get(Int64Ty, -1), ENTRY_TY, true);
+					}
 				}
 			}
 		}
