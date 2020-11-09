@@ -4622,6 +4622,20 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 	}
 }
 
+static void CheckLenInSameBasicBlock(Instruction *len1, Instruction *len2)
+{
+	if (len1->getParent() == len2->getParent()) {
+		if (isa<CallInst>(len1) && isa<LoadInst>(len2)) {
+			errs() << "Replacing: len with call : " << *len2 << " :: "  << *len1 << "\n";
+			assert(0);
+		}
+
+		if (isa<CallInst>(len1) && isa<CallInst>(len2)) {
+			errs() << "Replacing: call with call : " << *len2 << " :: "  << *len1 << "\n";
+		}
+	}
+}
+
 static void removeRedundentLengths(Function &F, DenseSet<Value*> &GetLengths,
 	DenseMap<Value*, Value*> &LenToBaseMap
 	)
@@ -4642,10 +4656,12 @@ static void removeRedundentLengths(Function &F, DenseSet<Value*> &GetLengths,
 				continue;
 			}
 			if (DT.dominates(len1, len2)) {
+				CheckLenInSameBasicBlock(len1, len2);
     		len2->replaceAllUsesWith(len1);
 				ToDelete.insert(len2);
 			}
 			else if (DT.dominates(len2, len1)) {
+				CheckLenInSameBasicBlock(len2, len1);
     		len1->replaceAllUsesWith(len2);
 				ToDelete.insert(len1);
 			}
@@ -4865,16 +4881,22 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 
 
 		if (Indefinite) {
-			auto InsertPt = (LoopHeader) ? LoopHeader : I;
+			/*auto InsertPt = (LoopHeader) ? LoopHeader : I;
 			Limit = createCondSafeLimit(F, InsertPt, Base, false, true);
 			IGetLengths.insert(Limit);
 			ILenToBaseMap[Limit] = Base;
 			if (ICondLoop.count(V)) {
 				ICondLoop.insert(Limit);
-			}
+			}*/
+
+			//IRBuilder<> IRB(I);
+			//Ret = checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, RetTy, V, true);
 
 			IRBuilder<> IRB(I);
-			Ret = checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, RetTy, V, true);
+			auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType(), IRB.getInt64Ty(), IRB.getInt64Ty());
+			Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(IRB.getInt64Ty(), TypeSize), ConstantInt::get(IRB.getInt64Ty(), ID)});
+
+
 		}
 		else {
 			if (SafePtrs.count(V)) {
