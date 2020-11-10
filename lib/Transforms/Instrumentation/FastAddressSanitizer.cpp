@@ -3244,8 +3244,9 @@ mayBeNull(Instruction *Ptr) {
 static bool
 postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT,
 	DenseSet<Value*> &Ptrs, LoopInfo &LI, DenseMap<Value*, Value*> &LoopUsages,
-	DenseSet<Value*> &CondLoop)
+	DenseSet<Value*> &CondLoop, bool &Recurrence)
 {
+	Recurrence = false;
 	//errs() << "CHECKING2 : " << *Base << "\n";
 	assert(!Ptrs.empty());
 
@@ -3268,12 +3269,11 @@ postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT,
 			}
 		}
 		else {
-			bool NeedRecurrence = false;
-			auto Header = baseIsOutSideLoop(Base, I, LI, PDT, NeedRecurrence);
+			auto Header = baseIsOutSideLoop(Base, I, LI, PDT, Recurrence);
 			if (Header) {
 				LoopUsages[V] = Header;
 			}
-			if (NeedRecurrence) {
+			if (Recurrence) {
 				CondLoop.insert(V);
 				//errs() << "Need Recurrence For: " << *V << "\n";
 				//errs() << F << "\n";
@@ -4891,6 +4891,7 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 				if (!Limit) {
 					auto InsertPt = (LoopHeader) ? LoopHeader : I;
 					if (ICondLoop.count(V)) {
+						assert(0);
 						if (!isa<Instruction>(Base)) {
 							InsertPt = cast<Instruction>(F.begin()->getFirstInsertionPt());
 						}
@@ -4961,6 +4962,7 @@ SanCheckSize(Function &F, Instruction *I, Value *V, Value *Limit,
 		auto InsertPt = (LoopHeader) ? LoopHeader : I;
 
 		if (ICondLoop.count(V)) {
+			assert(0);
 			if (!isa<Instruction>(Base)) {
 				InsertPt = cast<Instruction>(F.begin()->getFirstInsertionPt());
 			}
@@ -5885,7 +5887,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			BaseI = cast<Instruction>(PhiOrSelBaseToOrig[BaseI]);
 		}
 
-		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, LoopUsages, CondLoop)) {
+		bool Recurrance;
+		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, LoopUsages, CondLoop, Recurrance)) {
 			SafeBases.insert(Base);
 		}
 	}
@@ -5952,7 +5955,11 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			BaseI = cast<Instruction>(PhiOrSelBaseToOrig[BaseI]);
 		}
 
-		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, ILoopUsages, ICondLoop)) {
+		bool Recurrance = false;
+		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, ILoopUsages, ICondLoop, Recurrance)) {
+			ISafeBases.insert(Base);
+		}
+		else if (Recurrance) {
 			ISafeBases.insert(Base);
 		}
 	}
