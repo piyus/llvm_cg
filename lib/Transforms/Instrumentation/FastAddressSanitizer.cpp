@@ -3512,41 +3512,32 @@ addBoundsCheckWithLenAtUse(Function &F, Value *Base, Value *Ptr, Value *TySize,
 	}
 }
 
-void FastAddressSanitizer::
-addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
-	Value *TySize,
-	int &callsites,
+static void
+addLengthAtPtr(Function &F, Value *Base, Value *Ptr,
+	DenseMap<Value*, Value*> &PtrToLenMap,
 	DenseSet<Value*> &GetLengths,
 	DenseSet<Value*> &GetLengthsCond,
 	DenseMap<Value*, Value*> &LenToBaseMap,
 	DenseMap<Value*, Value*> &LoopUsages,
 	DenseSet<Value*> &CondLoop)
 {
-	Instruction *InstPtr;
-	Instruction *InstPtr1;
-
-	InstPtr = dyn_cast<Instruction>(Ptr);
+	auto InstPtr = dyn_cast<Instruction>(Ptr);
 	assert(InstPtr && "Invalid Ptr");
-	if (isa<PHINode>(Ptr)) {
-		InstPtr = InstPtr->getParent()->getFirstNonPHI();
-	}
-	else {
-		InstPtr = InstPtr->getNextNode();
-	}
-	InstPtr1 = InstPtr;
+	InstPtr = InstPtr->getParent()->getFirstNonPHI();
 
 	if (LoopUsages.count(Ptr)) {
 		InstPtr = cast<BasicBlock>(LoopUsages[Ptr])->getFirstNonPHI();
-		//errs() << "Inserting length at " << *InstPtr << "\n";
 	}
 	else {
-		if (!isa<Instruction>(Base) || InstPtr->getParent() != cast<Instruction>(Base)->getParent()) {
-			InstPtr = InstPtr->getParent()->getFirstNonPHI();
+		auto BaseI = dyn_cast<Instruction>(Base);
+		if (BaseI && BaseI->getParent() == InstPtr->getParent()) {
+			assert(0);
 		}
 	}
 
 	IRBuilder<> IRB(InstPtr);
 
+	auto Int8PtrTy = IRB.getInt8PtrTy();
 	const DataLayout &DL = F.getParent()->getDataLayout();
 	Value *Limit;
 
@@ -3564,32 +3555,7 @@ addBoundsCheckWithLen(Function &F, Value *Base, Value *Ptr,
 
 	GetLengths.insert(Limit);
 	LenToBaseMap[Limit] = Base;
-
-	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
-	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
-		//if (Intrinsic->getIntrinsicID() != Intrinsic::ptrunmask) {
-			errs() << "Base is Intrinsic\n" << *Base << "\n";
-			errs() << F << "\n";
-			assert(0);
-		//}
-	}
-	if (InstPtr != InstPtr1) {
-		IRB.SetInsertPoint(InstPtr1);
-	}
-
-	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
-	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
-	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
-
-	
-	auto Cmp1 = IRB.CreateICmpULT(Ptr8, Base8);
-	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
-	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
-	auto CmpInst = dyn_cast<Instruction>(Cmp);
-	assert(CmpInst && "no cmp inst");
-
-	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, ConstantInt::get(Int32Ty, callsites));
-	callsites++;
+	PtrToLenMap[Ptr] = Limit;
 }
 
 static void createReplacementMap(Function *F, DenseMap<Value*, Value*> &ReplacementMap)
@@ -5979,6 +5945,23 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 
+	DenseMap<Value*, Value*> PtrToLenMap;
+
+	for (auto Ptr : TmpSet) {
+		assert(PtrToBaseMap.count(Ptr));
+		Value* Base = PtrToBaseMap[Ptr];
+		bool MayNull = PtrMayBeNull.count(Ptr) > 0;
+
+		if (!BaseToLenMap.count(Base)) {
+			if (!MayNull) {
+				addLengthAtPtr(F, Base, Ptr, PtrToLenMap, GetLengths,
+					GetLengthsCond, LenToBaseMap, LoopUsages, CondLoop);
+				assert(PtrToLenMap.count(Ptr));
+			}
+		}
+	}
+
+
 	for (auto Ptr : TmpSet) {
 		assert(PtrToBaseMap.count(Ptr));
 		Value* Base = PtrToBaseMap[Ptr];
@@ -5991,8 +5974,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 		if (!BaseToLenMap.count(Base)) {
 			if (!MayNull) {
-				addBoundsCheckWithLen(F, Base, Ptr, TySize,
-					callsites, GetLengths, GetLengthsCond, LenToBaseMap, LoopUsages, CondLoop);
+				assert(PtrToLenMap.count(Ptr));
+				auto Limit = PtrToLenMap[Ptr];
+				addBoundsCheck(F, Base, Ptr, Limit, TySize, UnsafeUses, callsites, MayNull);
 			}
 			else {
 				addBoundsCheckWithLenAtUse(F, Base, Ptr, TySize, UnsafeUses,
