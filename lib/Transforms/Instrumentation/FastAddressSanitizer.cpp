@@ -5203,6 +5203,34 @@ static Value* getLimitIfAvailable(Function &F,
 	return Ret;
 }
 
+static bool
+isAliasWithSafePtr(Function &F, DominatorTree &DT, DenseSet<Value*> &SafePtrs, Instruction *Ptr)
+{
+	Value *PtrS = Ptr->stripPointerCasts();
+  const DataLayout &DL = F.getParent()->getDataLayout();
+
+	for (auto _SafePtr : SafePtrs) {
+		if (!isa<Instruction>(_SafePtr)) {
+			continue;
+		}
+		auto SafePtr = cast<Instruction>(_SafePtr);
+		auto SafePtrS = SafePtr->stripPointerCasts();
+		if (PtrS == SafePtrS) {
+			if (DT.dominates(SafePtr, Ptr) || SafePtr->getParent() == Ptr->getParent()) {
+				auto SafePtrTy = SafePtr->getType()->getPointerElementType();
+				size_t SafePtrSize = DL.getTypeStoreSize(SafePtrTy);
+
+				auto PtrTy = Ptr->getType()->getPointerElementType();
+				size_t PtrSize = DL.getTypeStoreSize(PtrTy);
+				if (SafePtrSize >= PtrSize) {
+					errs() << "FOUND REPLACE: " << *Ptr << "  LD/ST: " << *SafePtr << "\n";
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
 
 
 static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
@@ -5226,6 +5254,14 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 	bool InRange;
 	Value *Limit;
 	int ID = 0;
+
+	for (auto I : SafeInteriors) {
+		if (!SafePtrs.count(I)) {
+			if (isAliasWithSafePtr(F, DT, SafePtrs, cast<Instruction>(I))) {
+				SafePtrs.insert(I);
+			}
+		}
+	}
 
 	for (auto I : SafeInteriors) {
 		Instruction *InsertPt = cast<Instruction>(I)->getNextNode();
@@ -5428,6 +5464,14 @@ static void handleLargerBase(Function &F,
 	DenseMap<Value*, Value*> CheckedValues;
 	Value *CheckedVal;
 	bool InRange;
+
+	for (auto I : SafeLargerThan) {
+		if (!SafePtrs.count(I)) {
+			if (isAliasWithSafePtr(F, DT, SafePtrs, cast<Instruction>(I))) {
+				SafePtrs.insert(I);
+			}
+		}
+	}
 
 	for (auto V : LargerThanBaseSet) {
 		if (!SafePtrs.count(V)) {
