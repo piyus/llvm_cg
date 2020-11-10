@@ -5847,8 +5847,8 @@ canReplaceHelper(CallInst *Call1, CallInst *Call2)
 		auto Call1PtrSz = cast<ConstantInt>(Call1->getArgOperand(2))->getZExtValue();
 		auto Call2PtrSz = cast<ConstantInt>(Call2->getArgOperand(2))->getZExtValue();
 		if (Call1PtrSz >= Call2PtrSz) {
-			errs() << "Replacing: " << *Call1Ptr << "\n";
-			errs() << "With: " << *Call2Ptr << "\n";
+			errs() << "Replacing: " << *Call1 << " Size1:" << Call1PtrSz << "\n";
+			errs() << "With: " << *Call2 << " Size2:" << Call2PtrSz << "\n";
 			return true;
 		}
 	}
@@ -5890,6 +5890,10 @@ static void removeDuplicatesInterior(Function &F,
 			auto *Call1 = dyn_cast<CallInst>(*itr1);
       auto *Call2 = dyn_cast<CallInst>(*itr2);
 
+			if (ToDelete.count(Call1) || ToDelete.count(Call2)) {
+				continue;
+			}
+
 			auto Replaced = canReplace(DT, Call1, Call2);
 			if (Replaced) {
 				ToDelete.insert(Replaced);
@@ -5907,6 +5911,59 @@ static void removeDuplicatesInterior(Function &F,
 		else {
 			assert(0);
 		}
+		Interiors.erase(Call);
+		Call->eraseFromParent();
+	}
+}
+
+static void removeDuplicatesSizeCalls(Function &F,
+	DenseSet<CallInst*> &CheckSize)
+{
+	DominatorTree DT(F);
+	DenseSet<CallInst*> ToDelete;
+
+	for (auto itr1 = CheckSize.begin(); itr1 != CheckSize.end(); itr1++) {
+		for (auto itr2 = std::next(itr1); itr2 != CheckSize.end(); itr2++) {
+
+			auto *Call1 = dyn_cast<CallInst>(*itr1);
+      auto *Call2 = dyn_cast<CallInst>(*itr2);
+
+			if (ToDelete.count(Call1) || ToDelete.count(Call2)) {
+				continue;
+			}
+
+			auto Ptr1 = Call1->getArgOperand(0)->stripPointerCasts();
+			auto Ptr2 = Call2->getArgOperand(0)->stripPointerCasts();
+			if (Ptr1 == Ptr2) {
+
+				if (DT.dominates(Call1, Call2)) {
+					auto Size1 = cast<ConstantInt>(Call1->getArgOperand(1))->getZExtValue();
+					auto Size2 = cast<ConstantInt>(Call2->getArgOperand(1))->getZExtValue();
+					if (Size1 >= Size2) {
+						errs() << "Relplacing Size: " << *Call2 << "  SIZE: " << Size2 << "\n";
+						errs() << "With: " << *Call1 << " SIZE: " << Size1 << "\n";
+						Call2->replaceAllUsesWith(Call1);
+						ToDelete.insert(Call2);
+					}
+				}
+				else if (DT.dominates(Call2, Call1)) {
+					auto Size1 = cast<ConstantInt>(Call1->getArgOperand(1))->getZExtValue();
+					auto Size2 = cast<ConstantInt>(Call2->getArgOperand(1))->getZExtValue();
+					if (Size2 >= Size1) {
+						errs() << "Relplacing Size: " << *Call1 << "  SIZE: " << Size1 << "\n";
+						errs() << "With: " << *Call2 << " SIZE: " << Size2 << "\n";
+						Call1->replaceAllUsesWith(Call2);
+						ToDelete.insert(Call1);
+					}
+				}
+
+			}
+		}
+	}
+
+	for (auto Call : ToDelete) {
+		assert(CheckSize.count(Call));
+		CheckSize.erase(Call);
 		Call->eraseFromParent();
 	}
 }
@@ -5947,6 +6004,7 @@ static void optimizeHandlers(Function &F)
 	}
 
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
+	removeDuplicatesSizeCalls(F, CheckSize);
 
 	for (auto LC : LimitCalls) {
 		optimizeLimit(F, LC);
