@@ -5726,6 +5726,7 @@ static void optimizeInterior(Function &F, CallInst *CI)
 	auto MaxOffset = ConstantInt::get(Int64Ty, ((1ULL<<15)-1));
 	auto PtrMask = ConstantInt::get(Int64Ty, (0x1ULL<<49)-1);
 	auto RetTy = CI->getType();
+	auto OrigBlock = CI->getParent();
 
 	auto RetPtr = IRB.CreateBitCast(Ptr, RetTy);
 	auto BaseInt = IRB.CreatePtrToInt(Base, Int64Ty);
@@ -5752,7 +5753,6 @@ static void optimizeInterior(Function &F, CallInst *CI)
 
   PHINode *PHI = IRB.CreatePHI(RetTy, 2);
 
-  BasicBlock *OrigBlock = cast<Instruction>(SlowPath)->getParent();
   PHI->addIncoming(RetPtr, OrigBlock);
   BasicBlock *IfBlock = IfTerm->getParent();
   PHI->addIncoming(RetVal, IfBlock);
@@ -5798,6 +5798,7 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
 	auto MaxOffset = ConstantInt::get(Int64Ty, ((1ULL<<15)-1));
 	auto PtrMask = ConstantInt::get(Int64Ty, (0x1ULL<<49)-1);
 	auto RetTy = CI->getType();
+	auto OrigBlock = CI->getParent();
 
 	auto PtrInt = IRB.CreatePtrToInt(Ptr, Int64Ty);
 	auto BaseInt = IRB.CreatePtrToInt(Base, Int64Ty);
@@ -5821,7 +5822,6 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
 
   PHINode *PHI = IRB.CreatePHI(Int64Ty, 2);
 
-  BasicBlock *OrigBlock = cast<Instruction>(SlowPath)->getParent();
   PHI->addIncoming(PtrInt, OrigBlock);
   BasicBlock *IfBlock = IfTerm->getParent();
   PHI->addIncoming(RetVal, IfBlock);
