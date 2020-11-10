@@ -4771,11 +4771,11 @@ checkSizeWithLimit(Function &F, Value *Base, Value *Limit,
 	}
 	assert(Limit->getType() == Int8PtrTy);
 	if (CheckOffset) {
-		auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit_with_offset", RetTy, Int8PtrTy, V->getType(), Int8PtrTy, Int64);
-		return IRB.CreateCall(Fn, {Base, V, Limit, ConstantInt::get(Int64, TypeSize)});
+		auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit_with_offset", RetTy, Int8PtrTy, V->getType(), Int64, Int8PtrTy);
+		return IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize), Limit});
 	}
-	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", RetTy, Int8PtrTy, Int8PtrTy, Int64);
-	return IRB.CreateCall(Fn, {Base, Limit, ConstantInt::get(Int64, TypeSize)});
+	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", RetTy, Int8PtrTy, Int64, Int8PtrTy);
+	return IRB.CreateCall(Fn, {Base, ConstantInt::get(Int64, TypeSize), Limit});
 }
 
 
@@ -4884,8 +4884,8 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		else {
 			if (SafePtrs.count(V)) {
 				IRBuilder<> IRB(I);
-				auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType(), IRB.getInt64Ty());
-				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(IRB.getInt64Ty(), ID)});
+				auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType(), IRB.getInt64Ty(), IRB.getInt64Ty());
+				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(IRB.getInt64Ty(), TypeSize), ConstantInt::get(IRB.getInt64Ty(), ID)});
 			}
 			else {
 				if (!Limit) {
@@ -5767,8 +5767,8 @@ static void optimizeCheckSize(Function &F, CallInst *CI)
 	auto Int8Ty = IRB.getInt8Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	auto Ptr = CI->getArgOperand(0);
-	auto Limit = CI->getArgOperand(1);
-	auto PtrSz = CI->getArgOperand(2);
+	auto PtrSz = CI->getArgOperand(1);
+	auto Limit = CI->getArgOperand(2);
 	auto Int64Ty = IRB.getInt64Ty();
 	auto RetTy = CI->getType();
 
@@ -5792,8 +5792,8 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
 	auto Int8Ty = IRB.getInt8Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	auto Ptr = CI->getArgOperand(1);
-	auto Limit = CI->getArgOperand(2);
-	auto PtrSz = CI->getArgOperand(3);
+	auto PtrSz = CI->getArgOperand(2);
+	auto Limit = CI->getArgOperand(3);
 	auto Int64Ty = IRB.getInt64Ty();
 	auto MaxOffset = ConstantInt::get(Int64Ty, ((1ULL<<15)-1));
 	auto PtrMask = ConstantInt::get(Int64Ty, (0x1ULL<<49)-1);
@@ -5838,6 +5838,79 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
 	CI->eraseFromParent();
 }
 
+static bool
+canReplaceHelper(CallInst *Call1, CallInst *Call2)
+{
+	auto Call1Ptr = Call1->getArgOperand(1)->stripPointerCasts();
+	auto Call2Ptr = Call2->getArgOperand(1)->stripPointerCasts();
+	if (Call1Ptr == Call2Ptr) {
+		auto Call1PtrSz = cast<ConstantInt>(Call1->getArgOperand(2))->getZExtValue();
+		auto Call2PtrSz = cast<ConstantInt>(Call2->getArgOperand(2))->getZExtValue();
+		if (Call1PtrSz >= Call2PtrSz) {
+			errs() << "Replacing: " << *Call1Ptr << "\n";
+			errs() << "With: " << *Call2Ptr << "\n";
+			return true;
+		}
+	}
+	return false;
+}
+
+
+static CallInst*
+canReplace(DominatorTree &DT,
+	CallInst *Call1, CallInst *Call2)
+{
+	if (DT.dominates(Call1, Call2)) {
+		if (canReplaceHelper(Call1, Call2)) {
+			Call2->replaceAllUsesWith(Call1);
+			return Call2;
+		}
+	}
+	else if (DT.dominates(Call2, Call1)) {
+		if (canReplaceHelper(Call2, Call1)) {
+			Call1->replaceAllUsesWith(Call2);
+			return Call1;
+		}
+	}
+	return NULL;
+}
+
+static void removeDuplicatesInterior(Function &F,
+	DenseSet<CallInst*> &Interiors,
+	DenseSet<CallInst*> &InteriorCalls,
+	DenseSet<CallInst*> &CheckSizeOffset
+	)
+{
+	DominatorTree DT(F);
+	DenseSet<CallInst*> ToDelete;
+
+	for (auto itr1 = Interiors.begin(); itr1 != Interiors.end(); itr1++) {
+		for (auto itr2 = std::next(itr1); itr2 != Interiors.end(); itr2++) {
+
+			auto *Call1 = dyn_cast<CallInst>(*itr1);
+      auto *Call2 = dyn_cast<CallInst>(*itr2);
+
+			auto Replaced = canReplace(DT, Call1, Call2);
+			if (Replaced) {
+				ToDelete.insert(Replaced);
+			}
+		}
+	}
+
+	for (auto Call : ToDelete) {
+		if (InteriorCalls.count(Call)) {
+			InteriorCalls.erase(Call);
+		}
+		else if (CheckSizeOffset.count(Call)) {
+			CheckSizeOffset.erase(Call);
+		}
+		else {
+			assert(0);
+		}
+		Call->eraseFromParent();
+	}
+}
+
 
 static void optimizeHandlers(Function &F)
 {
@@ -5845,6 +5918,7 @@ static void optimizeHandlers(Function &F)
 	DenseSet<CallInst*> InteriorCalls;
 	DenseSet<CallInst*> CheckSize;
 	DenseSet<CallInst*> CheckSizeOffset;
+	DenseSet<CallInst*> Interiors;
 
 	for (auto &BB : F) {
 		for (auto &II : BB) {
@@ -5858,17 +5932,21 @@ static void optimizeHandlers(Function &F)
 					}
 					if (Name == "san_interior") {
 						InteriorCalls.insert(CI);
+						Interiors.insert(CI);
 					}
 					if (Name == "san_check_size_limit") {
 						CheckSize.insert(CI);
 					}
 					if (Name == "san_check_size_limit_with_offset") {
 						CheckSizeOffset.insert(CI);
+						Interiors.insert(CI);
 					}
 				}
 			}
 		}
 	}
+
+	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
 
 	for (auto LC : LimitCalls) {
 		optimizeLimit(F, LC);
