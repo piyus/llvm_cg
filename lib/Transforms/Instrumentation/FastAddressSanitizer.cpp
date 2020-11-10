@@ -5761,10 +5761,91 @@ static void optimizeInterior(Function &F, CallInst *CI)
 	CI->eraseFromParent();
 }
 
+static void optimizeCheckSize(Function &F, CallInst *CI)
+{
+	IRBuilder<> IRB(CI);
+	auto Int8Ty = IRB.getInt8Ty();
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Ptr = CI->getArgOperand(0);
+	auto Limit = CI->getArgOperand(1);
+	auto PtrSz = CI->getArgOperand(2);
+	auto Int64Ty = IRB.getInt64Ty();
+	auto RetTy = CI->getType();
+
+	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
+	auto PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, PtrSz);
+	auto IsInvalid = IRB.CreateICmp(ICmpInst::ICMP_UGT, PtrLimit, Limit);
+
+	auto PtrInt = IRB.CreatePtrToInt(Ptr, Int64Ty);
+	auto PtrVal = IRB.CreateOr(PtrInt, IRB.CreateShl(IRB.CreateZExt(IsInvalid, Int64Ty), 48));
+	PtrVal = IRB.CreateIntToPtr(PtrVal, RetTy);
+
+	CI->replaceAllUsesWith(PtrVal);
+	CI->eraseFromParent();
+}
+
+
+static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
+{
+	IRBuilder<> IRB(CI);
+	auto Base = CI->getArgOperand(0);
+	auto Int8Ty = IRB.getInt8Ty();
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Ptr = CI->getArgOperand(1);
+	auto Limit = CI->getArgOperand(2);
+	auto PtrSz = CI->getArgOperand(3);
+	auto Int64Ty = IRB.getInt64Ty();
+	auto MaxOffset = ConstantInt::get(Int64Ty, ((1ULL<<15)-1));
+	auto PtrMask = ConstantInt::get(Int64Ty, (0x1ULL<<49)-1);
+	auto RetTy = CI->getType();
+
+	auto PtrInt = IRB.CreatePtrToInt(Ptr, Int64Ty);
+	auto BaseInt = IRB.CreatePtrToInt(Base, Int64Ty);
+	auto Offset = IRB.CreateLShr(BaseInt, 49);
+  auto SlowPath = IRB.CreateICmp(ICmpInst::ICMP_ULT, Offset, MaxOffset);
+	Instruction *IfTerm;
+
+  IfTerm = SplitBlockAndInsertIfThen(SlowPath, CI, false);
+	IRB.SetInsertPoint(IfTerm);
+
+	auto Diff = IRB.CreateSub(PtrInt, BaseInt);
+	auto NewOffset = IRB.CreateAdd(Offset, Diff);
+  auto Cmp = IRB.CreateICmp(ICmpInst::ICMP_ULT, NewOffset, MaxOffset);
+	auto FinalOffset = IRB.CreateSelect(Cmp, NewOffset, MaxOffset);
+	FinalOffset = IRB.CreateShl(FinalOffset, 49);
+
+	auto RetVal = IRB.CreateAnd(PtrInt, PtrMask);
+	RetVal = IRB.CreateOr(RetVal, FinalOffset);
+
+	IRB.SetInsertPoint(CI);
+
+  PHINode *PHI = IRB.CreatePHI(Int64Ty, 2);
+
+  BasicBlock *OrigBlock = cast<Instruction>(SlowPath)->getParent();
+  PHI->addIncoming(PtrInt, OrigBlock);
+  BasicBlock *IfBlock = IfTerm->getParent();
+  PHI->addIncoming(RetVal, IfBlock);
+
+
+	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
+	auto PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, PtrSz);
+	auto IsInvalid = IRB.CreateICmp(ICmpInst::ICMP_UGT, PtrLimit, Limit);
+
+	auto PtrVal = IRB.CreateOr(PHI, IRB.CreateShl(IRB.CreateZExt(IsInvalid, Int64Ty), 48));
+	PtrVal = IRB.CreateIntToPtr(PtrVal, RetTy);
+
+	CI->replaceAllUsesWith(PtrVal);
+	CI->eraseFromParent();
+}
+
+
 static void optimizeHandlers(Function &F)
 {
 	DenseSet<CallInst*> LimitCalls;
 	DenseSet<CallInst*> InteriorCalls;
+	DenseSet<CallInst*> CheckSize;
+	DenseSet<CallInst*> CheckSizeOffset;
+
 	for (auto &BB : F) {
 		for (auto &II : BB) {
 			auto CI = dyn_cast<CallInst>(&II);
@@ -5778,6 +5859,12 @@ static void optimizeHandlers(Function &F)
 					if (Name == "san_interior") {
 						InteriorCalls.insert(CI);
 					}
+					if (Name == "san_check_size_limit") {
+						CheckSize.insert(CI);
+					}
+					if (Name == "san_check_size_limit_with_offset") {
+						CheckSizeOffset.insert(CI);
+					}
 				}
 			}
 		}
@@ -5788,6 +5875,12 @@ static void optimizeHandlers(Function &F)
 	}
 	for (auto LC : InteriorCalls) {
 		optimizeInterior(F, LC);
+	}
+	for (auto LC : CheckSize) {
+		optimizeCheckSize(F, LC);
+	}
+	for (auto LC : CheckSizeOffset) {
+		optimizeCheckSizeOffset(F, LC);
 	}
 }
 
