@@ -5716,17 +5716,67 @@ static void optimizeLimit(Function &F, CallInst *CI)
 	CI->eraseFromParent();
 }
 
+
+static void optimizeInterior(Function &F, CallInst *CI)
+{
+	IRBuilder<> IRB(CI);
+	auto Base = CI->getArgOperand(0);
+	auto Ptr = CI->getArgOperand(1);
+	auto Int64Ty = IRB.getInt64Ty();
+	auto MaxOffset = ConstantInt::get(Int64Ty, ((1ULL<<15)-1));
+	auto PtrMask = ConstantInt::get(Int64Ty, (0x1ULL<<49)-1);
+	auto RetTy = CI->getType();
+
+	auto RetPtr = IRB.CreateBitCast(Ptr, RetTy);
+	auto BaseInt = IRB.CreatePtrToInt(Base, Int64Ty);
+	auto Offset = IRB.CreateLShr(BaseInt, 49);
+
+  auto SlowPath = IRB.CreateICmp(ICmpInst::ICMP_ULT, Offset, MaxOffset);
+	Instruction *IfTerm;
+
+  IfTerm = SplitBlockAndInsertIfThen(SlowPath, CI, false);
+	IRB.SetInsertPoint(IfTerm);
+
+	auto PtrInt = IRB.CreatePtrToInt(Ptr, Int64Ty);
+	auto Diff = IRB.CreateSub(PtrInt, BaseInt);
+	auto NewOffset = IRB.CreateAdd(Offset, Diff);
+  auto Cmp = IRB.CreateICmp(ICmpInst::ICMP_ULT, NewOffset, MaxOffset);
+	auto FinalOffset = IRB.CreateSelect(Cmp, NewOffset, MaxOffset);
+	FinalOffset = IRB.CreateShl(FinalOffset, 49);
+
+	auto RetVal = IRB.CreateAnd(PtrInt, PtrMask);
+	RetVal = IRB.CreateOr(RetVal, FinalOffset);
+	RetVal = IRB.CreateIntToPtr(RetVal, RetTy);
+
+	IRB.SetInsertPoint(CI);
+
+  PHINode *PHI = IRB.CreatePHI(RetTy, 2);
+
+  BasicBlock *OrigBlock = cast<Instruction>(SlowPath)->getParent();
+  PHI->addIncoming(RetPtr, OrigBlock);
+  BasicBlock *IfBlock = IfTerm->getParent();
+  PHI->addIncoming(RetVal, IfBlock);
+
+	CI->replaceAllUsesWith(PHI);
+	CI->eraseFromParent();
+}
+
 static void optimizeHandlers(Function &F)
 {
 	DenseSet<CallInst*> LimitCalls;
+	DenseSet<CallInst*> InteriorCalls;
 	for (auto &BB : F) {
 		for (auto &II : BB) {
 			auto CI = dyn_cast<CallInst>(&II);
 			if (CI) {
 				auto Target = CI->getCalledFunction();
 				if (Target) {
-					if (Target->getName()  == "san_page_fault_limit") {
+					auto Name = Target->getName();
+					if (Name  == "san_page_fault_limit") {
 						LimitCalls.insert(CI);
+					}
+					if (Name == "san_interior") {
+						InteriorCalls.insert(CI);
 					}
 				}
 			}
@@ -5735,6 +5785,9 @@ static void optimizeHandlers(Function &F)
 
 	for (auto LC : LimitCalls) {
 		optimizeLimit(F, LC);
+	}
+	for (auto LC : InteriorCalls) {
+		optimizeInterior(F, LC);
 	}
 }
 
@@ -6030,10 +6083,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
-	if (verifyFunction(F, &errs())) {
+	/*if (verifyFunction(F, &errs())) {
     F.dump();
     report_fatal_error("verification of newFunction failed!");
-  }
+  }*/
 
 
 	removeRedundentLengths(F, GetLengths, LenToBaseMap);
