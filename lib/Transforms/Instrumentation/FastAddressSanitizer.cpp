@@ -683,16 +683,13 @@ struct FastAddressSanitizer {
 
 	void addBoundsCheckWithLenAtUseHelper(Function &F, 
 			Value *Base, Value *Ptr, Value *TySize, Instruction* InstPtr,
-			int &callsites, 
-			DenseSet<Value*> &GetLengths,
-			DenseMap<Value*, Value*> &LenToBaseMap);
+			int &callsites, Value *Limit);
 
 	void addBoundsCheckWithLenAtUse(Function &F, 
 			Value *Base, Value *Ptr, Value *TySize,
 			DenseSet<Value*> &UnsafeUses,
 			int &callsites, 
-			DenseSet<Value*> &GetLengths,
-			DenseMap<Value*, Value*> &LenToBaseMap);
+			DenseMap<Value*, Value*> &PtrUseToLenMap);
 
 	bool isSafeAlloca(const AllocaInst *AllocaPtr);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
@@ -3444,32 +3441,9 @@ void FastAddressSanitizer::
 addBoundsCheckWithLenAtUseHelper(Function &F, 
 	Value *Base, Value *Ptr, Value *TySize, Instruction* InstPtr,
 	int &callsites, 
-	DenseSet<Value*> &GetLengths,
-	DenseMap<Value*, Value*> &LenToBaseMap)
+	Value *Limit)
 {
-	auto Start = InstPtr->getParent()->getFirstNonPHI();
-	IRBuilder<> IRB(Start);
-
-	if (isa<Instruction>(Base) && InstPtr->getParent() == cast<Instruction>(Base)->getParent()) {
-		IRB.SetInsertPoint(InstPtr);
-	}
-
-	const DataLayout &DL = F.getParent()->getDataLayout();
-	Value *Limit;
-
-	if (indefiniteBase(Base, DL)) {
-		Limit = sanGetLimit(F, Base, IRB);
-	}
-	else {
-		auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
-		Limit = IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(Base, Int8PtrPtrTy));
-	}
-
-	IRB.SetInsertPoint(InstPtr);
-
-
-	GetLengths.insert(Limit);
-	LenToBaseMap[Limit] = Base;
+	IRBuilder<> IRB(InstPtr);
 
 	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
 	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
@@ -3496,17 +3470,72 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 
 void FastAddressSanitizer::
 addBoundsCheckWithLenAtUse(Function &F, Value *Base, Value *Ptr, Value *TySize,
-	DenseSet<Value*> &UnsafeUses, int &callsites, DenseSet<Value*> &GetLengths, 
+	DenseSet<Value*> &UnsafeUses, int &callsites, DenseMap<Value*, Value*> &PtrUseToLenMap)
+{
+	for (const Use &UI : Ptr->uses()) {
+	  auto I = cast<Instruction>(UI.getUser());
+		if (UnsafeUses.count(I)) {
+			if (!isNonAccessInst(I, Ptr)) {
+				assert(PtrUseToLenMap.count(I));
+				auto Limit = PtrUseToLenMap[I];
+				addBoundsCheckWithLenAtUseHelper(F, Base, Ptr, TySize, I, callsites, Limit);
+			}
+			else {
+				// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
+			}
+		}
+	}
+}
+
+static void
+addLengthAtPtrUseHelper(Function &F, Value *Base,
+	DenseMap<Value*, Value*> &PtrUseToLenMap,
+	DenseSet<Value*> &GetLengths,
+	DenseMap<Value*, Value*> &LenToBaseMap,
+	Instruction *User)
+{
+	auto InstPtr = User->getParent()->getFirstNonPHI();
+
+	auto BaseI = dyn_cast<Instruction>(Base);
+	if (BaseI && !isa<PHINode>(BaseI) && BaseI->getParent() == InstPtr->getParent()) {
+		// CAN HAPPEN IF NULL CHECK ON BASE SOMEWHERE
+		InstPtr = BaseI->getNextNode();
+		//assert(0);
+	}
+
+	IRBuilder<> IRB(InstPtr);
+
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	const DataLayout &DL = F.getParent()->getDataLayout();
+	Value *Limit;
+
+	if (indefiniteBase(Base, DL)) {
+		Limit = sanGetLimit(F, Base, IRB);
+	}
+	else {
+		auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
+		Limit = IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(Base, Int8PtrPtrTy));
+	}
+
+	GetLengths.insert(Limit);
+	LenToBaseMap[Limit] = Base;
+	PtrUseToLenMap[User] = Limit;
+}
+
+
+static void
+addLengthAtPtrUse(Function &F, Value *Base, Value *Ptr,
+	DenseMap<Value*, Value*> &PtrUseToLenMap,
+	DenseSet<Value*> &UnsafeUses,
+	DenseSet<Value*> &GetLengths,
 	DenseMap<Value*, Value*> &LenToBaseMap)
 {
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
 			if (!isNonAccessInst(I, Ptr)) {
-				addBoundsCheckWithLenAtUseHelper(F, Base, Ptr, TySize, I, callsites, GetLengths, LenToBaseMap);
-			}
-			else {
-				// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
+				addLengthAtPtrUseHelper(F, Base, PtrUseToLenMap, GetLengths, LenToBaseMap, I);
+				assert(PtrUseToLenMap.count(I));
 			}
 		}
 	}
@@ -3529,9 +3558,13 @@ addLengthAtPtr(Function &F, Value *Base, Value *Ptr,
 		InstPtr = cast<BasicBlock>(LoopUsages[Ptr])->getFirstNonPHI();
 	}
 	else {
+		// CAN HAPPEN IF NULL CHECK ON BASE SOMEWHERE
 		auto BaseI = dyn_cast<Instruction>(Base);
-		if (BaseI && BaseI->getParent() == InstPtr->getParent()) {
-			assert(0);
+		if (BaseI && !isa<PHINode>(BaseI) && BaseI->getParent() == InstPtr->getParent()) {
+			InstPtr = BaseI->getNextNode();
+			//errs() << "Base: " << *Base << " Ptr:" << *Ptr << "\n";
+			//errs() << "Basic Block: " << *BaseI->getParent() << "\n";
+			//assert(0);
 		}
 	}
 
@@ -5946,6 +5979,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 
 	DenseMap<Value*, Value*> PtrToLenMap;
+	DenseMap<Value*, Value*> PtrUseToLenMap;
 
 	for (auto Ptr : TmpSet) {
 		assert(PtrToBaseMap.count(Ptr));
@@ -5957,6 +5991,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				addLengthAtPtr(F, Base, Ptr, PtrToLenMap, GetLengths,
 					GetLengthsCond, LenToBaseMap, LoopUsages, CondLoop);
 				assert(PtrToLenMap.count(Ptr));
+			}
+			else {
+				addLengthAtPtrUse(F, Base, Ptr, PtrUseToLenMap, UnsafeUses, GetLengths, LenToBaseMap);
 			}
 		}
 	}
@@ -5980,7 +6017,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			}
 			else {
 				addBoundsCheckWithLenAtUse(F, Base, Ptr, TySize, UnsafeUses,
-					callsites, GetLengths, LenToBaseMap);
+					callsites, PtrUseToLenMap);
 			}
 		}
 		else {
@@ -5988,6 +6025,11 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			addBoundsCheck(F, Base, Ptr, Limit, TySize, UnsafeUses, callsites, MayNull);
 		}
 	}
+
+	if (verifyFunction(F, &errs())) {
+    F.dump();
+    report_fatal_error("verification of newFunction failed!");
+  }
 
 
 	removeRedundentLengths(F, GetLengths, LenToBaseMap);
