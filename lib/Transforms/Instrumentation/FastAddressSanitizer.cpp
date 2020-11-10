@@ -5189,6 +5189,7 @@ static Value* getLimitIfAvailable(Function &F,
 	else if (CheckSet && BaseToLenSetMap.count(Base)) {
 		auto LenSet = BaseToLenSetMap[Base];
 		for (auto Len : LenSet) {
+			I = I->getParent()->getTerminator();
 			if (DT.dominates(cast<Instruction>(Len), I)) {
 				Ret = Len;
 				break;
