@@ -3381,6 +3381,16 @@ instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, V
 	}
 }
 
+static Instruction* getUseInBasicBlock(Instruction *Ptr) {
+	for (const Use &UI : Ptr->uses()) {
+	  auto I = cast<Instruction>(UI.getUser());
+		if (!isa<PHINode>(I) && I->getParent() == Ptr->getParent()) {
+			return I;
+		}
+	}
+	return Ptr->getParent()->getTerminator();
+}
+
 void FastAddressSanitizer::
 addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit, 
 	Value *TySize, DenseSet<Value*> &UnsafeUses, int &callsites,
@@ -3388,22 +3398,9 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit,
 {
 	auto InstPtr = dyn_cast<Instruction>(Ptr);
 	assert(InstPtr && "Invalid Ptr");
-	IRBuilder<> IRB(InstPtr->getParent());
 
-	if (isa<PHINode>(Ptr)) {
-		auto BaseI = dyn_cast<PHINode>(Base);
-		auto LimitI = dyn_cast<Instruction>(Limit);
-		if (LimitI && BaseI && BaseI->getParent() == InstPtr->getParent()) {
-			IRB.SetInsertPoint(LimitI->getNextNode());
-		}
-		else {
-			IRB.SetInsertPoint(InstPtr->getParent()->getFirstNonPHI());
-		}
-	}
-	else {
-		IRB.SetInsertPoint(InstPtr->getNextNode());
-	}
-
+	InstPtr = getUseInBasicBlock(InstPtr);
+	IRBuilder<> IRB(InstPtr);
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
