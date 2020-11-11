@@ -4785,11 +4785,13 @@ checkSizeWithLimit(Function &F, Value *Base, Value *Limit,
 	}
 	assert(Limit->getType() == Int8PtrTy);
 	if (CheckOffset) {
-		auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit_with_offset", RetTy, Int8PtrTy, V->getType(), Int64, Int8PtrTy);
-		return IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize), Limit});
+		auto Fn = F.getParent()->getOrInsertFunction("san_interior_limit", Int8PtrTy, Int8PtrTy, V->getType(), Int64, Int8PtrTy);
+		auto Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize), Limit});
+		return IRB.CreateBitCast(Ret, RetTy);
 	}
-	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", RetTy, Int8PtrTy, Int64, Int8PtrTy);
-	return IRB.CreateCall(Fn, {Base, ConstantInt::get(Int64, TypeSize), Limit});
+	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", Int8PtrTy, Int8PtrTy, Int64, Int8PtrTy);
+	auto Ret = IRB.CreateCall(Fn, {Base, ConstantInt::get(Int64, TypeSize), Limit});
+	return IRB.CreateBitCast(Ret, RetTy);
 }
 
 
@@ -4898,8 +4900,9 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		else {
 			if (SafePtrs.count(V)) {
 				IRBuilder<> IRB(I);
-				auto Fn = M->getOrInsertFunction("san_interior", RetTy, Base->getType(), V->getType(), IRB.getInt64Ty(), IRB.getInt64Ty());
+				auto Fn = M->getOrInsertFunction("san_interior", IRB.getInt8PtrTy(), Base->getType(), V->getType(), IRB.getInt64Ty(), IRB.getInt64Ty());
 				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(IRB.getInt64Ty(), TypeSize), ConstantInt::get(IRB.getInt64Ty(), ID)});
+				Ret = IRB.CreateBitCast(Ret, RetTy);
 			}
 			else {
 				if (!Limit) {
@@ -6002,7 +6005,7 @@ static void optimizeHandlers(Function &F)
 		for (auto &II : BB) {
 			auto CI = dyn_cast<CallInst>(&II);
 			if (CI) {
-				auto Target = CI->getCalledFunction();
+				auto Target = CI->getCalledValue()->stripPointerCasts();
 				if (Target) {
 					auto Name = Target->getName();
 					if (Name  == "san_page_fault_limit") {
@@ -6015,7 +6018,7 @@ static void optimizeHandlers(Function &F)
 					if (Name == "san_check_size_limit") {
 						CheckSize.insert(CI);
 					}
-					if (Name == "san_check_size_limit_with_offset") {
+					if (Name == "san_interior_limit") {
 						CheckSizeOffset.insert(CI);
 						Interiors.insert(CI);
 					}
