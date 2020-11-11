@@ -3539,7 +3539,10 @@ addLengthAtPtrUse(Function &F, Value *Base, Value *Ptr,
 	DenseMap<Value*, Value*> &PtrUseToLenMap,
 	DenseSet<Value*> &UnsafeUses,
 	DenseSet<Value*> &GetLengths,
-	DenseMap<Value*, Value*> &LenToBaseMap)
+	DenseMap<Value*, Value*> &LenToBaseMap,
+	DenseMap<Value*, DenseSet<Instruction*>> &PtrToChecksMap,
+	DenseMap<Value*, DenseSet<Instruction*>> &BaseToLenSetMap
+	)
 {
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<Instruction>(UI.getUser());
@@ -3547,6 +3550,8 @@ addLengthAtPtrUse(Function &F, Value *Base, Value *Ptr,
 			if (!isNonAccessInst(I, Ptr)) {
 				addLengthAtPtrUseHelper(F, Base, PtrUseToLenMap, GetLengths, LenToBaseMap, I);
 				assert(PtrUseToLenMap.count(I));
+				PtrToChecksMap[Ptr].insert(I);
+				BaseToLenSetMap[Base].insert(cast<Instruction>(PtrUseToLenMap[I]));
 			}
 		}
 	}
@@ -4860,14 +4865,14 @@ static Value* createCondSafeLimit(Function &F, Instruction *InsertPt, Value *Bas
 
 
 static Value*
-getInteriorValue(Function &F, Instruction *I, Value *V,
+getInteriorValue(Function &F,
+  Instruction *I,
+	Value *V,
 	DenseSet<Value*> &InteriorPointersSet,
-	DenseSet<Value*> &SafePtrs, DenseMap<Value*, Value*> &PtrToBaseMap,
-	Value *Limit, int ID,
-	DenseMap<Value*, Value*> &ILoopUsages,
-  DenseSet<Value*> &ICondLoop,
-	DenseSet<Value*> &IGetLengths,
-	DenseMap<Value*, Value*> &ILenToBaseMap
+	DenseSet<Value*> &SafePtrs,
+	DenseMap<Value*, Value*> &PtrToBaseMap,
+	Value *Limit,
+	int ID
 	)
 {
 	Value *Ret = NULL;
@@ -4877,11 +4882,6 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 
 	if (InteriorPointersSet.count(V)) {
 		assert(PtrToBaseMap.count(V));
-		Instruction *LoopHeader = NULL;
-		if (ILoopUsages.count(V)) {
-			errs() << "USED_IN_LOOP: " << *V << "\n";
-			LoopHeader = cast<BasicBlock>(ILoopUsages[V])->getFirstNonPHI();
-		}
 
 		auto Base = PtrToBaseMap[V];
 		const DataLayout &DL = M->getDataLayout();
@@ -4903,33 +4903,9 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 			}
 			else {
 				if (!Limit) {
-					auto InsertPt = (LoopHeader) ? LoopHeader : I;
-#if 0
-					if (ICondLoop.count(V)) {
-						assert(0);
-						if (!isa<Instruction>(Base)) {
-							InsertPt = cast<Instruction>(F.begin()->getFirstInsertionPt());
-						}
-						else {
-							if (isa<PHINode>(Base)) {
-								InsertPt = cast<PHINode>(Base)->getParent()->getFirstNonPHI();
-							}
-							else {
-								InsertPt = cast<Instruction>(Base)->getNextNode();
-							}
-						}
-					}
-#endif
-					Limit = createCondSafeLimit(F, InsertPt, Base, false, false);
-					IGetLengths.insert(Limit);
-					ILenToBaseMap[Limit] = Base;
-					if (ICondLoop.count(V)) {
-						ICondLoop.insert(Limit);
-					}
-
-
 					IRBuilder<> IRB(I);
-					Ret = checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, RetTy, V, true);
+					auto Fn = M->getOrInsertFunction("san_interior_checked", RetTy, Base->getType(), V->getType(), IRB.getInt64Ty(), IRB.getInt64Ty());
+					Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(IRB.getInt64Ty(), TypeSize), ConstantInt::get(IRB.getInt64Ty(), ID)});
 				}
 				else {
 					IRBuilder<> IRB(I);
@@ -5192,20 +5168,19 @@ static Value* getLimitIfAvailable(Function &F,
 	Instruction *I,
 	Value *Base,
 	DenseMap<Value*, Value*> &BaseToLenMap,
-	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap,
-	bool &WithinRange,
-	bool CheckSet)
+	DenseMap<Value*, DenseSet<Instruction*>> &BaseToLenSetMap,
+	bool &WithinRange)
 {
 	WithinRange = false;
 	Value *Ret = NULL;
 	if (BaseToLenMap.count(Base)) {
 		Ret = BaseToLenMap[Base];
 	}
-	else if (CheckSet && BaseToLenSetMap.count(Base)) {
+	else if (BaseToLenSetMap.count(Base)) {
 		auto LenSet = BaseToLenSetMap[Base];
 		for (auto Len : LenSet) {
 			I = I->getParent()->getTerminator();
-			if (DT.dominates(cast<Instruction>(Len), I)) {
+			if (DT.dominates(Len, I)) {
 				Ret = Len;
 				break;
 			}
@@ -5220,27 +5195,33 @@ static Value* getLimitIfAvailable(Function &F,
 }
 
 static bool
-isAliasWithSafePtr(Function &F, DominatorTree &DT, DenseSet<Value*> &SafePtrs, Instruction *Ptr)
+wasChecked(Function &F,
+	DominatorTree &DT, 
+	DenseMap<Value*, DenseSet<Instruction*>> &PtrToChecksMap,
+	Instruction *Ptr)
 {
-	Value *PtrS = Ptr->stripPointerCasts();
   const DataLayout &DL = F.getParent()->getDataLayout();
 
-	for (auto _SafePtr : SafePtrs) {
-		if (!isa<Instruction>(_SafePtr)) {
-			continue;
-		}
-		auto SafePtr = cast<Instruction>(_SafePtr);
-		auto SafePtrS = SafePtr->stripPointerCasts();
-		if (PtrS == SafePtrS) {
-			if (DT.dominates(SafePtr, Ptr) || SafePtr->getParent() == Ptr->getParent()) {
-				auto SafePtrTy = SafePtr->getType()->getPointerElementType();
-				size_t SafePtrSize = DL.getTypeStoreSize(SafePtrTy);
+	for (auto It : PtrToChecksMap) {
+		Value *CheckedPtr = It.first;
+		if (CheckedPtr->stripPointerCasts() == Ptr->stripPointerCasts()) {
+			for (auto InsertPt : It.second) {
+				if (DT.dominates(InsertPt->getParent(), Ptr->getParent())) {
 
-				auto PtrTy = Ptr->getType()->getPointerElementType();
-				size_t PtrSize = DL.getTypeStoreSize(PtrTy);
-				if (SafePtrSize >= PtrSize) {
-					errs() << "FOUND REPLACE: " << *Ptr << "  LD/ST: " << *SafePtr << "\n";
-					return true;
+					auto IPtrTy = CheckedPtr->getType()->getPointerElementType();
+					size_t IPtrSize = DL.getTypeStoreSize(IPtrTy);
+
+					auto PtrTy = Ptr->getType()->getPointerElementType();
+					size_t PtrSize = DL.getTypeStoreSize(PtrTy);
+
+					if (IPtrSize >= PtrSize) {
+						errs() << "Checked: " << *CheckedPtr << "\n";
+						errs() << "Ptr: " << *Ptr << "\n";
+						return true;
+					}
+				}
+				else {
+					assert(InsertPt->getParent() != Ptr->getParent());
 				}
 			}
 		}
@@ -5249,31 +5230,31 @@ isAliasWithSafePtr(Function &F, DominatorTree &DT, DenseSet<Value*> &SafePtrs, I
 }
 
 
-static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMap,
-	DenseSet<CallBase*> &CallSites, DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
+static void handleInteriors(Function &F,
+	DenseMap<Value*, DenseSet<Instruction*>> &PtrToChecksMap,
+	DenseSet<CallBase*> &CallSites,
+	DenseSet<ReturnInst*> &RetSites,
+	DenseSet<StoreInst*> &Stores,
 	DenseSet<Value*> &InteriorPointersSet,
-  const TargetLibraryInfo *TLI, DenseSet<Value*> &SafePtrs, 
+  const TargetLibraryInfo *TLI,
 	DenseMap<Value*, Value*> &PtrToBaseMap,
 	DenseSet<Value*> &SafeInteriors,
 	DenseMap<Value*, Value*> &BaseToLenMap,
-	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap,
-	DenseMap<Value*, Value*> &ILoopUsages,
-	DenseSet<Value*> &ICondLoop,
-	DenseSet<Value*> &IGetLength,
-	DenseMap<Value*, Value*> &ILenToBaseMap
+	DenseMap<Value*, DenseSet<Instruction*>> &BaseToLenSetMap
 	)
 {
 	DominatorTree DT(F);
 
+	DenseSet<Value*> SafePtrs;
 	DenseMap<Value*, Value*> InteriorValues;
 	Value *Interior;
 	bool InRange;
 	Value *Limit;
 	int ID = 0;
 
-	for (auto I : SafeInteriors) {
-		if (!SafePtrs.count(I)) {
-			if (isAliasWithSafePtr(F, DT, SafePtrs, cast<Instruction>(I))) {
+	for (auto I : InteriorPointersSet) {
+		if (isa<Instruction>(I)) {
+			if (wasChecked(F, DT, PtrToChecksMap, cast<Instruction>(I))) {
 				SafePtrs.insert(I);
 			}
 		}
@@ -5289,7 +5270,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		if (InteriorPointersSet.count(I) && !SafePtrs.count(I)) {
 			assert(PtrToBaseMap.count(I));
 			auto Base = PtrToBaseMap[I];
-			Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+			Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange);
 			if (InRange) {
 				SafePtrs.insert(I);
 			}
@@ -5301,8 +5282,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 		}
 
 		InteriorValues[I] = getInteriorValue(F, InsertPt, I,
-			InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++,
-			ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
+			InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++);
 	}
 
 
@@ -5324,14 +5304,13 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			if (InteriorPointersSet.count(V) && !SafePtrs.count(V)) {
 				assert(PtrToBaseMap.count(V));
 				auto Base = PtrToBaseMap[V];
-				Limit = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+				Limit = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
 				if (InRange) {
 					SafePtrs.insert(V);
 				}
 			}
 
-		 	Interior = getInteriorValue(F, SI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++,
-				ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
+		 	Interior = getInteriorValue(F, SI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++);
 		}
 		if (Interior) {
 			if (Interior->getType() != Ty) {
@@ -5357,13 +5336,12 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			if (InteriorPointersSet.count(V) && !SafePtrs.count(V)) {
 				assert(PtrToBaseMap.count(V));
 				auto Base = PtrToBaseMap[V];
-				Limit = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+				Limit = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
 				if (InRange) {
 					SafePtrs.insert(V);
 				}
 			}
-			Interior = getInteriorValue(F, RI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++,
-				ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
+			Interior = getInteriorValue(F, RI, V, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++);
 		}
 		if (Interior) {
 			if (Interior->getType() != V->getType()) {
@@ -5430,13 +5408,12 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 								if (InteriorPointersSet.count(A) && !SafePtrs.count(A)) {
 									assert(PtrToBaseMap.count(A));
 									auto Base = PtrToBaseMap[A];
-									Limit = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+									Limit = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange);
 									if (InRange) {
 										SafePtrs.insert(A);
 									}
 								}
-								Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++,
-									ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
+								Interior = getInteriorValue(F, CS, A, InteriorPointersSet, SafePtrs, PtrToBaseMap, Limit, ID++);
 							}
 							if (Interior) {
 								if (Interior->getType() != A->getType()) {
@@ -5459,16 +5436,16 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 }
 
 static void handleLargerBase(Function &F,
+	DenseMap<Value*, DenseSet<Instruction*>> &PtrToChecksMap,
 	DenseSet<CallBase*> &CallSites,
 	DenseSet<ReturnInst*> &RetSites,
 	DenseSet<StoreInst*> &Stores,
 	DenseSet<Value*> &LargerThanBaseSet,
   const TargetLibraryInfo *TLI,
-	DenseSet<Value*> &SafePtrs,
 	DenseMap<Value*, Value*> &PtrToBaseMap,
 	DenseSet<Value*> &SafeLargerThan,
 	DenseMap<Value*, Value*> &BaseToLenMap,
-	DenseMap<Value*, DenseSet<Value*>> &BaseToLenSetMap,
+	DenseMap<Value*, DenseSet<Instruction*>> &BaseToLenSetMap,
 	DenseMap<Value*, Value*> &ILoopUsages,
   DenseSet<Value*> &ICondLoop,
 	DenseSet<Value*> &IGetLength,
@@ -5476,14 +5453,16 @@ static void handleLargerBase(Function &F,
 	)
 {
 	DominatorTree DT(F);
+
+	DenseSet<Value*> SafePtrs;
 	DenseSet<Value*> LargerThanBase;
 	DenseMap<Value*, Value*> CheckedValues;
 	Value *CheckedVal;
 	bool InRange;
 
-	for (auto I : SafeLargerThan) {
-		if (!SafePtrs.count(I)) {
-			if (isAliasWithSafePtr(F, DT, SafePtrs, cast<Instruction>(I))) {
+	for (auto I : LargerThanBaseSet) {
+		if (isa<Instruction>(I)) {
+			if (wasChecked(F, DT, PtrToChecksMap, cast<Instruction>(I))) {
 				SafePtrs.insert(I);
 			}
 		}
@@ -5505,7 +5484,7 @@ static void handleLargerBase(Function &F,
 		}
 
 		auto Base = I->stripPointerCasts();
-		auto Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+		auto Limit = getLimitIfAvailable(F, DT, I, InsertPt, Base, BaseToLenMap, BaseToLenSetMap, InRange);
 		if (!InRange) {
 
 			if (Limit && isa<Instruction>(Limit) &&
@@ -5531,11 +5510,14 @@ static void handleLargerBase(Function &F,
 			}
 			else {
 				auto Base = V->stripPointerCasts();
-				auto Lim = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+				auto Lim = getLimitIfAvailable(F, DT, V, SI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
 				assert(!InRange);
 				if (!InRange) {
 					CheckedVal = SanCheckSize(F, SI, V, Lim, ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 					SI->setOperand(0, CheckedVal);
+				}
+				else {
+					LargerThanBase.erase(V);
 				}
 			}
 		}
@@ -5551,11 +5533,14 @@ static void handleLargerBase(Function &F,
 			else {
 
 				auto Base = V->stripPointerCasts();
-				auto Lim = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+				auto Lim = getLimitIfAvailable(F, DT, V, RI, Base, BaseToLenMap, BaseToLenSetMap, InRange);
 				assert(!InRange);
 				if (!InRange) {
 					CheckedVal = SanCheckSize(F, RI, V, Lim, ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 					RI->setOperand(0, CheckedVal);
+				}
+				else {
+					LargerThanBase.erase(V);
 				}
 			}
 		}
@@ -5588,11 +5573,14 @@ static void handleLargerBase(Function &F,
 							else {
 
 								auto Base = A->stripPointerCasts();
-								auto Lim = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange, true);
+								auto Lim = getLimitIfAvailable(F, DT, A, CS, Base, BaseToLenMap, BaseToLenSetMap, InRange);
 								assert(!InRange);
 								if (!InRange) {
 									CheckedVal = SanCheckSize(F, CS, A, Lim, ILoopUsages, ICondLoop, IGetLength, ILenToBaseMap);
 									CS->setArgOperand(ArgIt - Start, CheckedVal);
+								}
+								else {
+									LargerThanBase.erase(A);
 								}
 							}
 
@@ -6008,14 +5996,14 @@ static void optimizeHandlers(Function &F)
 					if (Name  == "san_page_fault_limit") {
 						LimitCalls.insert(CI);
 					}
-					if (Name == "san_interior") {
+					else if (Name == "san_interior") {
 						InteriorCalls.insert(CI);
 						Interiors.insert(CI);
 					}
-					if (Name == "san_check_size_limit") {
+					else if (Name == "san_check_size_limit") {
 						CheckSize.insert(CI);
 					}
-					if (Name == "san_check_size_limit_with_offset") {
+					else if (Name == "san_check_size_limit_with_offset") {
 						CheckSizeOffset.insert(CI);
 						Interiors.insert(CI);
 					}
@@ -6072,7 +6060,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Instruction*> GEPs;
 	DenseSet<Value*> PtrMayBeNull;
 	DenseSet<Instruction*> RestorePoints;
-	DenseSet<Value*> SafePtrs;
 
 	DenseSet<Value*> InteriorPointersSet;
 	DenseSet<Value*> LargerThanBase;
@@ -6231,7 +6218,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 		else {
 			if (isa<Instruction>(Ptr)) {
-				if (SafeInteriors.count(Ptr) || SafeLargerThan.count(Ptr)) {
+				if (SafeLargerThan.count(Ptr)) {
 					IBaseToPtrMap[Base].insert(Ptr);
 				}
 			}
@@ -6245,9 +6232,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	for (auto &It : IBaseToPtrMap) {
 		Value* Base = It.first;
 		DenseSet<Value*> &ValSet = It.second;
-		if (ValSet.size() <= 1) {
-			//continue;
-		}
 		Instruction *BaseI = dyn_cast<Instruction>(Base);
 		if (!BaseI) {
 			BaseI = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
@@ -6262,13 +6246,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, ILoopUsages, ICondLoop, Recurrance)) {
 			ISafeBases.insert(Base);
 		}
-		/*else if (Recurrance) {
-			ISafeBases.insert(Base);
-		}*/
 	}
-
-
-
 
 	for (auto Base : SafeBases) {
 		assert(!BaseToLenMap.count(Base));
@@ -6287,6 +6265,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	DenseMap<Value*, Value*> PtrToLenMap;
 	DenseMap<Value*, Value*> PtrUseToLenMap;
+	DenseMap<Value*, DenseSet<Instruction*>> PtrToChecksMap;
+	DenseMap<Value*, DenseSet<Instruction*>> BaseToLenSetMap;
 
 	for (auto Ptr : TmpSet) {
 		assert(PtrToBaseMap.count(Ptr));
@@ -6298,12 +6278,26 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				addLengthAtPtr(F, Base, Ptr, PtrToLenMap, GetLengths,
 					GetLengthsCond, LenToBaseMap, LoopUsages, CondLoop);
 				assert(PtrToLenMap.count(Ptr));
+				PtrToChecksMap[Ptr].insert(cast<Instruction>(Ptr));
+				BaseToLenSetMap[Base].insert(cast<Instruction>(PtrToLenMap[Ptr]));
 			}
 			else {
-				addLengthAtPtrUse(F, Base, Ptr, PtrUseToLenMap, UnsafeUses, GetLengths, LenToBaseMap);
+				addLengthAtPtrUse(F, Base, Ptr, PtrUseToLenMap, UnsafeUses, GetLengths, LenToBaseMap,
+					PtrToChecksMap, BaseToLenSetMap);
 			}
 		}
 	}
+
+	handleInteriors(F, PtrToChecksMap, 
+		CallSites, RetSites, Stores,
+		InteriorPointersSet, TLI, PtrToBaseMap, 
+		SafeInteriors, BaseToLenMap, BaseToLenSetMap);
+
+
+	handleLargerBase(F, PtrToChecksMap, CallSites, RetSites, Stores,
+		LargerThanBase, TLI, PtrToBaseMap,
+		SafeLargerThan, BaseToLenMap, BaseToLenSetMap, ILoopUsages, ICondLoop,
+		GetLengths, LenToBaseMap);
 
 
 	for (auto Ptr : TmpSet) {
@@ -6313,9 +6307,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
 		bool MayNull = PtrMayBeNull.count(Ptr) > 0;
 
-		if (!MayNull) {
-			SafePtrs.insert(Ptr);
-		}
 		if (!BaseToLenMap.count(Base)) {
 			if (!MayNull) {
 				assert(PtrToLenMap.count(Ptr));
@@ -6337,34 +6328,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     F.dump();
     report_fatal_error("verification of newFunction failed!");
   }*/
-
-
-	removeRedundentLengths(F, GetLengths, LenToBaseMap);
-
-	DenseMap<Value*, DenseSet<Value*>> BaseToLenSetMap;
-
-	for (auto itr1 = GetLengths.begin(); itr1 != GetLengths.end(); itr1++) {
-		Instruction *len1 = cast<Instruction>(*itr1);
-		if (LenToBaseMap.count(len1)) {
-			auto Base = LenToBaseMap[len1];
-			BaseToLenSetMap[Base].insert(len1);
-		}
-	}
-
-
-
-	//DenseSet<Value*> IGetLengths;
-	//DenseMap<Value*, Value*> ILenToBaseMap;
-
-	handleInteriors(F, ReplacementMap, CallSites, RetSites, Stores,
-		InteriorPointersSet, TLI, SafePtrs, PtrToBaseMap,
-		SafeInteriors, BaseToLenMap, BaseToLenSetMap, ILoopUsages, ICondLoop,
-		GetLengths, LenToBaseMap);
-
-	handleLargerBase(F, CallSites, RetSites, Stores,
-		LargerThanBase, TLI, SafePtrs, PtrToBaseMap,
-		SafeLargerThan, BaseToLenMap, BaseToLenSetMap, ILoopUsages, ICondLoop,
-		GetLengths, LenToBaseMap);
 
 
 	removeRedundentLengths(F, GetLengths, LenToBaseMap);
