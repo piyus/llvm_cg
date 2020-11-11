@@ -2846,6 +2846,12 @@ fetchMallocSize(Value *V, const TargetLibraryInfo *TLI)
 				auto Sz = CI->getArgOperand(1);
 				return (isa<ConstantInt>(Sz)) ? cast<ConstantInt>(Sz)->getZExtValue() : 0;
 			}
+			else if (Name == "__ctype_b_loc") {
+				return 128 * sizeof(unsigned short);
+			}
+			else if (Name == "__ctype_toupper_loc" || Name == "__ctype_tolower_loc") {
+				return 128 * sizeof(int);
+			}
 		}
 	}
 	return 0;
@@ -2911,6 +2917,14 @@ Value* FastAddressSanitizer::getStaticBaseSize(Function &F, const Value *V1, con
 			}
 			else if (Name == "realloc") {
 				return CI->getArgOperand(1);
+			}
+			else if (Name == "__ctype_b_loc") {
+				assert(0);
+				return ConstantInt::get(Int64Ty, 128 * sizeof(unsigned short));
+			}
+			else if (Name == "__ctype_toupper_loc" || Name == "__ctype_tolower_loc") {
+				assert(0);
+				return ConstantInt::get(Int64Ty, 128 * sizeof(int));
 			}
 		}
 	}
@@ -4890,6 +4904,7 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 			else {
 				if (!Limit) {
 					auto InsertPt = (LoopHeader) ? LoopHeader : I;
+#if 0
 					if (ICondLoop.count(V)) {
 						assert(0);
 						if (!isa<Instruction>(Base)) {
@@ -4904,12 +4919,13 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 							}
 						}
 					}
+#endif
 					Limit = createCondSafeLimit(F, InsertPt, Base, false, false);
 					IGetLengths.insert(Limit);
 					ILenToBaseMap[Limit] = Base;
-					//if (ICondLoop.count(V)) {
-					//	ICondLoop.insert(Limit);
-					//}
+					if (ICondLoop.count(V)) {
+						ICondLoop.insert(Limit);
+					}
 
 
 					IRBuilder<> IRB(I);
@@ -4961,6 +4977,7 @@ SanCheckSize(Function &F, Instruction *I, Value *V, Value *Limit,
 	if (!Limit) {
 		auto InsertPt = (LoopHeader) ? LoopHeader : I;
 
+#if 0
 		if (ICondLoop.count(V)) {
 			assert(0);
 			if (!isa<Instruction>(Base)) {
@@ -4975,14 +4992,14 @@ SanCheckSize(Function &F, Instruction *I, Value *V, Value *Limit,
 				}
 			}
 		}
-
+#endif
 
 		Limit = createCondSafeLimit(F, InsertPt, Base, false, false);
 		IGetLengths.insert(Limit);
 		ILenToBaseMap[Limit] = Base;
-		//if (ICondLoop.count(V)) {
-		//	ICondLoop.insert(Limit);
-		//}
+		if (ICondLoop.count(V)) {
+			ICondLoop.insert(Limit);
+		}
 	}
 	IRBuilder<> IRB(I);
 	return checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, V->getType(), V, false);
@@ -5673,6 +5690,7 @@ addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
 
 static void optimizeLimit(Function &F, CallInst *CI)
 {
+	assert(!CI->uses().empty());
 	IRBuilder<> IRB(CI);
 	auto Base = CI->getArgOperand(0);
 	auto Int8Ty = IRB.getInt8Ty();
@@ -5719,6 +5737,7 @@ static void optimizeLimit(Function &F, CallInst *CI)
 
 static void optimizeInterior(Function &F, CallInst *CI)
 {
+	assert(!CI->uses().empty());
 	IRBuilder<> IRB(CI);
 	auto Base = CI->getArgOperand(0);
 	auto Ptr = CI->getArgOperand(1);
@@ -5763,6 +5782,7 @@ static void optimizeInterior(Function &F, CallInst *CI)
 
 static void optimizeCheckSize(Function &F, CallInst *CI)
 {
+	assert(!CI->uses().empty());
 	IRBuilder<> IRB(CI);
 	auto Int8Ty = IRB.getInt8Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
@@ -5787,6 +5807,7 @@ static void optimizeCheckSize(Function &F, CallInst *CI)
 
 static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
 {
+	assert(!CI->uses().empty());
 	IRBuilder<> IRB(CI);
 	auto Base = CI->getArgOperand(0);
 	auto Int8Ty = IRB.getInt8Ty();
@@ -6241,9 +6262,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, ILoopUsages, ICondLoop, Recurrance)) {
 			ISafeBases.insert(Base);
 		}
-		else if (Recurrance) {
+		/*else if (Recurrance) {
 			ISafeBases.insert(Base);
-		}
+		}*/
 	}
 
 
