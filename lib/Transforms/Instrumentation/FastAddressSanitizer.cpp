@@ -5831,21 +5831,37 @@ static void optimizeCheckSize(Function &F, CallInst *CI)
 	CI->eraseFromParent();
 }
 
-static void optimizeAbort(Function &F, CallInst *CI, bool Abort2)
+static BasicBlock* getTrapBB(Function *Fn)
 {
+#if 0
+  auto TrapBB = BasicBlock::Create(Fn->getContext(), "trap", Fn);
+  IRBuilder<> IRB(TrapBB);
+
+  auto *F = Intrinsic::getDeclaration(Fn->getParent(), Intrinsic::trap);
+  CallInst *TrapCall = IRB.CreateCall(F, {});
+  TrapCall->setDoesNotReturn();
+  TrapCall->setDoesNotThrow();
+  IRB.CreateUnreachable();
+	return TrapBB;
+#endif
+	return NULL;
+}
+
+static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *TrapBB)
+{
+	auto M = F.getParent();
 	auto Cond = CI->getOperand(5);
 	auto Base = CI->getArgOperand(0);
 	auto Ptr = CI->getArgOperand(1);
 	auto Limit = CI->getArgOperand(2);
 	auto PtrSz = cast<ConstantInt>(CI->getArgOperand(3))->getZExtValue();
-	auto M = F.getParent();
 
 	Instruction *Then = SplitBlockAndInsertIfThen(Cond, CI, false);
 	IRBuilder<> IRB(Then);
+
 	auto Int64Ty = IRB.getInt64Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	FunctionCallee Fn;
-
 	Limit = IRB.CreateGEP(Limit, ConstantInt::get(Int64Ty, -PtrSz));
 	if (Abort2) {
 		Fn = M->getOrInsertFunction("san_abort2_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
@@ -5854,7 +5870,6 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2)
 		Fn = M->getOrInsertFunction("san_abort3_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
 	}
 	IRB.CreateCall(Fn, {Base, Ptr, Limit});
-
 	CI->eraseFromParent();
 }
 
@@ -6173,13 +6188,15 @@ static void optimizeHandlers(Function &F)
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
 	removeDuplicatesSizeCalls(F, CheckSize);
 
+	if (!Abort2Calls.empty() || !Abort3Calls.empty()) {
+		BasicBlock *TrapBB = getTrapBB(&F);
+		for (auto LC : Abort2Calls) {
+			optimizeAbort(F, LC, true, TrapBB);
+		}
 
-	for (auto LC : Abort2Calls) {
-		optimizeAbort(F, LC, true);
-	}
-
-	for (auto LC : Abort3Calls) {
-		optimizeAbort(F, LC, false);
+		for (auto LC : Abort3Calls) {
+			optimizeAbort(F, LC, false, TrapBB);
+		}
 	}
 
 	for (auto LC : LimitCalls) {
