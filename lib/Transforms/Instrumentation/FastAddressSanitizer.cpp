@@ -5894,10 +5894,12 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
 		return;
 	}
-	errs() << "Def is OutSide Loop: " << *Ptr << " Use: " << *CI << "\n";
-	errs() << "Before: " << F << "\n";
+	//auto Header = L2->getLoopPreheader();
+	//auto Term = Header->getTerminator();
+  //CI->removeFromParent();
+	//CI->insertBefore(Term);
+	//auto L3 = LI->getLoopFor(Header);
 	callOnceInLoopAfterDef(F, CI, cast<Instruction>(Ptr), DT, LI);
-	errs() << "After: " << F << "\n";
 }
 
 static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *TrapBB)
