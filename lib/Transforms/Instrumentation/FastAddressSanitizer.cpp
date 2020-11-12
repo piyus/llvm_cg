@@ -3331,11 +3331,11 @@ abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base,
 	FunctionCallee Fn;
 	if (!indefiniteBase(Base, DL)) {
 		Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy,
-			Int8PtrTy, Int8PtrTy, IRB.getInt64Ty(), Callsite->getType(), Cond->getType());
+			Ptr->getType(), Int8PtrTy, IRB.getInt64Ty(), Callsite->getType(), Cond->getType());
 	}
 	else {
 		Fn = M->getOrInsertFunction("san_abort3", IRB.getVoidTy(), Int8PtrTy,
-			Int8PtrTy, Int8PtrTy, IRB.getInt64Ty(), Callsite->getType(), Cond->getType());
+			Ptr->getType(), Int8PtrTy, IRB.getInt64Ty(), Callsite->getType(), Cond->getType());
 	}
 	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, TySize, Callsite, Cond});
 
@@ -3389,7 +3389,7 @@ instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, V
 	  auto I = cast<Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
 			if (!isNonAccessInst(I, Ptr)) {
-				abortIfTrue(F, Cmp, I, Base8, Ptr8, Limit, TySize, Callsite);
+				abortIfTrue(F, Cmp, I, Base8, Ptr, Limit, TySize, Callsite);
 			}
 			else {
 				// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
@@ -3458,10 +3458,10 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit,
 	}
 
 	if (!MayNull) {
-		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
+		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
 	}
 	else {
-		instrumentAllUses(F, InstPtr, UnsafeUses, Cmp, Base8, Ptr8, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
+		instrumentAllUses(F, cast<Instruction>(Ptr), UnsafeUses, Cmp, Base8, Ptr8, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
 	}
 	callsites++;
 }
@@ -3498,7 +3498,7 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
 	assert(CmpInst && "no cmp inst");
 
-	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
+	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
 	callsites++;
 }
 
@@ -4863,6 +4863,33 @@ static void createCondCall(Function &F, Instruction *_Call, Value *Base)
   Call->eraseFromParent();
 }
 
+static void callOnceInLoopAfterDef(Function &F, Instruction *Call,
+	Instruction *Def, DominatorTree *DT, LoopInfo *LI)
+{
+	auto Entry = F.begin()->getFirstNonPHI();
+	IRBuilder<> IRB(cast<Instruction>(Entry));
+
+	auto Int8Ty = IRB.getInt8Ty();
+	auto Tmp = IRB.CreateAlloca(Int8Ty);
+
+	if (isa<PHINode>(Def)) {
+		Def = Def->getParent()->getFirstNonPHI();
+	}
+
+	IRB.SetInsertPoint(Def);
+	IRB.CreateStore(Constant::getNullValue(Int8Ty), Tmp);
+
+
+	IRB.SetInsertPoint(Call);
+	auto First = IRB.CreateLoad(Tmp);
+	auto Cmp = IRB.CreateICmpEQ(First, Constant::getNullValue(Int8Ty));
+	Instruction *IfTerm = SplitBlockAndInsertIfThen(Cmp, Call, false, NULL, DT, LI);
+  Call->removeFromParent();
+	Call->insertBefore(IfTerm);
+	IRB.SetInsertPoint(IfTerm);
+	IRB.CreateStore(ConstantInt::get(Int8Ty, 1), Tmp);
+}
+
 static Value* createCondSafeLimit(Function &F, Instruction *InsertPt, Value *Base, bool NeedRecurrance, bool MustCheck)
 {
 	IRBuilder<> IRB(InsertPt);
@@ -5847,6 +5874,26 @@ static BasicBlock* getTrapBB(Function *Fn)
 	return NULL;
 }
 
+static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI)
+{
+	auto Ptr = cast<Instruction>(CI->getArgOperand(1));
+	auto L2 = LI->getLoopFor(CI->getParent());
+	if (L2 == NULL) {
+		return;
+	}
+	auto L1 = LI->getLoopFor(Ptr->getParent());
+	if (L1 == L2) {
+		return;
+	}
+	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
+		return;
+	}
+	errs() << "Def is OutSide Loop: " << *Ptr << " Use: " << *CI << "\n";
+	errs() << "Before: " << F << "\n";
+	callOnceInLoopAfterDef(F, CI, cast<Instruction>(Ptr), DT, LI);
+	errs() << "After: " << F << "\n";
+}
+
 static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *TrapBB)
 {
 	auto M = F.getParent();
@@ -5864,13 +5911,14 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	FunctionCallee Fn;
 	Limit = IRB.CreateGEP(Limit, ConstantInt::get(Int64Ty, -PtrSz));
 	if (Abort2) {
-		Fn = M->getOrInsertFunction("san_abort2_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
+		Fn = M->getOrInsertFunction("san_abort2_fast", IRB.getVoidTy(), Int8PtrTy, Ptr->getType(), Int8PtrTy);
 	}
 	else {
-		Fn = M->getOrInsertFunction("san_abort3_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
+		Fn = M->getOrInsertFunction("san_abort3_fast", IRB.getVoidTy(), Int8PtrTy, Ptr->getType(), Int8PtrTy);
 	}
 	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->eraseFromParent();
 }
 
@@ -6185,12 +6233,27 @@ static void optimizeHandlers(Function &F)
 		}
 	}
 
+
 	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls);
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
 	removeDuplicatesSizeCalls(F, CheckSize);
 
+
+	DominatorTree DT(F);
+	LoopInfo LI(DT);
+
+
 	if (!Abort2Calls.empty() || !Abort3Calls.empty()) {
 		BasicBlock *TrapBB = getTrapBB(&F);
+
+		for (auto LC : Abort2Calls) {
+			optimizeAbortLoop(F, LC, &DT, &LI);
+		}
+
+		for (auto LC : Abort3Calls) {
+			optimizeAbortLoop(F, LC, &DT, &LI);
+		}
+
 		for (auto LC : Abort2Calls) {
 			optimizeAbort(F, LC, true, TrapBB);
 		}
