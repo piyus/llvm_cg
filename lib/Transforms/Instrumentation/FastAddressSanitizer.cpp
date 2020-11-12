@@ -3409,6 +3409,16 @@ static Instruction* getUseInBasicBlock(Instruction *Ptr) {
 	return Ptr->getParent()->getTerminator();
 }
 
+static Value* getPtrOffset(Function &F, IRBuilder<> &IRB, Value *V)
+{
+	auto Intrin = Intrinsic::ptroffset;
+
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrin, {IRB.getInt64Ty(), V->getType(), IRB.getInt64Ty()});
+	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), 49)});
+	return V;
+}
+
 void FastAddressSanitizer::
 addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit, 
 	Value *TySize, DenseSet<Value*> &UnsafeUses, int &callsites,
@@ -3421,6 +3431,10 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit,
 	IRBuilder<> IRB(InstPtr);
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+	auto BaseOffset = getPtrOffset(F, IRB, Base8);
+	BaseOffset = IRB.CreateNeg(BaseOffset);
+	auto NewBase = IRB.CreateGEP(Base8, BaseOffset);
+
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
 	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
 	if (Limit->getType()->isIntegerTy()) {
@@ -3428,7 +3442,7 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit,
 	}
 	assert(Limit->getType() == Int8PtrTy);
 
-	auto Cmp1 = IRB.CreateICmpULT(Ptr8, Base8);
+	auto Cmp1 = IRB.CreateICmpULT(Ptr8, NewBase);
 	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
 	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
@@ -3470,10 +3484,15 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 	}
 
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+	auto BaseOffset = getPtrOffset(F, IRB, Base8);
+	BaseOffset = IRB.CreateNeg(BaseOffset);
+	auto NewBase = IRB.CreateGEP(Base8, BaseOffset);
+
+
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
 	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
 	
-	auto Cmp1 = IRB.CreateICmpULT(Ptr8, Base8);
+	auto Cmp1 = IRB.CreateICmpULT(Ptr8, NewBase);
 	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
 	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
@@ -3983,6 +4002,7 @@ static Value* getNoInteriorCall(Function &F, Instruction *I, Value *V)
 	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48)-1)});
 	return V;
 }
+
 
 static Value* getNoInteriorMap(Function &F, Instruction *Unused, Value *Oper, DenseMap<Value*, Value*> &RepMap)
 {
