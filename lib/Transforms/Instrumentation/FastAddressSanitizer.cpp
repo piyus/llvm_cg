@@ -3317,28 +3317,32 @@ postDominatesAnyStore(Function &F, Value *V, PostDominatorTree &PDT, DenseSet<In
 
 static void
 abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base,
-	Value *Ptr, Value *Limit, Value *PtrLimit, Value *Callsite)
+	Value *Ptr, Value *Limit, Value *TySize, Value *Callsite)
 {
 	auto Int8PtrTy = Base->getType();
 	auto M = F.getParent();
   //auto &C = M->getContext();
 	const DataLayout &DL = F.getParent()->getDataLayout();
 
-	Instruction *Then =
-        SplitBlockAndInsertIfThen(Cond, InsertPt, false);    //,
+	//Instruction *Then =
+    //    SplitBlockAndInsertIfThen(Cond, InsertPt, false);    //,
                                   //MDBuilder(C).createBranchWeights(1, 100000));
-	IRBuilder<> IRB(Then);
+	IRBuilder<> IRB(InsertPt);
 	FunctionCallee Fn;
 	if (!indefiniteBase(Base, DL)) {
-		Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Callsite->getType());
+		Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy,
+			Int8PtrTy, Int8PtrTy, IRB.getInt64Ty(), Callsite->getType(), Cond->getType());
 	}
 	else {
-		Fn = M->getOrInsertFunction("san_abort3", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, Int8PtrTy, Callsite->getType());
+		Fn = M->getOrInsertFunction("san_abort3", IRB.getVoidTy(), Int8PtrTy,
+			Int8PtrTy, Int8PtrTy, IRB.getInt64Ty(), Callsite->getType(), Cond->getType());
 	}
-	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, PtrLimit, Callsite});
+	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, TySize, Callsite, Cond});
+
 	//auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy());
 	//auto Call = IRB.CreateCall(Fn, {});
 	//Call->addAttribute(AttributeList::FunctionIndex, Attribute::Cold);
+
 	if (F.getSubprogram()) {
     if (auto DL = InsertPt->getDebugLoc()) {
       Call->setDebugLoc(DL);
@@ -3379,13 +3383,13 @@ setInvalidBit(Function &F, Instruction *I, Value *Cmp, Value *V) {
 
 static void
 instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, Value *Cmp,
-	Value *Base8, Value *Ptr8, Value *Limit, Value *PtrLimit, Value *Callsite) {
+	Value *Base8, Value *Ptr8, Value *Limit, Value *TySize, Value *Callsite) {
 
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
 			if (!isNonAccessInst(I, Ptr)) {
-				abortIfTrue(F, Cmp, I, Base8, Ptr8, Limit, PtrLimit, Callsite);
+				abortIfTrue(F, Cmp, I, Base8, Ptr8, Limit, TySize, Callsite);
 			}
 			else {
 				// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
@@ -3440,10 +3444,10 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit,
 	}
 
 	if (!MayNull) {
-		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, ConstantInt::get(Int32Ty, callsites));
+		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
 	}
 	else {
-		instrumentAllUses(F, InstPtr, UnsafeUses, Cmp, Base8, Ptr8, Limit, PtrLimit, ConstantInt::get(Int32Ty, callsites));
+		instrumentAllUses(F, InstPtr, UnsafeUses, Cmp, Base8, Ptr8, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
 	}
 	callsites++;
 }
@@ -3475,7 +3479,7 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
 	assert(CmpInst && "no cmp inst");
 
-	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, PtrLimit, ConstantInt::get(Int32Ty, callsites));
+	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr8, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
 	callsites++;
 }
 
@@ -5807,6 +5811,34 @@ static void optimizeCheckSize(Function &F, CallInst *CI)
 	CI->eraseFromParent();
 }
 
+static void optimizeAbort(Function &F, CallInst *CI, bool Abort2)
+{
+	auto Cond = CI->getOperand(5);
+	auto Base = CI->getArgOperand(0);
+	auto Ptr = CI->getArgOperand(1);
+	auto Limit = CI->getArgOperand(2);
+	auto PtrSz = cast<ConstantInt>(CI->getArgOperand(3))->getZExtValue();
+	auto M = F.getParent();
+
+	Instruction *Then = SplitBlockAndInsertIfThen(Cond, CI, false);
+	IRBuilder<> IRB(Then);
+	auto Int64Ty = IRB.getInt64Ty();
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	FunctionCallee Fn;
+
+	Limit = IRB.CreateGEP(Limit, ConstantInt::get(Int64Ty, -PtrSz));
+	if (Abort2) {
+		Fn = M->getOrInsertFunction("san_abort2_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
+	}
+	else {
+		Fn = M->getOrInsertFunction("san_abort3_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
+	}
+	IRB.CreateCall(Fn, {Base, Ptr, Limit});
+
+	CI->eraseFromParent();
+}
+
+
 
 static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
 {
@@ -5898,6 +5930,84 @@ canReplace(DominatorTree &DT,
 	}
 	return NULL;
 }
+
+static void removeDuplicatesAborts(Function &F,
+	DenseSet<CallInst*> &Aborts,
+	DenseSet<CallInst*> &Abort2Calls,
+	DenseSet<CallInst*> &Abort3Calls
+	)
+{
+	DominatorTree DT(F);
+	PostDominatorTree PDT(F);
+	DenseSet<CallInst*> ToDelete;
+
+	for (auto itr1 = Aborts.begin(); itr1 != Aborts.end(); itr1++) {
+		for (auto itr2 = std::next(itr1); itr2 != Aborts.end(); itr2++) {
+
+			auto *Call1 = dyn_cast<CallInst>(*itr1);
+      auto *Call2 = dyn_cast<CallInst>(*itr2);
+
+			if (ToDelete.count(Call1) || ToDelete.count(Call2)) {
+				continue;
+			}
+
+			auto Call1Ptr = Call1->getArgOperand(1)->stripPointerCasts();
+			auto Call2Ptr = Call2->getArgOperand(1)->stripPointerCasts();
+			auto Call1TySize = cast<ConstantInt>(Call1->getArgOperand(3))->getZExtValue();
+			auto Call2TySize = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
+
+			if (Call1Ptr == Call2Ptr) {
+				if (DT.dominates(Call1->getParent(), Call2->getParent())) {
+					if (Call1TySize >= Call2TySize) {
+						ToDelete.insert(Call2);
+						errs() << "ABORT1: " << *Call1 << " SIZE:" << Call1TySize << "\n";
+						errs() << "ABORT2: " << *Call2 << " SIZE:" << Call2TySize << "\n";
+
+					}
+					else {
+						if (PDT.dominates(Call2->getParent(), Call1->getParent())) {
+							Call1->setArgOperand(3, Call2->getArgOperand(3));
+							ToDelete.insert(Call2);
+							errs() << "ABORT1: " << *Call1 << " SIZE:" << Call1TySize << "\n";
+							errs() << "ABORT2: " << *Call2 << " SIZE:" << Call2TySize << "\n";
+						}
+					}
+				}
+				else if (DT.dominates(Call2->getParent(), Call1->getParent())) {
+					if (Call2TySize >= Call1TySize) {
+						ToDelete.insert(Call1);
+						errs() << "ABORT1: " << *Call2 << " SIZE:" << Call2TySize << "\n";
+						errs() << "ABORT2: " << *Call1 << " SIZE:" << Call1TySize << "\n";
+					}
+					else {
+						if (PDT.dominates(Call1->getParent(), Call2->getParent())) {
+							Call2->setArgOperand(3, Call1->getArgOperand(3));
+							ToDelete.insert(Call1);
+							errs() << "ABORT1: " << *Call2 << " SIZE:" << Call2TySize << "\n";
+							errs() << "ABORT2: " << *Call1 << " SIZE:" << Call1TySize << "\n";
+						}
+					}
+				}
+			}
+
+
+		}
+	}
+
+	for (auto Call : ToDelete) {
+		if (Abort2Calls.count(Call)) {
+			Abort2Calls.erase(Call);
+		}
+		else if (Abort3Calls.count(Call)) {
+			Abort3Calls.erase(Call);
+		}
+		else {
+			assert(0);
+		}
+		Call->eraseFromParent();
+	}
+}
+
 
 static void removeDuplicatesInterior(Function &F,
 	DenseSet<CallInst*> &Interiors,
@@ -6000,6 +6110,9 @@ static void optimizeHandlers(Function &F)
 	DenseSet<CallInst*> CheckSize;
 	DenseSet<CallInst*> CheckSizeOffset;
 	DenseSet<CallInst*> Interiors;
+	DenseSet<CallInst*> Abort2Calls;
+	DenseSet<CallInst*> Abort3Calls;
+	DenseSet<CallInst*> Aborts;
 
 	for (auto &BB : F) {
 		for (auto &II : BB) {
@@ -6011,24 +6124,43 @@ static void optimizeHandlers(Function &F)
 					if (Name  == "san_page_fault_limit") {
 						LimitCalls.insert(CI);
 					}
-					if (Name == "san_interior") {
+					else if (Name == "san_interior") {
 						InteriorCalls.insert(CI);
 						Interiors.insert(CI);
 					}
-					if (Name == "san_check_size_limit") {
+					else if (Name == "san_check_size_limit") {
 						CheckSize.insert(CI);
 					}
-					if (Name == "san_interior_limit") {
+					else if (Name == "san_interior_limit") {
 						CheckSizeOffset.insert(CI);
 						Interiors.insert(CI);
 					}
+					else if (Name == "san_abort2") {
+						Abort2Calls.insert(CI);
+						Aborts.insert(CI);
+					}
+					else if (Name == "san_abort3") {
+						Abort3Calls.insert(CI);
+						Aborts.insert(CI);
+					}
+
 				}
 			}
 		}
 	}
 
+	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls);
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
 	removeDuplicatesSizeCalls(F, CheckSize);
+
+
+	for (auto LC : Abort2Calls) {
+		optimizeAbort(F, LC, true);
+	}
+
+	for (auto LC : Abort3Calls) {
+		optimizeAbort(F, LC, false);
+	}
 
 	for (auto LC : LimitCalls) {
 		optimizeLimit(F, LC);
@@ -6313,7 +6445,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		assert(PtrToBaseMap.count(Ptr));
 		Value* Base = PtrToBaseMap[Ptr];
 		uint64_t TypeSize = UnsafePointers[Ptr];
-		auto TySize = ConstantInt::get(Int32Ty, (int)TypeSize);
+		auto TySize = ConstantInt::get(Int64Ty, (int)TypeSize);
 		bool MayNull = PtrMayBeNull.count(Ptr) > 0;
 
 		if (!MayNull) {
