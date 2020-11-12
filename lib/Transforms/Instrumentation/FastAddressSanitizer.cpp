@@ -3316,10 +3316,10 @@ postDominatesAnyStore(Function &F, Value *V, PostDominatorTree &PDT, DenseSet<In
 
 
 static void
-abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base,
+abortIfTrue(Function &F, Instruction *InsertPt, Value *Base,
 	Value *Ptr, Value *Limit, Value *TySize, Value *Callsite)
 {
-	auto Int8PtrTy = Base->getType();
+	//auto Int8PtrTy = Base->getType();
 	auto M = F.getParent();
   //auto &C = M->getContext();
 	const DataLayout &DL = F.getParent()->getDataLayout();
@@ -3330,14 +3330,14 @@ abortIfTrue(Function &F, Value *Cond, Instruction *InsertPt, Value *Base,
 	IRBuilder<> IRB(InsertPt);
 	FunctionCallee Fn;
 	if (!indefiniteBase(Base, DL)) {
-		Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Int8PtrTy,
-			Ptr->getType(), Int8PtrTy, IRB.getInt64Ty(), Callsite->getType(), Cond->getType());
+		Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Base->getType(),
+			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(), Callsite->getType());
 	}
 	else {
-		Fn = M->getOrInsertFunction("san_abort3", IRB.getVoidTy(), Int8PtrTy,
-			Ptr->getType(), Int8PtrTy, IRB.getInt64Ty(), Callsite->getType(), Cond->getType());
+		Fn = M->getOrInsertFunction("san_abort3", IRB.getVoidTy(), Base->getType(),
+			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(), Callsite->getType());
 	}
-	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, TySize, Callsite, Cond});
+	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, TySize, Callsite});
 
 	//auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy());
 	//auto Call = IRB.CreateCall(Fn, {});
@@ -3382,14 +3382,15 @@ setInvalidBit(Function &F, Instruction *I, Value *Cmp, Value *V) {
 #endif
 
 static void
-instrumentAllUses(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses, Value *Cmp,
-	Value *Base8, Value *Ptr8, Value *Limit, Value *TySize, Value *Callsite) {
+instrumentAllUses(Function &F, Instruction *Ptr, Value *Base,
+	DenseSet<Value*> &UnsafeUses,
+	Value *Limit, Value *TySize, Value *Callsite) {
 
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<Instruction>(UI.getUser());
 		if (UnsafeUses.count(I)) {
 			if (!isNonAccessInst(I, Ptr)) {
-				abortIfTrue(F, Cmp, I, Base8, Ptr, Limit, TySize, Callsite);
+				abortIfTrue(F, I, Base, Ptr, Limit, TySize, Callsite);
 			}
 			else {
 				// THIS LOGIC DOESN'T WORK BECAUSE BASE CAN'T BE DEREFRENCED
@@ -3420,7 +3421,7 @@ static Value* getPtrOffset(Function &F, IRBuilder<> &IRB, Value *V)
 }
 
 void FastAddressSanitizer::
-addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit, 
+addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit,
 	Value *TySize, DenseSet<Value*> &UnsafeUses, int &callsites,
 	bool MayNull)
 {
@@ -3428,8 +3429,10 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit,
 	assert(InstPtr && "Invalid Ptr");
 
 	InstPtr = getUseInBasicBlock(InstPtr);
-	IRBuilder<> IRB(InstPtr);
 
+
+#if 0
+	IRBuilder<> IRB(InstPtr);
 	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 	auto BaseOffset = getPtrOffset(F, IRB, Base8);
 	BaseOffset = IRB.CreateNeg(BaseOffset);
@@ -3456,12 +3459,13 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit,
 			assert(0);
 		//}
 	}
+#endif
 
 	if (!MayNull) {
-		abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
+		abortIfTrue(F, InstPtr, Base, Ptr, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
 	}
 	else {
-		instrumentAllUses(F, cast<Instruction>(Ptr), UnsafeUses, Cmp, Base8, Ptr8, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
+		instrumentAllUses(F, cast<Instruction>(Ptr), Base, UnsafeUses, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
 	}
 	callsites++;
 }
@@ -3472,6 +3476,7 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 	int &callsites, 
 	Value *Limit)
 {
+#if 0
 	IRBuilder<> IRB(InstPtr);
 
 	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
@@ -3497,8 +3502,9 @@ addBoundsCheckWithLenAtUseHelper(Function &F,
 	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
 	auto CmpInst = dyn_cast<Instruction>(Cmp);
 	assert(CmpInst && "no cmp inst");
+#endif
 
-	abortIfTrue(F, Cmp, CmpInst->getNextNode(), Base8, Ptr, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
+	abortIfTrue(F, InstPtr, Base, Ptr, Limit, TySize, ConstantInt::get(Int32Ty, callsites));
 	callsites++;
 }
 
@@ -5897,26 +5903,50 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *TrapBB)
 {
 	auto M = F.getParent();
-	auto Cond = CI->getOperand(5);
+	IRBuilder<> IRB(CI);
+
 	auto Base = CI->getArgOperand(0);
 	auto Ptr = CI->getArgOperand(1);
 	auto Limit = CI->getArgOperand(2);
-	auto PtrSz = cast<ConstantInt>(CI->getArgOperand(3))->getZExtValue();
-
-	Instruction *Then = SplitBlockAndInsertIfThen(Cond, CI, false);
-	IRBuilder<> IRB(Then);
-
+	auto TySize = CI->getArgOperand(3);
+	auto PtrSz = cast<ConstantInt>(TySize)->getZExtValue();
 	auto Int64Ty = IRB.getInt64Ty();
+	auto Int8Ty = IRB.getInt8Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
+
+	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+	auto BaseOffset = getPtrOffset(F, IRB, Base8);
+	BaseOffset = IRB.CreateNeg(BaseOffset);
+	auto NewBase = IRB.CreateGEP(Base8, BaseOffset);
+
+	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
+	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
+	if (Limit->getType()->isIntegerTy()) {
+		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
+	}
+	assert(Limit->getType() == Int8PtrTy);
+
+	auto Cmp1 = IRB.CreateICmpULT(Ptr8, NewBase);
+	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
+	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
+
+	auto Intrinsic = dyn_cast<IntrinsicInst>(Base);
+	if (Intrinsic && Intrinsic->getIntrinsicID() != Intrinsic::safe_load) {
+		assert(0);
+	}
+
+	Instruction *Then = SplitBlockAndInsertIfThen(Cmp, CI, false);
+	IRB.SetInsertPoint(Then);
+
 	FunctionCallee Fn;
 	Limit = IRB.CreateGEP(Limit, ConstantInt::get(Int64Ty, -PtrSz));
 	if (Abort2) {
-		Fn = M->getOrInsertFunction("san_abort2_fast", IRB.getVoidTy(), Int8PtrTy, Ptr->getType(), Int8PtrTy);
+		Fn = M->getOrInsertFunction("san_abort2_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
 	}
 	else {
-		Fn = M->getOrInsertFunction("san_abort3_fast", IRB.getVoidTy(), Int8PtrTy, Ptr->getType(), Int8PtrTy);
+		Fn = M->getOrInsertFunction("san_abort3_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
 	}
-	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit});
+	auto Call = IRB.CreateCall(Fn, {Base8, Ptr8, Limit});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->eraseFromParent();
