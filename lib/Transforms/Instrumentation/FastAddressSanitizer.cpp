@@ -6050,7 +6050,8 @@ canReplace(DominatorTree &DT,
 static void removeDuplicatesAborts(Function &F,
 	DenseSet<CallInst*> &Aborts,
 	DenseSet<CallInst*> &Abort2Calls,
-	DenseSet<CallInst*> &Abort3Calls
+	DenseSet<CallInst*> &Abort3Calls,
+	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap
 	)
 {
 	DominatorTree DT(F);
@@ -6066,15 +6067,27 @@ static void removeDuplicatesAborts(Function &F,
 			if (ToDelete.count(Call1) || ToDelete.count(Call2)) {
 				continue;
 			}
+			auto Ptr1 = Call1->getArgOperand(1);
+			auto Ptr2 = Call2->getArgOperand(1);
 
-			auto Call1Ptr = Call1->getArgOperand(1)->stripPointerCasts();
-			auto Call2Ptr = Call2->getArgOperand(1)->stripPointerCasts();
-			auto Call1TySize = cast<ConstantInt>(Call1->getArgOperand(3))->getZExtValue();
-			auto Call2TySize = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
+			assert(UnsafeMap.count(Ptr1));
+			assert(UnsafeMap.count(Ptr2));
+			
+			auto Call1Base = UnsafeMap[Ptr1].first;
+			auto Call2Base = UnsafeMap[Ptr2].first;
 
-			if (Call1Ptr == Call2Ptr) {
+			if (Call1Base == Call2Base) {
+				auto Call1Offset = UnsafeMap[Ptr1].second;
+				auto Call2Offset = UnsafeMap[Ptr2].second;
+				assert(Call1Offset >= 0);
+				assert(Call2Offset >= 0);
+				auto Call1TySize = cast<ConstantInt>(Call1->getArgOperand(3))->getZExtValue();
+				auto Call2TySize = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
+				auto SizeTy = Call1->getArgOperand(3)->getType();
+
+
 				if (DT.dominates(Call1->getParent(), Call2->getParent())) {
-					if (Call1TySize >= Call2TySize) {
+					if (Call1TySize + Call1Offset >= Call2TySize + Call2Offset) {
 						ToDelete.insert(Call2);
 						errs() << "ABORT1: " << *Call1 << " SIZE:" << Call1TySize << "\n";
 						errs() << "ABORT2: " << *Call2 << " SIZE:" << Call2TySize << "\n";
@@ -6082,7 +6095,8 @@ static void removeDuplicatesAborts(Function &F,
 					}
 					else {
 						if (PDT.dominates(Call2->getParent(), Call1->getParent())) {
-							Call1->setArgOperand(3, Call2->getArgOperand(3));
+							auto Diff = Call2TySize + Call2Offset - Call1Offset;
+							Call1->setArgOperand(3, ConstantInt::get(SizeTy, Diff));
 							ToDelete.insert(Call2);
 							errs() << "ABORT1: " << *Call1 << " SIZE:" << Call1TySize << "\n";
 							errs() << "ABORT2: " << *Call2 << " SIZE:" << Call2TySize << "\n";
@@ -6090,14 +6104,15 @@ static void removeDuplicatesAborts(Function &F,
 					}
 				}
 				else if (DT.dominates(Call2->getParent(), Call1->getParent())) {
-					if (Call2TySize >= Call1TySize) {
+					if (Call2TySize + Call2Offset >= Call1TySize + Call1Offset) {
 						ToDelete.insert(Call1);
 						errs() << "ABORT1: " << *Call2 << " SIZE:" << Call2TySize << "\n";
 						errs() << "ABORT2: " << *Call1 << " SIZE:" << Call1TySize << "\n";
 					}
 					else {
 						if (PDT.dominates(Call1->getParent(), Call2->getParent())) {
-							Call2->setArgOperand(3, Call1->getArgOperand(3));
+							auto Diff = Call1TySize + Call1Offset - Call2Offset;
+							Call2->setArgOperand(3, ConstantInt::get(SizeTy, Diff));
 							ToDelete.insert(Call1);
 							errs() << "ABORT1: " << *Call2 << " SIZE:" << Call2TySize << "\n";
 							errs() << "ABORT2: " << *Call1 << " SIZE:" << Call1TySize << "\n";
@@ -6219,7 +6234,7 @@ static void removeDuplicatesSizeCalls(Function &F,
 }
 
 
-static void optimizeHandlers(Function &F)
+static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap)
 {
 	DenseSet<CallInst*> LimitCalls;
 	DenseSet<CallInst*> InteriorCalls;
@@ -6266,7 +6281,7 @@ static void optimizeHandlers(Function &F)
 	}
 
 
-	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls);
+	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, UnsafeMap);
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
 	removeDuplicatesSizeCalls(F, CheckSize);
 
@@ -6673,7 +6688,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 
-	optimizeHandlers(F);
+	optimizeHandlers(F, UnsafeMap);
 
   if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
 		errs() << "After San\n" << F << "\n";
