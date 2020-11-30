@@ -5949,7 +5949,7 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 		Fn = M->getOrInsertFunction("san_abort3_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
 	}
 	auto Call = IRB.CreateCall(Fn, {Base8, Ptr8, Limit});
-	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
+	//Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->eraseFromParent();
 }
