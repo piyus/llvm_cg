@@ -5899,7 +5899,7 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
   //CI->removeFromParent();
 	//CI->insertBefore(Term);
 	//auto L3 = LI->getLoopFor(Header);
-	callOnceInLoopAfterDef(F, CI, cast<Instruction>(Ptr), DT, LI);
+	callOnceInLoopAfterDef(F, CI, cast<Instruction>(Ptr)->getNextNode(), DT, LI);
 }
 
 static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *TrapBB)
@@ -6084,6 +6084,10 @@ static void removeDuplicatesAborts(Function &F,
 				auto Call1TySize = cast<ConstantInt>(Call1->getArgOperand(3))->getZExtValue();
 				auto Call2TySize = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
 				auto SizeTy = Call1->getArgOperand(3)->getType();
+
+				errs() << "BASE: " << *Call1Base << " OFF1:" << Call1Offset << " OFF2:" << Call2Offset << "\n";
+				errs() << "Ptr1:" << *Ptr1 << "\n";
+				errs() << "Ptr2:" << *Ptr2 << "\n";
 
 
 				if (DT.dominates(Call1->getParent(), Call2->getParent())) {
@@ -6281,7 +6285,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	}
 
 
-	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, UnsafeMap);
+	//removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, UnsafeMap);
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
 	removeDuplicatesSizeCalls(F, CheckSize);
 
