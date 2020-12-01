@@ -1281,6 +1281,7 @@ static uint64_t getRawAttributeMask(Attribute::AttrKind Val) {
     return 1ULL << 62;
   case Attribute::NoFree:
     return 1ULL << 63;
+  case Attribute::NoCallerSaved:
   case Attribute::NoSync:
     llvm_unreachable("nosync attribute not supported in raw format");
     break;
@@ -1314,7 +1315,8 @@ static void addRawAttributeValue(AttrBuilder &B, uint64_t Val) {
         I == Attribute::DereferenceableOrNull ||
         I == Attribute::ArgMemOnly ||
         I == Attribute::AllocSize ||
-        I == Attribute::NoSync)
+        I == Attribute::NoSync ||
+				I == Attribute::NoCallerSaved)
       continue;
     if (uint64_t A = (Val & getRawAttributeMask(I))) {
       if (I == Attribute::Alignment)
@@ -1541,6 +1543,8 @@ static Attribute::AttrKind getAttrFromCode(uint64_t Code) {
     return Attribute::ImmArg;
   case bitc::ATTR_KIND_SANITIZE_MEMTAG:
     return Attribute::SanitizeMemTag;
+  case bitc::ATTR_KIND_NO_CALLER_SAVED:
+    return Attribute::NoCallerSaved;
   }
 }
 

@@ -316,6 +316,8 @@ std::string Attribute::getAsString(bool InAttrGrp) const {
     return "noalias";
   if (hasAttribute(Attribute::NoBuiltin))
     return "nobuiltin";
+  if (hasAttribute(Attribute::NoCallerSaved))
+    return "nocallersaved";
   if (hasAttribute(Attribute::NoCapture))
     return "nocapture";
   if (hasAttribute(Attribute::NoDuplicate))

@@ -34,6 +34,9 @@ def Builtin : EnumAttr<"builtin">;
 def ByVal : EnumAttr<"byval">;
 
 /// Marks function as being in a cold path.
+def NoCallerSaved : EnumAttr<"nocallersaved">;
+
+/// Marks function as being in a cold path.
 def Cold : EnumAttr<"cold">;
 
 /// Can only be moved to control-equivalent blocks.
