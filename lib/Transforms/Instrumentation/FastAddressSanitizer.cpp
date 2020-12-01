@@ -27,6 +27,7 @@
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/BinaryFormat/MachO.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
@@ -652,8 +653,8 @@ struct FastAddressSanitizer {
   void instrumentMemIntrinsic(MemIntrinsic *MI);
   Value *memToShadow(Value *Shadow, IRBuilder<> &IRB);
 	void createInteriorFn(Function *F);
-  bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
-  bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI, AAResults *AA);
+  bool instrumentFunction(Function &F, const TargetLibraryInfo *TLI, AAResults *AA, AssumptionCache *AC);
+  bool instrumentFunctionNew(Function &F, const TargetLibraryInfo *TLI, AAResults *AA, AssumptionCache *AC);
 	void recordAllUnsafeAccesses(Function &F, DenseSet<Value*> &UnsafeUses,
 		DenseMap<Value*, uint64_t> &UnsafePointers, DenseSet<CallBase*> &CallSites,
 		DenseSet<ReturnInst*> &RetSites, DenseSet<StoreInst*> &Stores,
@@ -780,6 +781,7 @@ public:
     AU.addRequired<ASanFastGlobalsMetadataWrapperPass>();
     AU.addRequired<TargetLibraryInfoWrapperPass>();
 		AU.addRequiredTransitive<AAResultsWrapperPass>();
+		AU.addRequired<AssumptionCacheTracker>();
   }
 
   bool runOnFunction(Function &F) override {
@@ -790,7 +792,8 @@ public:
     FastAddressSanitizer ASan(*F.getParent(), &GlobalsMD, CompileKernel, Recover,
                           UseAfterScope);
 		AAResults *AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
-    return ASan.instrumentFunction(F, TLI, AA);
+		auto &ACT = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
+    return ASan.instrumentFunction(F, TLI, AA, &ACT);
   }
 
 private:
@@ -1241,7 +1244,8 @@ PreservedAnalyses FastAddressSanitizerPass::run(Function &F,
 		auto *AA = &AM.getResult<AAManager>(F);
 
     FastAddressSanitizer Sanitizer(M, R, CompileKernel, Recover, UseAfterScope);
-    if (Sanitizer.instrumentFunction(F, TLI, AA))
+		auto &AC = AM.getResult<AssumptionAnalysis>(F);
+    if (Sanitizer.instrumentFunction(F, TLI, AA, &AC))
       return PreservedAnalyses::none();
     return PreservedAnalyses::all();
   }
@@ -6047,16 +6051,54 @@ canReplace(DominatorTree &DT,
 	return NULL;
 }
 
+#if 0
+static bool
+getGEPDiff(Function &F, Value *V1, Value *V2, AAResults *AA, DominatorTree *DT, int64_t &Result)
+{
+	auto AC new AssumptionCache(F);
+  const DataLayout &DL = F.getParent()->getDataLayout();
+  auto BAA = new BasicAAResult(DL, F, TLI, *AC);
+
+	BasicAAResult BAA(*AA);
+	DecomposedGEP DecompGEP1, DecompGEP2;
+ 	bool GEP1MaxLookupReached =
+    BAA.DecomposeGEPExpression(GEP1, DecompGEP1, DL, NULL, DT);
+  bool GEP2MaxLookupReached =
+    BAA.DecomposeGEPExpression(V2, DecompGEP2, DL, NULL, DT);
+
+	if (GEP1MaxLookupReached || GEP2MaxLookupReached) {
+		return false;
+	}
+
+  APInt GEP1BaseOffset = DecompGEP1.StructOffset + DecompGEP1.OtherOffset;
+  APInt GEP2BaseOffset = DecompGEP2.StructOffset + DecompGEP2.OtherOffset;
+
+	GEP1BaseOffset -= GEP2BaseOffset;
+	BAA.GetIndexDifference(DecompGEP1.VarIndices, DecompGEP2.VarIndices);
+	if (DecompGEP1.VarIndices.empty()) {
+		if (GEP1BaseOffset == 0) {
+			errs() << "MUST ALIAS Found\n";
+    }
+		else {
+			errs() << "Constant diff\n";
+		}
+		return true;
+	}
+	return false;
+}
+#endif
+
 static void removeDuplicatesAborts(Function &F,
 	DenseSet<CallInst*> &Aborts,
 	DenseSet<CallInst*> &Abort2Calls,
 	DenseSet<CallInst*> &Abort3Calls,
-	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap
+	AAResults *AA
 	)
 {
 	DominatorTree DT(F);
 	PostDominatorTree PDT(F);
 	DenseSet<CallInst*> ToDelete;
+	int64_t Result;
 
 	for (auto itr1 = Aborts.begin(); itr1 != Aborts.end(); itr1++) {
 		for (auto itr2 = std::next(itr1); itr2 != Aborts.end(); itr2++) {
@@ -6070,62 +6112,12 @@ static void removeDuplicatesAborts(Function &F,
 			auto Ptr1 = Call1->getArgOperand(1);
 			auto Ptr2 = Call2->getArgOperand(1);
 
-			assert(UnsafeMap.count(Ptr1));
-			assert(UnsafeMap.count(Ptr2));
-			
-			auto Call1Base = UnsafeMap[Ptr1].first;
-			auto Call2Base = UnsafeMap[Ptr2].first;
+			auto Base1 = Call1->getArgOperand(0);
+			auto Base2 = Call2->getArgOperand(0);
 
-			if (Call1Base == Call2Base) {
-				auto Call1Offset = UnsafeMap[Ptr1].second;
-				auto Call2Offset = UnsafeMap[Ptr2].second;
-				assert(Call1Offset >= 0);
-				assert(Call2Offset >= 0);
-				auto Call1TySize = cast<ConstantInt>(Call1->getArgOperand(3))->getZExtValue();
-				auto Call2TySize = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
-				auto SizeTy = Call1->getArgOperand(3)->getType();
-
-				errs() << "BASE: " << *Call1Base << " OFF1:" << Call1Offset << " OFF2:" << Call2Offset << "\n";
-				errs() << "Ptr1:" << *Ptr1 << "\n";
-				errs() << "Ptr2:" << *Ptr2 << "\n";
-
-
-				if (DT.dominates(Call1->getParent(), Call2->getParent())) {
-					if (Call1TySize + Call1Offset >= Call2TySize + Call2Offset) {
-						ToDelete.insert(Call2);
-						errs() << "ABORT1: " << *Call1 << " SIZE:" << Call1TySize << "\n";
-						errs() << "ABORT2: " << *Call2 << " SIZE:" << Call2TySize << "\n";
-
-					}
-					else {
-						if (PDT.dominates(Call2->getParent(), Call1->getParent())) {
-							auto Diff = Call2TySize + Call2Offset - Call1Offset;
-							Call1->setArgOperand(3, ConstantInt::get(SizeTy, Diff));
-							ToDelete.insert(Call2);
-							errs() << "ABORT1: " << *Call1 << " SIZE:" << Call1TySize << "\n";
-							errs() << "ABORT2: " << *Call2 << " SIZE:" << Call2TySize << "\n";
-						}
-					}
-				}
-				else if (DT.dominates(Call2->getParent(), Call1->getParent())) {
-					if (Call2TySize + Call2Offset >= Call1TySize + Call1Offset) {
-						ToDelete.insert(Call1);
-						errs() << "ABORT1: " << *Call2 << " SIZE:" << Call2TySize << "\n";
-						errs() << "ABORT2: " << *Call1 << " SIZE:" << Call1TySize << "\n";
-					}
-					else {
-						if (PDT.dominates(Call1->getParent(), Call2->getParent())) {
-							auto Diff = Call1TySize + Call1Offset - Call2Offset;
-							Call2->setArgOperand(3, ConstantInt::get(SizeTy, Diff));
-							ToDelete.insert(Call1);
-							errs() << "ABORT1: " << *Call2 << " SIZE:" << Call2TySize << "\n";
-							errs() << "ABORT2: " << *Call1 << " SIZE:" << Call1TySize << "\n";
-						}
-					}
-				}
+			if (Base1 == Base2) {
+				//getGEPDiff(Ptr1, Ptr2, AA, &DT, Result);
 			}
-
-
 		}
 	}
 
@@ -6238,7 +6230,9 @@ static void removeDuplicatesSizeCalls(Function &F,
 }
 
 
-static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap)
+
+
+static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, AAResults *AA, AssumptionCache *AC)
 {
 	DenseSet<CallInst*> LimitCalls;
 	DenseSet<CallInst*> InteriorCalls;
@@ -6285,7 +6279,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	}
 
 
-	//removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, UnsafeMap);
+	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, AA);
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
 	removeDuplicatesSizeCalls(F, CheckSize);
 
@@ -6330,7 +6324,8 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
-																								 AAResults *AA) {
+																								 AAResults *AA,
+																								 AssumptionCache *AC) {
 	//FIXME: only if used in phi
 	//copyArgsByValToAllocas1(F);
 	//errs() << "Printing function\n" << F << "\n";
@@ -6692,7 +6687,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 
-	optimizeHandlers(F, UnsafeMap);
+	optimizeHandlers(F, UnsafeMap, AA, AC);
 
   if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
 		errs() << "After San\n" << F << "\n";
@@ -6708,8 +6703,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 bool FastAddressSanitizer::instrumentFunction(Function &F,
                                           const TargetLibraryInfo *TLI,
-																					AAResults *AA) {
-	instrumentFunctionNew(F, TLI, AA);
+																					AAResults *AA,
+																					AssumptionCache *AC) {
+	instrumentFunctionNew(F, TLI, AA, AC);
 	if (!CompileKernel)
 		return false;
 
