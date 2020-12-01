@@ -104,7 +104,7 @@ public:
   /// call site is not known.
   FunctionModRefBehavior getModRefBehavior(const Function *Fn);
 
-private:
+//private:
   // A linear transformation of a Value; this class represents ZExt(SExt(V,
   // SExtBits), ZExtBits) * Scale + Offset.
   struct VariableGEPIndex {

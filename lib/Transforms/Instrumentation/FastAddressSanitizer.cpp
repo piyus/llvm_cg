@@ -6051,22 +6051,32 @@ canReplace(DominatorTree &DT,
 	return NULL;
 }
 
-#if 0
 static bool
-getGEPDiff(Function &F, Value *V1, Value *V2, AAResults *AA, DominatorTree *DT, int64_t &Result)
+getGEPDiff(Function &F, Value *V1, Value *V2, BasicAAResult *BAR, DominatorTree *DT, AssumptionCache *AC, int64_t &Result)
 {
-	auto AC new AssumptionCache(F);
   const DataLayout &DL = F.getParent()->getDataLayout();
-  auto BAA = new BasicAAResult(DL, F, TLI, *AC);
+	BasicAAResult::DecomposedGEP DecompGEP1, DecompGEP2;
 
-	BasicAAResult BAA(*AA);
-	DecomposedGEP DecompGEP1, DecompGEP2;
+	V1 = V1->stripPointerCasts();
+	V2 = V2->stripPointerCasts();
+
+	if (!isa<GEPOperator>(V1) && !isa<GEPOperator>(V2)) {
+		return false;
+	}
+
+	unsigned MaxPointerSize = DL.getMaxPointerSizeInBits();
+  DecompGEP1.StructOffset = DecompGEP1.OtherOffset = APInt(MaxPointerSize, 0);
+  DecompGEP2.StructOffset = DecompGEP2.OtherOffset = APInt(MaxPointerSize, 0);
+
  	bool GEP1MaxLookupReached =
-    BAA.DecomposeGEPExpression(GEP1, DecompGEP1, DL, NULL, DT);
+    BAR->DecomposeGEPExpression(V1, DecompGEP1, DL, AC, DT);
   bool GEP2MaxLookupReached =
-    BAA.DecomposeGEPExpression(V2, DecompGEP2, DL, NULL, DT);
+    BAR->DecomposeGEPExpression(V2, DecompGEP2, DL, AC, DT);
 
 	if (GEP1MaxLookupReached || GEP2MaxLookupReached) {
+		return false;
+	}
+	if (DecompGEP1.Base != DecompGEP2.Base) {
 		return false;
 	}
 
@@ -6074,31 +6084,29 @@ getGEPDiff(Function &F, Value *V1, Value *V2, AAResults *AA, DominatorTree *DT, 
   APInt GEP2BaseOffset = DecompGEP2.StructOffset + DecompGEP2.OtherOffset;
 
 	GEP1BaseOffset -= GEP2BaseOffset;
-	BAA.GetIndexDifference(DecompGEP1.VarIndices, DecompGEP2.VarIndices);
+	BAR->GetIndexDifference(DecompGEP1.VarIndices, DecompGEP2.VarIndices);
 	if (DecompGEP1.VarIndices.empty()) {
-		if (GEP1BaseOffset == 0) {
-			errs() << "MUST ALIAS Found\n";
-    }
-		else {
-			errs() << "Constant diff\n";
-		}
+		Result = GEP1BaseOffset.getSExtValue();
 		return true;
 	}
 	return false;
 }
-#endif
 
 static void removeDuplicatesAborts(Function &F,
 	DenseSet<CallInst*> &Aborts,
 	DenseSet<CallInst*> &Abort2Calls,
 	DenseSet<CallInst*> &Abort3Calls,
-	AAResults *AA
+	AAResults *AA,
+	AssumptionCache *AC,
+	const TargetLibraryInfo *TLI
 	)
 {
 	DominatorTree DT(F);
-	PostDominatorTree PDT(F);
+	//PostDominatorTree PDT(F);
 	DenseSet<CallInst*> ToDelete;
 	int64_t Result;
+  const DataLayout &DL = F.getParent()->getDataLayout();
+  auto BAR = new BasicAAResult(DL, F, *TLI, *AC);
 
 	for (auto itr1 = Aborts.begin(); itr1 != Aborts.end(); itr1++) {
 		for (auto itr2 = std::next(itr1); itr2 != Aborts.end(); itr2++) {
@@ -6115,8 +6123,36 @@ static void removeDuplicatesAborts(Function &F,
 			auto Base1 = Call1->getArgOperand(0);
 			auto Base2 = Call2->getArgOperand(0);
 
+
 			if (Base1 == Base2) {
-				//getGEPDiff(Ptr1, Ptr2, AA, &DT, Result);
+				bool Found = getGEPDiff(F, Ptr1, Ptr2, BAR, &DT, AC, Result);
+				if (Found) {
+					bool Removed = false;
+
+					if (DT.dominates(Call1->getParent(), Call2->getParent())) {
+						ToDelete.insert(Call2);
+						if (Result < 0) {
+							auto SizeTy = Call1->getArgOperand(3)->getType();
+							auto TySize = cast<ConstantInt>(Call1->getArgOperand(3))->getZExtValue() - Result;
+							//Call1->setArgOperand(3, ConstantInt::get(SizeTy, TySize));
+						}
+						Removed = true;
+					}
+					else if (DT.dominates(Call2->getParent(), Call1->getParent())) {
+						ToDelete.insert(Call1);
+						if (Result > 0) {
+							auto SizeTy = Call2->getArgOperand(3)->getType();
+							auto TySize = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue() + Result;
+							//Call2->setArgOperand(3, ConstantInt::get(SizeTy, TySize));
+						}
+						Removed = true;
+					}
+					if (Removed) {
+						errs() << "Ptr1: " << *Ptr1 << "\n";
+						errs() << "Ptr2: " << *Ptr2 << "\n";
+						errs() << "DIFF is: " << Result << "\n";
+					}
+				}
 			}
 		}
 	}
@@ -6133,6 +6169,7 @@ static void removeDuplicatesAborts(Function &F,
 		}
 		Call->eraseFromParent();
 	}
+	errs() << "Printing Function:\n" << F << "\n";
 }
 
 
@@ -6232,7 +6269,7 @@ static void removeDuplicatesSizeCalls(Function &F,
 
 
 
-static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, AAResults *AA, AssumptionCache *AC)
+static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, AAResults *AA, AssumptionCache *AC, const TargetLibraryInfo *TLI)
 {
 	DenseSet<CallInst*> LimitCalls;
 	DenseSet<CallInst*> InteriorCalls;
@@ -6279,7 +6316,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	}
 
 
-	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, AA);
+	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, AA, AC, TLI);
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
 	removeDuplicatesSizeCalls(F, CheckSize);
 
@@ -6687,7 +6724,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 
-	optimizeHandlers(F, UnsafeMap, AA, AC);
+	optimizeHandlers(F, UnsafeMap, AA, AC, TLI);
 
   if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
 		errs() << "After San\n" << F << "\n";
