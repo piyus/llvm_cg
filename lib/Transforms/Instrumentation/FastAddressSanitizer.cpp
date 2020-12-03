@@ -3152,6 +3152,26 @@ inSameLoop(const Value *Base, const Value *Ptr, LoopInfo &LI)
 	return true;
 }
 
+static bool
+inSameLoop1(const Value *Base, const Value *Ptr1, const Value *Ptr2, LoopInfo &LI)
+{
+	if (isa<PHINode>(Base)) {
+		//errs() << "Finding BASE: "<< *Base << "\n";
+		auto L1 = LI.getLoopFor(cast<Instruction>(Ptr1)->getParent());
+		//errs() << "L1: " << L1 << "\n";
+		if (L1 == NULL) {
+			return true;
+		}
+		auto L2 = LI.getLoopFor(cast<Instruction>(Ptr2)->getParent());
+		//errs() << "L2: " << L2 << "\n";
+		if (LI.isNotAlreadyContainedIn(L2, L1)) {
+			//errs() << "L1 and L2 are different\n";
+			return false;
+		}
+	}
+	return true;
+}
+
 static Loop* baseIsOutSideLoopHelper(Instruction *Base, const Instruction *Ptr, LoopInfo &LI)
 {
 	auto L2 = LI.getLoopFor(cast<Instruction>(Ptr)->getParent());
@@ -5917,6 +5937,8 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	auto TySize = CI->getArgOperand(3);
 	auto Padding = CI->getArgOperand(4);
 
+	auto CallSite = CI->getArgOperand(5);
+
 	auto PaddingSz = cast<ConstantInt>(Padding)->getSExtValue();
 	assert(PaddingSz <= 0);
 
@@ -5931,12 +5953,12 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	auto NewBase = IRB.CreateGEP(Base8, BaseOffset);
 
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
+	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
 
 	if (PaddingSz != 0) {
 		Ptr8 = IRB.CreateGEP(Int8Ty, Ptr8, Padding);
 	}
 
-	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
 	if (Limit->getType()->isIntegerTy()) {
 		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
 	}
@@ -5957,12 +5979,12 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	FunctionCallee Fn;
 	Limit = IRB.CreateGEP(Limit, ConstantInt::get(Int64Ty, -PtrSz));
 	if (Abort2) {
-		Fn = M->getOrInsertFunction("san_abort2_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
+		Fn = M->getOrInsertFunction("san_abort2_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, CallSite->getType());
 	}
 	else {
-		Fn = M->getOrInsertFunction("san_abort3_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy);
+		Fn = M->getOrInsertFunction("san_abort3_fast", IRB.getVoidTy(), Int8PtrTy, Int8PtrTy, Int8PtrTy, CallSite->getType());
 	}
-	auto Call = IRB.CreateCall(Fn, {Base8, Ptr8, Limit});
+	auto Call = IRB.CreateCall(Fn, {Base8, Ptr8, Limit, CallSite});
 	//Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->eraseFromParent();
@@ -6102,6 +6124,50 @@ getGEPDiff(Function &F, Value *V1, Value *V2, BasicAAResult *BAR, DominatorTree 
 	return false;
 }
 
+static bool
+removeCall2(CallInst *Call1, CallInst *Call2, int64_t Diff, PostDominatorTree &PDT, Value *Base, LoopInfo &LI)
+{
+
+	int64_t Call1TySz = cast<ConstantInt>(Call1->getArgOperand(3))->getZExtValue();
+	int64_t Call2TySz = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
+
+	int64_t Call1Padding = cast<ConstantInt>(Call1->getArgOperand(4))->getSExtValue();
+	int64_t Call2Padding = cast<ConstantInt>(Call2->getArgOperand(4))->getSExtValue();
+
+	assert(Call1Padding <= 0);
+	assert(Call2Padding <= 0);
+
+	assert(Call1TySz > 0);
+	assert(Call2TySz > 0);
+
+	int64_t DiffLo = Diff + (Call1Padding - Call2Padding);
+	int64_t DiffHi = Diff + (Call1TySz - Call2TySz);
+
+	if (DiffLo > 0 || DiffHi < 0) {
+		if (!PDT.dominates(Call2->getParent(), Call1->getParent())) {
+			return false;
+		}
+		if (!inSameLoop1(Base, Call1, Call2, LI)) {
+			return false;
+		}
+	}
+
+	if (DiffLo > 0) {
+		auto SizeTy = Call1->getArgOperand(4)->getType();
+		int64_t NewPadding = Call1Padding - DiffLo;
+		Call1->setArgOperand(4, ConstantInt::get(SizeTy, NewPadding));
+	}
+
+	if (DiffHi < 0) {
+		auto SizeTy = Call1->getArgOperand(3)->getType();
+		int64_t NewSize = Call1TySz - DiffHi;
+		Call1->setArgOperand(3, ConstantInt::get(SizeTy, NewSize));
+	}
+	//errs() << "Call1: " << *Call1 << "\n";
+	//errs() << "Call2: " << *Call2 << "\n";
+	return true;
+}
+
 static void removeDuplicatesAborts(Function &F,
 	DenseSet<CallInst*> &Aborts,
 	DenseSet<CallInst*> &Abort2Calls,
@@ -6111,10 +6177,13 @@ static void removeDuplicatesAborts(Function &F,
 	const TargetLibraryInfo *TLI
 	)
 {
+
+	//errs() << "duplicate-aborts1: " << F << "\n";
 	DominatorTree DT(F);
-	//PostDominatorTree PDT(F);
+	LoopInfo LI(DT);
+	PostDominatorTree PDT(F);
 	DenseSet<CallInst*> ToDelete;
-	int64_t Result, Result1;
+	int64_t Result;
   const DataLayout &DL = F.getParent()->getDataLayout();
   auto BAR = new BasicAAResult(DL, F, *TLI, *AC);
 
@@ -6132,40 +6201,26 @@ static void removeDuplicatesAborts(Function &F,
 
 			auto Base1 = Call1->getArgOperand(0);
 			auto Base2 = Call2->getArgOperand(0);
+			bool Ret;
 
 
 			if (Base1 == Base2) {
 				bool Found = getGEPDiff(F, Ptr1, Ptr2, BAR, &DT, AC, Result);
 				if (Found) {
 					//bool Removed = false;
-					auto Call1TySz = cast<ConstantInt>(Call1->getArgOperand(3))->getZExtValue();
-					auto Call2TySz = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
-					Result1 = Result + Call1TySz - Call2TySz;
 
 
 					if (DT.dominates(Call1->getParent(), Call2->getParent())) {
-						ToDelete.insert(Call2);
-						if (Result > 0) {
-							auto SizeTy = Call1->getArgOperand(4)->getType();
-							Call1->setArgOperand(4, ConstantInt::get(SizeTy, -Result));
-						}
-						if (Result1 < 0) {
-							auto SizeTy = Call1->getArgOperand(3)->getType();
-							int64_t Size = Call1TySz - Result1;
-							Call1->setArgOperand(3, ConstantInt::get(SizeTy, Size));
+						Ret = removeCall2(Call1, Call2, Result, PDT, Base1, LI);
+						if (Ret) {
+							ToDelete.insert(Call2);
 						}
 						//Removed = true;
 					}
 					else if (DT.dominates(Call2->getParent(), Call1->getParent())) {
-						ToDelete.insert(Call1);
-						if (Result < 0) {
-							auto SizeTy = Call2->getArgOperand(4)->getType();
-							Call2->setArgOperand(4, ConstantInt::get(SizeTy, Result));
-						}
-						if (Result1 > 0) {
-							auto SizeTy = Call2->getArgOperand(3)->getType();
-							int64_t Size = Call2TySz + Result1;
-							Call2->setArgOperand(3, ConstantInt::get(SizeTy, Size));
+						Ret = removeCall2(Call2, Call1, -Result, PDT, Base1, LI);
+						if (Ret) {
+							ToDelete.insert(Call1);
 						}
 						//Removed = true;
 					}
@@ -6194,6 +6249,7 @@ static void removeDuplicatesAborts(Function &F,
 		Call->eraseFromParent();
 	}
 	//errs() << "Printing Function:\n" << F << "\n";
+	//errs() << "duplicate-aborts2: " << F << "\n";
 }
 
 
