@@ -668,8 +668,8 @@ struct FastAddressSanitizer {
 		DenseSet<Value*> &LargerThanBase,
 		const TargetLibraryInfo *TLI
 		);
-	void patchDynamicAlloca(Function &F, AllocaInst *AI);
-	void patchStaticAlloca(Function &F, AllocaInst *AI);
+	void patchDynamicAlloca(Function &F, AllocaInst *AI, Value *StackBase, int &RecordIndex);
+	void patchStaticAlloca(Function &F, AllocaInst *AI, Value *StackBase, int &RecordIndex);
 	//Value* getInterior(Function &F, Instruction *I, Value *V);
 	void addBoundsCheck(Function &F, Value *Base, Value *Ptr, 
 		Value *Size, Value *TySize, DenseSet<Value*> &UnsafeUses, int &callsites,
@@ -3048,6 +3048,14 @@ Value* FastAddressSanitizer::getLimit(Function &F, const Value *V1, const DataLa
 	return IRB.CreateLoad(Int8PtrTy, IRB.CreateBitCast(V, Int8PtrPtrTy));
 }
 
+static bool isPtrMask(const Value *V)
+{
+  auto I = dyn_cast<IntrinsicInst>(V);
+  return (I &&
+    (I->getIntrinsicID() == Intrinsic::ptrmask ||
+     I->getIntrinsicID() == Intrinsic::ptrmask1));
+}
+
 bool FastAddressSanitizer::isSafeAlloca(const AllocaInst *AllocaPtr) {
   SmallPtrSet<const Value *, 16> Visited;
   SmallVector<const Value *, 8> WorkList;
@@ -3083,6 +3091,10 @@ bool FastAddressSanitizer::isSafeAlloca(const AllocaInst *AllocaPtr) {
           continue;
         if (dyn_cast<MemIntrinsic>(I)) {
         	return false;
+        }
+
+				if (isPtrMask(I)) {
+          continue;
         }
 
         ImmutableCallSite::arg_iterator B = CS.arg_begin(), E = CS.arg_end();
@@ -4165,21 +4177,34 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 }
 
 
-static void recordStackPointer(Function *F, Instruction *I)
+static void recordStackPointer(Function *F, Instruction *I, Value *StackBase, int &RecordIndex)
 {
+	IRBuilder<> IRB(I->getNextNode());
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Int32Ty = IRB.getInt32Ty();
+	auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
+
+	auto BasePtr = IRB.CreateBitCast(StackBase, Int8PtrPtrTy);
+	auto StorePtr = IRB.CreateGEP(Int8PtrTy, BasePtr, ConstantInt::get(Int32Ty, RecordIndex));
+	RecordIndex++;
+	IRB.CreateStore(IRB.CreateBitCast(I, Int8PtrTy), StorePtr);
+
+#if 0
 	auto M = F->getParent();
 	auto RetTy = Type::getVoidTy(M->getContext());
 	auto Fn = M->getOrInsertFunction("san_record_stack_pointer", RetTy, I->getType());
 	CallInst::Create(Fn, {I}, "", I->getNextNode());
+#endif
 }
 
-static Value* enterScope(Function *F)
+static Value* enterScope(Function *F, int NumSlots)
 {
 	auto M = F->getParent();
 	auto RetTy = Type::getInt8PtrTy(M->getContext());
+	auto Int32Ty = Type::getInt32Ty(M->getContext());
   Instruction *Entry = dyn_cast<Instruction>(F->begin()->getFirstInsertionPt());
-	auto Fn = M->getOrInsertFunction("san_enter_scope", RetTy);
-	return CallInst::Create(Fn, {}, "", Entry);
+	auto Fn = M->getOrInsertFunction("san_enter_scope", RetTy, Int32Ty);
+	return CallInst::Create(Fn, {ConstantInt::get(Int32Ty, NumSlots)}, "", Entry);
 }
 
 static void exitScope(Function *F, Value *V)
@@ -4197,7 +4222,7 @@ static void exitScope(Function *F, Value *V)
 }
 
 
-void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI) {
+void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI, Value *StackBase, int &RecordIndex) {
 	uint64_t Size = getAllocaSizeInBytes(*AI);
 	uint64_t HeaderVal = 0xfaceULL | (Size << 32);
 	auto AllocaSize = ConstantInt::get(Int64Ty, HeaderVal);
@@ -4232,10 +4257,10 @@ void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI) {
 	Builder.CreateStore(AllocaSize, SizeField);
   AI->replaceAllUsesWith(Field);
 	AI->eraseFromParent();
-	recordStackPointer(&F, cast<Instruction>(Field));
+	recordStackPointer(&F, cast<Instruction>(Field), StackBase, RecordIndex);
 }
 
-void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI) {
+void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI, Value *StackBase, int &RecordIndex) {
 
   uint64_t Padding = alignTo(8, AI->getAlignment());
   Value *OldSize = getAllocaSize(AI);
@@ -4256,7 +4281,7 @@ void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI) {
 	IRB.CreateStore(Header, SizeField);
   AI->replaceAllUsesWith(Field);
 	AI->eraseFromParent();
-	recordStackPointer(&F, cast<Instruction>(Field));
+	recordStackPointer(&F, cast<Instruction>(Field), StackBase, RecordIndex);
 }
 
 #if 0
@@ -6769,21 +6794,27 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	removeRedundentLengths(F, GetLengths, LenToBaseMap);
 
 	Value *StackBase = NULL;
+	int MaxRecordIndex = (int)UnsafeAllocas.size();
+
 	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
-		StackBase = enterScope(&F);
+		StackBase = enterScope(&F, MaxRecordIndex);
 		exitScope(&F, StackBase);
 	}
+
+	int RecordIndex = 0;
 
 	for (auto AI : UnsafeAllocas) {
 		MDNode* N = MDNode::get(AI->getContext(), {});
 		AI->setMetadata("san_sizeinfo", N);
 		if (AI->isStaticAlloca()) {
-			patchStaticAlloca(F, AI);
+			patchStaticAlloca(F, AI, StackBase, RecordIndex);
 		}
 		else {
-			patchDynamicAlloca(F, AI);
+			patchDynamicAlloca(F, AI, StackBase, RecordIndex);
 		}
 	}
+
+	assert(RecordIndex == MaxRecordIndex);
 
 
 	//instrumentPtrToInt(F, PtrToInt, GEPs, DL);
