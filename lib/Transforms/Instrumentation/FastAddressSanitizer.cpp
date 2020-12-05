@@ -5799,6 +5799,18 @@ addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
 
 static void optimizeLimit(Function &F, CallInst *CI)
 {
+	auto M = F.getParent();
+	IRBuilder<> IRB(CI);
+	auto Base = CI->getArgOperand(0);
+	auto Fn = M->getOrInsertFunction("fasan_limit", CI->getType(), Base->getType());
+	auto Call = IRB.CreateCall(Fn, {Base});
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
+	CI->replaceAllUsesWith(Call);
+	CI->eraseFromParent();
+	
+
+#if 0
 	assert(!CI->uses().empty());
 	IRBuilder<> IRB(CI);
 	auto Base = CI->getArgOperand(0);
@@ -5841,6 +5853,7 @@ static void optimizeLimit(Function &F, CallInst *CI)
 
 	CI->replaceAllUsesWith(PHI);
 	CI->eraseFromParent();
+#endif
 }
 
 
