@@ -5860,6 +5860,20 @@ static void optimizeLimit(Function &F, CallInst *CI)
 static void optimizeInterior(Function &F, CallInst *CI)
 {
 	assert(!CI->uses().empty());
+
+	auto M = F.getParent();
+	IRBuilder<> IRB(CI);
+	auto Base = CI->getArgOperand(0);
+	auto Ptr = CI->getArgOperand(1);
+	auto Fn = M->getOrInsertFunction("fasan_interior", CI->getType(), Base->getType(), Ptr->getType());
+	auto Call = IRB.CreateCall(Fn, {Base, Ptr});
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
+	CI->replaceAllUsesWith(Call);
+	CI->eraseFromParent();
+
+
+#if 0
 	IRBuilder<> IRB(CI);
 	auto Base = CI->getArgOperand(0);
 	auto Ptr = CI->getArgOperand(1);
@@ -5900,6 +5914,7 @@ static void optimizeInterior(Function &F, CallInst *CI)
 
 	CI->replaceAllUsesWith(PHI);
 	CI->eraseFromParent();
+#endif
 }
 
 static void optimizeCheckSize(Function &F, CallInst *CI)
@@ -6033,6 +6048,24 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
 {
 	assert(!CI->uses().empty());
+
+	auto M = F.getParent();
+	IRBuilder<> IRB(CI);
+	auto Base = CI->getArgOperand(0);
+	auto Ptr = CI->getArgOperand(1);
+	auto PtrSz = CI->getArgOperand(2);
+	auto Limit = CI->getArgOperand(3);
+	auto Fn = M->getOrInsertFunction("fasan_check_interior",
+		CI->getType(), Base->getType(), Ptr->getType(), PtrSz->getType(), Limit->getType());
+	auto Call = IRB.CreateCall(Fn, {Base, Ptr, PtrSz, Limit});
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
+	CI->replaceAllUsesWith(Call);
+	CI->eraseFromParent();
+
+
+#if 0
+	assert(!CI->uses().empty());
 	IRBuilder<> IRB(CI);
 	auto Base = CI->getArgOperand(0);
 	auto Int8Ty = IRB.getInt8Ty();
@@ -6082,6 +6115,7 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
 
 	CI->replaceAllUsesWith(PtrVal);
 	CI->eraseFromParent();
+#endif
 }
 
 static bool
