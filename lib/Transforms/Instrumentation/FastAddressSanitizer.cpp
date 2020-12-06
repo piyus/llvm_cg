@@ -3446,6 +3446,7 @@ static Instruction* getUseInBasicBlock(Instruction *Ptr) {
 	return Ptr->getParent()->getTerminator();
 }
 
+#if 0
 static Value* getPtrOffset(Function &F, IRBuilder<> &IRB, Value *V)
 {
 	auto Intrin = Intrinsic::ptroffset;
@@ -3455,6 +3456,7 @@ static Value* getPtrOffset(Function &F, IRBuilder<> &IRB, Value *V)
 	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), 49)});
 	return V;
 }
+#endif
 
 void FastAddressSanitizer::
 addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit,
@@ -5983,6 +5985,43 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 {
 	auto M = F.getParent();
 	IRBuilder<> IRB(CI);
+	auto Base = CI->getArgOperand(0);
+	auto Ptr = CI->getArgOperand(1);
+	auto Limit = CI->getArgOperand(2);
+	auto TySize = CI->getArgOperand(3);
+	auto Padding = CI->getArgOperand(4);
+	FunctionCallee Fn;
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Int8Ty = IRB.getInt8Ty();
+
+	auto PaddingSz = cast<ConstantInt>(Padding)->getSExtValue();
+	assert(PaddingSz <= 0);
+
+	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
+	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
+
+	if (PaddingSz != 0) {
+		Ptr8 = IRB.CreateGEP(Int8Ty, Ptr8, Padding);
+	}
+
+	if (Limit->getType()->isIntegerTy()) {
+		auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
+	}
+	assert(Limit->getType() == Int8PtrTy);
+
+	Fn = M->getOrInsertFunction("fasan_bounds",
+		CI->getType(), Base->getType(), Ptr8->getType(), PtrLimit->getType(), Limit->getType());
+
+	auto Call = IRB.CreateCall(Fn, {Base, Ptr8, PtrLimit, Limit});
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
+	CI->eraseFromParent();
+
+
+#if 0
+	auto M = F.getParent();
+	IRBuilder<> IRB(CI);
 
 	auto Base = CI->getArgOperand(0);
 	auto Ptr = CI->getArgOperand(1);
@@ -6041,6 +6080,7 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	//Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->eraseFromParent();
+#endif
 }
 
 
