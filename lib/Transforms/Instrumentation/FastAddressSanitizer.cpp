@@ -6358,6 +6358,7 @@ static void removeDuplicatesAborts(Function &F,
 		else {
 			assert(0);
 		}
+		Aborts.erase(Call);
 		Call->eraseFromParent();
 	}
 	//errs() << "Printing Function:\n" << F << "\n";
@@ -6458,6 +6459,87 @@ static void removeDuplicatesSizeCalls(Function &F,
 	}
 }
 
+static CallInst* ReplaceInterior(Function &F, CallInst *Call)
+{
+	IRBuilder<> IRB(Call);
+	auto Int64Ty = IRB.getInt64Ty();
+	auto Base = Call->getArgOperand(0);
+	auto Ptr = Call->getArgOperand(1);
+	auto TySize = Call->getArgOperand(2);
+	auto Fn = F.getParent()->getOrInsertFunction("san_interior",
+		Call->getType(), Base->getType(), Ptr->getType(), TySize->getType(), Int64Ty);
+	auto Ret = IRB.CreateCall(Fn, {Base, Ptr, TySize, ConstantInt::get(Int64Ty, 0)});
+	Call->replaceAllUsesWith(Ret);
+	errs() << "Replacing Interior -- \n";
+	errs() << "Orig: " << *Call << "\n";
+	errs() << "New: " << *Ret << "\n";
+	return Ret;
+}
+
+static void optimizeInteriorCalls(Function &F,
+	DenseSet<CallInst*> &Interiors,
+	DenseSet<CallInst*> &InteriorCalls,
+	DenseSet<CallInst*> &CheckSizeOffset,
+	DenseSet<CallInst*> &Aborts,
+	AssumptionCache *AC,
+	const TargetLibraryInfo *TLI
+	)
+{
+	DominatorTree DT(F);
+	DenseSet<CallInst*> ToReplace;
+
+	int64_t Result;
+  const DataLayout &DL = F.getParent()->getDataLayout();
+  auto BAR = new BasicAAResult(DL, F, *TLI, *AC);
+
+
+
+	for (auto itr1 = CheckSizeOffset.begin(); itr1 != CheckSizeOffset.end(); itr1++) {
+		for (auto itr2 = Aborts.begin(); itr2 != Aborts.end(); itr2++) {
+
+			auto *Call1 = dyn_cast<CallInst>(*itr1);
+      auto *Call2 = dyn_cast<CallInst>(*itr2);
+
+			auto Base1 = Call1->getArgOperand(0);
+			auto Base2 = Call2->getArgOperand(0);
+
+			if (Base1 == Base2) {
+
+				auto Ptr1 = Call1->getArgOperand(1);
+				auto Ptr2 = Call2->getArgOperand(1);
+
+
+				if (DT.dominates(Call2, Call1)) {
+					bool HasDiff = getGEPDiff(F, Ptr2, Ptr1, BAR, &DT, AC, Result);
+					if (HasDiff) {
+						int64_t Ptr1Sz = cast<ConstantInt>(Call1->getArgOperand(2))->getZExtValue();
+						int64_t Ptr2Sz = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
+						assert(Ptr1Sz > 0 && Ptr2Sz > 0);
+
+						int64_t LowDiff = Result;
+						int64_t HiDiff = LowDiff + Ptr2Sz - Ptr1Sz;
+						if (LowDiff >= 0 && HiDiff >= 0) {
+							ToReplace.insert(Call1);
+							break;
+						}
+					}
+				}
+
+			}
+		}
+	}
+
+	for (auto Call : ToReplace) {
+		auto NewCall = ReplaceInterior(F, Call);
+		assert(CheckSizeOffset.count(Call));
+		CheckSizeOffset.erase(Call);
+		assert(Interiors.count(Call));
+		Interiors.erase(Call);
+		InteriorCalls.insert(NewCall);
+		Interiors.insert(NewCall);
+		Call->eraseFromParent();
+	}
+}
 
 
 
@@ -6510,6 +6592,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 
 	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, AA, AC, TLI);
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
+	optimizeInteriorCalls(F, Interiors, InteriorCalls, CheckSizeOffset, Aborts, AC, TLI);
 	removeDuplicatesSizeCalls(F, CheckSize);
 
 
