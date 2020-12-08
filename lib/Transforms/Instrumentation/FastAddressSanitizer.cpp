@@ -6159,11 +6159,18 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
 }
 
 static bool
-canReplaceHelper(CallInst *Call1, CallInst *Call2)
+canReplaceHelper(CallInst *Call1, CallInst *Call2,
+	AAResults *AA
+)
 {
 	auto Call1Ptr = Call1->getArgOperand(1)->stripPointerCasts();
 	auto Call2Ptr = Call2->getArgOperand(1)->stripPointerCasts();
-	if (Call1Ptr == Call2Ptr) {
+	auto AR = (Call1Ptr == Call2Ptr) ? MustAlias : MayAlias;
+	if (AR != MustAlias) {
+		AR = AA->alias(MemoryLocation(Call1Ptr), MemoryLocation(Call2Ptr));
+	}
+
+	if (AR == MustAlias) {
 		auto Call1PtrSz = cast<ConstantInt>(Call1->getArgOperand(2))->getZExtValue();
 		auto Call2PtrSz = cast<ConstantInt>(Call2->getArgOperand(2))->getZExtValue();
 		if (Call1PtrSz >= Call2PtrSz) {
@@ -6178,16 +6185,18 @@ canReplaceHelper(CallInst *Call1, CallInst *Call2)
 
 static CallInst*
 canReplace(DominatorTree &DT,
-	CallInst *Call1, CallInst *Call2)
+	CallInst *Call1, CallInst *Call2,
+	AAResults *AA
+	)
 {
 	if (DT.dominates(Call1, Call2)) {
-		if (canReplaceHelper(Call1, Call2)) {
+		if (canReplaceHelper(Call1, Call2, AA)) {
 			Call2->replaceAllUsesWith(Call1);
 			return Call2;
 		}
 	}
 	else if (DT.dominates(Call2, Call1)) {
-		if (canReplaceHelper(Call2, Call1)) {
+		if (canReplaceHelper(Call2, Call1, AA)) {
 			Call1->replaceAllUsesWith(Call2);
 			return Call1;
 		}
@@ -6369,7 +6378,8 @@ static void removeDuplicatesAborts(Function &F,
 static void removeDuplicatesInterior(Function &F,
 	DenseSet<CallInst*> &Interiors,
 	DenseSet<CallInst*> &InteriorCalls,
-	DenseSet<CallInst*> &CheckSizeOffset
+	DenseSet<CallInst*> &CheckSizeOffset,
+	AAResults *AA
 	)
 {
 	DominatorTree DT(F);
@@ -6385,7 +6395,7 @@ static void removeDuplicatesInterior(Function &F,
 				continue;
 			}
 
-			auto Replaced = canReplace(DT, Call1, Call2);
+			auto Replaced = canReplace(DT, Call1, Call2, AA);
 			if (Replaced) {
 				ToDelete.insert(Replaced);
 			}
@@ -6591,7 +6601,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 
 
 	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, AA, AC, TLI);
-	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset);
+	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset, AA);
 	optimizeInteriorCalls(F, Interiors, InteriorCalls, CheckSizeOffset, Aborts, AC, TLI);
 	removeDuplicatesSizeCalls(F, CheckSize);
 
