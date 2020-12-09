@@ -3765,6 +3765,8 @@ static Value* emitCall(Function &F, Instruction *I, Value *Ptr, Value *Name, int
 static Value* createCondLimit(Function &F, Instruction *I,
 	Value *Ptr, int id, Value *Name, bool Conditional)
 {
+	Ptr = Ptr->stripPointerCasts();
+
 	int LineNum = 0;
 	if (F.getSubprogram() && I->getDebugLoc()) {
 		LineNum = I->getDebugLoc()->getLine();
@@ -6440,6 +6442,44 @@ static void removeDuplicatesInterior(Function &F,
 	}
 }
 
+static void assertLimits(Function &F, DenseSet<CallInst*> &Limits)
+{
+	DominatorTree DT(F);
+
+	for (auto itr1 = Limits.begin(); itr1 != Limits.end(); itr1++) {
+		for (auto itr2 = std::next(itr1); itr2 != Limits.end(); itr2++) {
+
+			auto *Call1 = dyn_cast<CallInst>(*itr1);
+      auto *Call2 = dyn_cast<CallInst>(*itr2);
+
+
+			auto Base1 = Call1->getArgOperand(0);
+			auto Base2 = Call2->getArgOperand(0);
+
+			assert(!isa<BitCastInst>(Base1));
+			assert(!isa<BitCastInst>(Base2));
+
+			if (Base1 == Base2) {
+
+				if (DT.dominates(Call1, Call2)) {
+					errs() << "CALL-1::" << *Call1 << "\n";
+					errs() << "CALL-2::" << *Call2 << "\n";
+					errs() << F << "\n";
+					assert(0);
+				}
+				else if (DT.dominates(Call2, Call1)) {
+					errs() << "CALL-1::" << *Call1 << "\n";
+					errs() << "CALL-2::" << *Call2 << "\n";
+					errs() << F << "\n";
+					assert(0);
+				}
+
+			}
+		}
+	}
+}
+
+
 static void removeDuplicatesSizeCalls(Function &F,
 	DenseSet<CallInst*> &CheckSize)
 {
@@ -6649,6 +6689,7 @@ static void optimizeSizeCalls(Function &F,
 
 static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, AAResults *AA, AssumptionCache *AC, const TargetLibraryInfo *TLI)
 {
+	DenseSet<CallInst*> Limits;
 	DenseSet<CallInst*> LimitCalls;
 	DenseSet<CallInst*> InteriorCalls;
 	DenseSet<CallInst*> CheckSize;
@@ -6667,6 +6708,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 					auto Name = Target->getName();
 					if (Name  == "san_page_fault_limit") {
 						LimitCalls.insert(CI);
+						Limits.insert(CI);
 					}
 					else if (Name == "san_interior") {
 						InteriorCalls.insert(CI);
@@ -6687,6 +6729,15 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 						Abort3Calls.insert(CI);
 						Aborts.insert(CI);
 					}
+					else if (Name == "san_get_limit") {
+						Limits.insert(CI);
+					}
+					else if (Name == "san_get_limit_must_check") {
+						Limits.insert(CI);
+					}
+					else if (Name == "san_get_limit_check") {
+						Limits.insert(CI);
+					}
 
 				}
 			}
@@ -6699,6 +6750,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	optimizeInteriorCalls(F, Interiors, InteriorCalls, CheckSizeOffset, Aborts, AC, TLI);
 	optimizeSizeCalls(F, CheckSize, Aborts, AC, TLI);
 	removeDuplicatesSizeCalls(F, CheckSize);
+	assertLimits(F, Limits);
 
 
 	DominatorTree DT(F);
