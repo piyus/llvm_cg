@@ -3321,10 +3321,10 @@ postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT,
 		else {
 			auto Header = baseIsOutSideLoop(Base, I, LI, PDT, Recurrence);
 			if (Header) {
-				LoopUsages[V] = Header;
+				//LoopUsages[V] = Header;
 			}
 			if (Recurrence) {
-				CondLoop.insert(V);
+				//CondLoop.insert(V);
 				//errs() << "Need Recurrence For: " << *V << "\n";
 				//errs() << F << "\n";
 			}
@@ -3776,6 +3776,7 @@ static Value* createCondLimit(Function &F, Instruction *I,
 		return emitCall(F, I, Ptr, Name, LineNum);
 	}
 
+	assert(0);
 	auto Base = Ptr->stripPointerCasts();
 	auto Entry = F.begin()->getFirstNonPHI();
 
@@ -4991,6 +4992,7 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		assert(PtrToBaseMap.count(V));
 		Instruction *LoopHeader = NULL;
 		if (ILoopUsages.count(V)) {
+			assert(0);
 			errs() << "USED_IN_LOOP: " << *V << "\n";
 			LoopHeader = cast<BasicBlock>(ILoopUsages[V])->getFirstNonPHI();
 		}
@@ -6750,7 +6752,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	optimizeInteriorCalls(F, Interiors, InteriorCalls, CheckSizeOffset, Aborts, AC, TLI);
 	optimizeSizeCalls(F, CheckSize, Aborts, AC, TLI);
 	removeDuplicatesSizeCalls(F, CheckSize);
-	assertLimits(F, Limits);
+	//assertLimits(F, Limits);
 
 
 	DominatorTree DT(F);
@@ -7118,12 +7120,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		GetLengths, LenToBaseMap);
 
 
-	removeRedundentLengths(F, GetLengths, LenToBaseMap);
+	//removeRedundentLengths(F, GetLengths, LenToBaseMap);
 	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites);
 
 	for (auto Limit : GetLengths) {
 		auto Call = dyn_cast<CallBase>(Limit);
 		if (Call && ICondLoop.count(Call))  {
+			assert(0);
 			assert(LenToBaseMap.count(Call));
 			auto Base = LenToBaseMap[Call];
 			createCondCall(F, Call, Base);
