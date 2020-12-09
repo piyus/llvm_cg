@@ -4860,17 +4860,17 @@ checkSizeWithLimit(Function &F, Value *Base, Value *Limit,
 	//if (LI && LI->getType()->isPointerTy() && LI->getParent() == I->getParent()) {
 		//IRB.SetInsertPoint(LI->getNextNode());
 	//}
-	Base = IRB.CreateBitCast(Base, Int8PtrTy);
 	if (Limit->getType()->isIntegerTy()) {
-		Limit = IRB.CreateGEP(Int8Ty, Base, Limit);
+		auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
 	}
 	assert(Limit->getType() == Int8PtrTy);
 	if (CheckOffset) {
-		auto Fn = F.getParent()->getOrInsertFunction("san_interior_limit", Int8PtrTy, Int8PtrTy, V->getType(), Int64, Int8PtrTy);
+		auto Fn = F.getParent()->getOrInsertFunction("san_interior_limit", Int8PtrTy, Base->getType(), V->getType(), Int64, Int8PtrTy);
 		auto Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize), Limit});
 		return IRB.CreateBitCast(Ret, RetTy);
 	}
-	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", Int8PtrTy, Int8PtrTy, Int64, Int8PtrTy);
+	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", Int8PtrTy, Base->getType(), Int64, Int8PtrTy);
 	auto Ret = IRB.CreateCall(Fn, {Base, ConstantInt::get(Int64, TypeSize), Limit});
 	return IRB.CreateBitCast(Ret, RetTy);
 }
@@ -6213,6 +6213,11 @@ getGEPDiff(Function &F, Value *V1, Value *V2, BasicAAResult *BAR, DominatorTree 
 	V1 = V1->stripPointerCasts();
 	V2 = V2->stripPointerCasts();
 
+	if (V1 == V2) {
+		Result = 0;
+		return true;
+	}
+
 	if (!isa<GEPOperator>(V1) && !isa<GEPOperator>(V2)) {
 		return false;
 	}
@@ -6324,6 +6329,17 @@ static void removeDuplicatesAborts(Function &F,
 			auto Base2 = Call2->getArgOperand(0);
 			bool Ret;
 
+			if (isa<BitCastInst>(Base1)) {
+				errs() << F << "\n";
+				errs() << "Base1:: " << *Base1 << "\n";
+			}
+			if (isa<BitCastInst>(Base2)) {
+				errs() << F << "\n";
+				errs() << "Base2:: " << *Base2 << "\n";
+			}
+
+			assert(!isa<BitCastInst>(Base1));
+			assert(!isa<BitCastInst>(Base2));
 
 			if (Base1 == Base2) {
 				bool Found = getGEPDiff(F, Ptr1, Ptr2, BAR, &DT, AC, Result);
@@ -6395,9 +6411,16 @@ static void removeDuplicatesInterior(Function &F,
 				continue;
 			}
 
-			auto Replaced = canReplace(DT, Call1, Call2, AA);
-			if (Replaced) {
-				ToDelete.insert(Replaced);
+			auto Base1 = Call1->getArgOperand(0);
+			auto Base2 = Call2->getArgOperand(0);
+			assert(!isa<BitCastInst>(Base1));
+			assert(!isa<BitCastInst>(Base2));
+
+			if (Base1 == Base2) {
+				auto Replaced = canReplace(DT, Call1, Call2, AA);
+				if (Replaced) {
+					ToDelete.insert(Replaced);
+				}
 			}
 		}
 	}
@@ -6433,8 +6456,12 @@ static void removeDuplicatesSizeCalls(Function &F,
 				continue;
 			}
 
-			auto Ptr1 = Call1->getArgOperand(0)->stripPointerCasts();
-			auto Ptr2 = Call2->getArgOperand(0)->stripPointerCasts();
+			auto Ptr1 = Call1->getArgOperand(0);
+			auto Ptr2 = Call2->getArgOperand(0);
+
+			assert(!isa<BitCastInst>(Ptr1));
+			assert(!isa<BitCastInst>(Ptr2));
+
 			if (Ptr1 == Ptr2) {
 
 				if (DT.dominates(Call1, Call2)) {
@@ -6512,6 +6539,8 @@ static void optimizeInteriorCalls(Function &F,
 
 			auto Base1 = Call1->getArgOperand(0);
 			auto Base2 = Call2->getArgOperand(0);
+			assert(!isa<BitCastInst>(Base1));
+			assert(!isa<BitCastInst>(Base2));
 
 			if (Base1 == Base2) {
 
@@ -6547,6 +6576,71 @@ static void optimizeInteriorCalls(Function &F,
 		Interiors.erase(Call);
 		InteriorCalls.insert(NewCall);
 		Interiors.insert(NewCall);
+		Call->eraseFromParent();
+	}
+}
+
+static void optimizeSizeCalls(Function &F,
+	DenseSet<CallInst*> &CheckSize,
+	DenseSet<CallInst*> &Aborts,
+	AssumptionCache *AC,
+	const TargetLibraryInfo *TLI
+	)
+{
+	DominatorTree DT(F);
+	DenseSet<CallInst*> ToDelete;
+
+	int64_t Result;
+  const DataLayout &DL = F.getParent()->getDataLayout();
+  auto BAR = new BasicAAResult(DL, F, *TLI, *AC);
+
+
+
+	for (auto itr1 = CheckSize.begin(); itr1 != CheckSize.end(); itr1++) {
+		for (auto itr2 = Aborts.begin(); itr2 != Aborts.end(); itr2++) {
+
+			auto *Call1 = dyn_cast<CallInst>(*itr1);
+      auto *Call2 = dyn_cast<CallInst>(*itr2);
+
+			auto Base1 = Call1->getArgOperand(0);
+			auto Base2 = Call2->getArgOperand(0);
+
+			assert(!isa<BitCastInst>(Base1));
+			assert(!isa<BitCastInst>(Base2));
+
+			if (Base1 == Base2) {
+
+				auto Ptr1 = Base1;
+				auto Ptr2 = Call2->getArgOperand(1);
+
+
+				if (DT.dominates(Call2, Call1)) {
+					bool HasDiff = getGEPDiff(F, Ptr2, Ptr1, BAR, &DT, AC, Result);
+					if (HasDiff) {
+						int64_t Ptr1Sz = cast<ConstantInt>(Call1->getArgOperand(1))->getZExtValue();
+						int64_t Ptr2Sz = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
+						assert(Ptr1Sz > 0 && Ptr2Sz > 0);
+
+						int64_t LowDiff = Result;
+						int64_t HiDiff = LowDiff + Ptr2Sz - Ptr1Sz;
+						if (LowDiff >= 0 && HiDiff >= 0) {
+							ToDelete.insert(Call1);
+							break;
+						}
+					}
+				}
+
+			}
+		}
+	}
+
+	for (auto Call : ToDelete) {
+		IRBuilder<> IRB(Call);
+		auto Base = Call->getArgOperand(0);
+		auto Ret = IRB.CreateBitCast(Base, Call->getType());
+		Call->replaceAllUsesWith(Ret);
+		assert(CheckSize.count(Call));
+		CheckSize.erase(Call);
 		Call->eraseFromParent();
 	}
 }
@@ -6603,6 +6697,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, AA, AC, TLI);
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset, AA);
 	optimizeInteriorCalls(F, Interiors, InteriorCalls, CheckSizeOffset, Aborts, AC, TLI);
+	optimizeSizeCalls(F, CheckSize, Aborts, AC, TLI);
 	removeDuplicatesSizeCalls(F, CheckSize);
 
 
@@ -6972,6 +7067,18 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 
 	removeRedundentLengths(F, GetLengths, LenToBaseMap);
+	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites);
+
+	for (auto Limit : GetLengths) {
+		auto Call = dyn_cast<CallBase>(Limit);
+		if (Call && ICondLoop.count(Call))  {
+			assert(LenToBaseMap.count(Call));
+			auto Base = LenToBaseMap[Call];
+			createCondCall(F, Call, Base);
+		}
+	}
+
+	optimizeHandlers(F, UnsafeMap, AA, AC, TLI);
 
 	Value *StackBase = NULL;
 	int MaxRecordIndex = (int)UnsafeAllocas.size();
@@ -6998,24 +7105,14 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 
 	//instrumentPtrToInt(F, PtrToInt, GEPs, DL);
-	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites);
 	//instrumentOtherPointerUsage(F, ICmpOrSub, IntToPtr, PtrToInt, DL);
 
-	for (auto Limit : GetLengths) {
-		auto Call = dyn_cast<CallBase>(Limit);
-		if (Call && ICondLoop.count(Call))  {
-			assert(LenToBaseMap.count(Call));
-			auto Base = LenToBaseMap[Call];
-			createCondCall(F, Call, Base);
-		}
-	}
 
 	if (!RestorePoints.empty()) {
 		restoreStack(F, RestorePoints, StackBase);
 	}
 
 
-	optimizeHandlers(F, UnsafeMap, AA, AC, TLI);
 
   if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
 		errs() << "After San\n" << F << "\n";
