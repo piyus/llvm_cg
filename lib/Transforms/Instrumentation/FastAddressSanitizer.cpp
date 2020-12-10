@@ -6444,9 +6444,26 @@ static void removeDuplicatesInterior(Function &F,
 	}
 }
 
-static void assertLimits(Function &F, DenseSet<CallInst*> &Limits)
+static CallInst *replaceLimit(Function &F, CallInst *Call)
+{
+	IRBuilder<> IRB(Call);
+	auto Base = Call->getArgOperand(0);
+	auto Int32Ty = IRB.getInt32Ty();
+	auto Fn = F.getParent()->getOrInsertFunction("san_page_fault_limit",
+		IRB.getInt8PtrTy(), Base->getType(), Int32Ty, Int32Ty);
+	auto Zero = ConstantInt::get(Int32Ty, 0);
+	auto NewCall = IRB.CreateCall(Fn, {Base, Zero, Zero});
+	Call->replaceAllUsesWith(NewCall);
+	return NewCall;
+}
+
+static void optimizeLimits(Function &F, DenseSet<CallInst*> &Limits, DenseSet<CallInst*> &LimitCalls)
 {
 	DominatorTree DT(F);
+	LoopInfo LI(DT);
+	PostDominatorTree PDT(F);
+	DenseSet<CallInst*> ToDelete;
+	DenseSet<CallInst*> Replaced;
 
 	for (auto itr1 = Limits.begin(); itr1 != Limits.end(); itr1++) {
 		for (auto itr2 = std::next(itr1); itr2 != Limits.end(); itr2++) {
@@ -6454,6 +6471,9 @@ static void assertLimits(Function &F, DenseSet<CallInst*> &Limits)
 			auto *Call1 = dyn_cast<CallInst>(*itr1);
       auto *Call2 = dyn_cast<CallInst>(*itr2);
 
+			if (ToDelete.count(Call1) || ToDelete.count(Call2)) {
+				continue;
+			}
 
 			auto Base1 = Call1->getArgOperand(0);
 			auto Base2 = Call2->getArgOperand(0);
@@ -6464,20 +6484,51 @@ static void assertLimits(Function &F, DenseSet<CallInst*> &Limits)
 			if (Base1 == Base2) {
 
 				if (DT.dominates(Call1, Call2)) {
-					errs() << "CALL-1::" << *Call1 << "\n";
-					errs() << "CALL-2::" << *Call2 << "\n";
-					errs() << F << "\n";
-					assert(0);
+					Call2->replaceAllUsesWith(Call1);
+					ToDelete.insert(Call2);
+					if (!LimitCalls.count(Call1) && LimitCalls.count(Call2) && PDT.dominates(Call2, Call1)) {
+						if (inSameLoop1(Base1, Call1, Call2, LI)) {
+							LimitCalls.insert(Call1);
+							Replaced.insert(Call1);
+						}
+					}
 				}
 				else if (DT.dominates(Call2, Call1)) {
-					errs() << "CALL-1::" << *Call1 << "\n";
-					errs() << "CALL-2::" << *Call2 << "\n";
-					errs() << F << "\n";
-					assert(0);
+					Call1->replaceAllUsesWith(Call2);
+					ToDelete.insert(Call1);
+					if (!LimitCalls.count(Call2) && LimitCalls.count(Call1) && PDT.dominates(Call1, Call2)) {
+						if (inSameLoop1(Base1, Call2, Call1, LI)) {
+							LimitCalls.insert(Call2);
+							Replaced.insert(Call2);
+						}
+					}
 				}
 
 			}
 		}
+	}
+
+	for (auto Call : ToDelete) {
+		assert(Limits.count(Call));
+		Limits.erase(Call);
+		if (LimitCalls.count(Call)) {
+			LimitCalls.erase(Call);
+		}
+		if (Replaced.count(Call)) {
+			Replaced.erase(Call);
+		}
+		Call->eraseFromParent();
+	}
+
+	for (auto Call : Replaced) {
+		CallInst *NewCall = replaceLimit(F, Call);
+		assert(Limits.count(Call));
+		assert(LimitCalls.count(Call));
+		Limits.erase(Call);
+		LimitCalls.erase(Call);
+		Limits.insert(NewCall);
+		LimitCalls.insert(NewCall);
+		Call->eraseFromParent();
 	}
 }
 
@@ -6752,7 +6803,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	optimizeInteriorCalls(F, Interiors, InteriorCalls, CheckSizeOffset, Aborts, AC, TLI);
 	optimizeSizeCalls(F, CheckSize, Aborts, AC, TLI);
 	removeDuplicatesSizeCalls(F, CheckSize);
-	//assertLimits(F, Limits);
+	optimizeLimits(F, Limits, LimitCalls);
 
 
 	DominatorTree DT(F);
