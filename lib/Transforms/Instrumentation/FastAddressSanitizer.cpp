@@ -5831,7 +5831,12 @@ static void optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 		auto InsertPt = Header->getFirstNonPHI();
 		if (Header == BaseBB) {
 			assert(BaseI);
-			InsertPt = BaseI->getNextNode();
+			if (isa<PHINode>(BaseI)) {
+				InsertPt = BaseI->getParent()->getFirstNonPHI();
+			}
+			else {
+				InsertPt = BaseI->getNextNode();
+			}
 		}
   	CI->removeFromParent();
 		CI->insertBefore(InsertPt);
@@ -6023,6 +6028,30 @@ static BasicBlock* getTrapBB(Function *Fn)
 	return TrapBB;
 #endif
 	return NULL;
+}
+
+static void optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
+{
+	auto Ptr = cast<Instruction>(CI->getArgOperand(1));
+	auto L2 = LI->getLoopFor(CI->getParent());
+	if (L2 == NULL) {
+		return;
+	}
+	auto L1 = LI->getLoopFor(Ptr->getParent());
+	if (L1 == L2) {
+		return;
+	}
+	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
+		return;
+	}
+
+	auto Header = L2->getLoopPreheader();
+	assert(L2 != LI->getLoopFor(Header));
+	if (PDT.dominates(CI->getParent(), Header)) {
+		auto InsertPt = Header->getTerminator();
+  	CI->removeFromParent();
+		CI->insertBefore(InsertPt);
+	}
 }
 
 static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI)
@@ -6872,6 +6901,15 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	DominatorTree DT(F);
 	PostDominatorTree PDT(F);
 	LoopInfo LI(DT);
+
+
+	for (auto LC : Abort2Calls) {
+		optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT);
+	}
+
+	for (auto LC : Abort3Calls) {
+		optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT);
+	}
 
 	for (auto Lim : Limits) {
 		optimizeLimitLoopHeader(F, Lim, &DT, &LI, PDT);
