@@ -5806,6 +5806,38 @@ addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
 	}
 }
 
+static void optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
+{
+	auto Base = CI->getArgOperand(0);
+	assert(!isa<BitCastInst>(Base));
+
+	auto BaseI = dyn_cast<Instruction>(Base);
+	BasicBlock *BaseBB = (BaseI) ? BaseI->getParent() : &F.getEntryBlock();
+
+	auto L2 = LI->getLoopFor(CI->getParent());
+	if (L2 == NULL) {
+		return;
+	}
+	auto L1 = LI->getLoopFor(BaseBB);
+	if (L1 == L2) {
+		return;
+	}
+	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
+		return;
+	}
+	auto Header = L2->getLoopPreheader();
+	assert(L2 != LI->getLoopFor(Header));
+	if (PDT.dominates(CI->getParent(), Header)) {
+		auto InsertPt = Header->getFirstNonPHI();
+		if (Header == BaseBB) {
+			assert(BaseI);
+			InsertPt = BaseI->getNextNode();
+		}
+  	CI->removeFromParent();
+		CI->insertBefore(InsertPt);
+	}
+}
+
 static void optimizeLimitLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI)
 {
 	auto Base = CI->getArgOperand(0);
@@ -6838,8 +6870,12 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 
 
 	DominatorTree DT(F);
+	PostDominatorTree PDT(F);
 	LoopInfo LI(DT);
 
+	for (auto Lim : Limits) {
+		optimizeLimitLoopHeader(F, Lim, &DT, &LI, PDT);
+	}
 
 	if (!Abort2Calls.empty() || !Abort3Calls.empty()) {
 		BasicBlock *TrapBB = getTrapBB(&F);
@@ -6860,6 +6896,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 			optimizeAbort(F, LC, false, TrapBB);
 		}
 	}
+
 
 	for (auto Lim : Limits) {
 		optimizeLimitLoop(F, Lim, &DT, &LI);
