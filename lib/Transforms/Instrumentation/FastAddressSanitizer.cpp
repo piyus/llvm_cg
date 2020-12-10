@@ -6623,6 +6623,37 @@ static void optimizeLimits(Function &F, DenseSet<CallInst*> &Limits, DenseSet<Ca
 	}
 }
 
+static void assertLimits(Function &F, DenseSet<CallInst*> &Limits)
+{
+	DominatorTree DT(F);
+
+	for (auto itr1 = Limits.begin(); itr1 != Limits.end(); itr1++) {
+		for (auto itr2 = std::next(itr1); itr2 != Limits.end(); itr2++) {
+
+			auto *Call1 = dyn_cast<CallInst>(*itr1);
+      auto *Call2 = dyn_cast<CallInst>(*itr2);
+
+			auto Base1 = Call1->getArgOperand(0);
+			auto Base2 = Call2->getArgOperand(0);
+
+			assert(!isa<BitCastInst>(Base1));
+			assert(!isa<BitCastInst>(Base2));
+
+			if (Base1 == Base2) {
+
+				if (DT.dominates(Call1, Call2)) {
+					assert(0);
+				}
+				else if (DT.dominates(Call2, Call1)) {
+					assert(0);
+				}
+
+			}
+		}
+	}
+
+}
+
 
 static void removeDuplicatesSizeCalls(Function &F,
 	DenseSet<CallInst*> &CheckSize)
@@ -6896,6 +6927,8 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	// FIXME: remove only if same size
 	removeDuplicatesSizeCalls(F, CheckSize);
 	optimizeLimits(F, Limits, LimitCalls);
+
+	assertLimits(F, Limits);
 
 
 	DominatorTree DT(F);
