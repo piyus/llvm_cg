@@ -4879,7 +4879,8 @@ checkSizeWithLimit(Function &F, Value *Base, Value *Limit,
 }
 
 
-static void createCondCall(Function &F, Instruction *_Call, Value *Base)
+static void createCondCall(Function &F, Instruction *_Call,
+	Value *Base, DominatorTree *DT, LoopInfo *LI)
 {
 	auto Call = cast<CallInst>(_Call);
 	auto Entry = F.begin()->getFirstNonPHI();
@@ -4904,23 +4905,25 @@ static void createCondCall(Function &F, Instruction *_Call, Value *Base)
 
 	auto Limit = IRB.CreateLoad(Tmp);
 	auto Cmp = IRB.CreateICmpEQ(Limit, Constant::getNullValue(Int8PtrTy));
-	Instruction *Term = SplitBlockAndInsertIfThen(Cmp, Call, false);
-	IRB.SetInsertPoint(Term);
+	Instruction *Term = SplitBlockAndInsertIfThen(Cmp, Call, false, NULL, DT, LI);
+	auto IfEnd = Call->getNextNode();
 
-	Instruction *NewCall = Call->clone();
-	NewCall->insertBefore(Term);
-	IRB.CreateStore(NewCall, Tmp);
 
-	IRB.SetInsertPoint(Call);
+  Call->removeFromParent();
+	Call->insertBefore(Term);
+
+
+	IRB.SetInsertPoint(IfEnd);
 
   PHINode *PHI = IRB.CreatePHI(Int8PtrTy, 2);
 
   BasicBlock *CondBlock = cast<Instruction>(Cmp)->getParent();
   PHI->addIncoming(Limit, CondBlock);
   BasicBlock *ThenBlock = Term->getParent();
-  PHI->addIncoming(NewCall, ThenBlock);
 	Call->replaceAllUsesWith(PHI);
-  Call->eraseFromParent();
+  PHI->addIncoming(Call, ThenBlock);
+	IRB.SetInsertPoint(Term);
+	IRB.CreateStore(Call, Tmp);
 }
 
 static void callOnceInLoopAfterDef(Function &F, Instruction *Call,
@@ -5801,6 +5804,33 @@ addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
 			}
 		}
 	}
+}
+
+static void optimizeLimitLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI)
+{
+	auto Base = CI->getArgOperand(0);
+	assert(!isa<BitCastInst>(Base));
+
+	auto BaseI = dyn_cast<Instruction>(Base);
+	BasicBlock *BaseBB = (BaseI) ? BaseI->getParent() : &F.getEntryBlock();
+
+	auto L2 = LI->getLoopFor(CI->getParent());
+	if (L2 == NULL) {
+		return;
+	}
+	auto L1 = LI->getLoopFor(BaseBB);
+	if (L1 == L2) {
+		return;
+	}
+	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
+		return;
+	}
+	//auto Header = L2->getLoopPreheader();
+	//auto Term = Header->getTerminator();
+  //CI->removeFromParent();
+	//CI->insertBefore(Term);
+	//auto L3 = LI->getLoopFor(Header);
+	createCondCall(F, CI, Base, DT, LI);
 }
 
 static void optimizeLimit(Function &F, CallInst *CI)
@@ -6802,6 +6832,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset, AA);
 	optimizeInteriorCalls(F, Interiors, InteriorCalls, CheckSizeOffset, Aborts, AC, TLI);
 	optimizeSizeCalls(F, CheckSize, Aborts, AC, TLI);
+	// FIXME: remove only if same size
 	removeDuplicatesSizeCalls(F, CheckSize);
 	optimizeLimits(F, Limits, LimitCalls);
 
@@ -6828,6 +6859,10 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 		for (auto LC : Abort3Calls) {
 			optimizeAbort(F, LC, false, TrapBB);
 		}
+	}
+
+	for (auto Lim : Limits) {
+		optimizeLimitLoop(F, Lim, &DT, &LI);
 	}
 
 	for (auto LC : LimitCalls) {
@@ -7180,7 +7215,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			assert(0);
 			assert(LenToBaseMap.count(Call));
 			auto Base = LenToBaseMap[Call];
-			createCondCall(F, Call, Base);
+			createCondCall(F, Call, Base, NULL, NULL);
 		}
 	}
 
