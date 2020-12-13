@@ -2850,12 +2850,12 @@ fetchMallocSize(Value *V, const TargetLibraryInfo *TLI)
 				auto Sz = CI->getArgOperand(1);
 				return (isa<ConstantInt>(Sz)) ? cast<ConstantInt>(Sz)->getZExtValue() : 0;
 			}
-			else if (Name == "__ctype_b_loc") {
+			/*else if (Name == "__ctype_b_loc") {
 				return 128 * sizeof(unsigned short);
 			}
 			else if (Name == "__ctype_toupper_loc" || Name == "__ctype_tolower_loc") {
 				return 128 * sizeof(int);
-			}
+			}*/
 		}
 	}
 	return 0;
@@ -2922,14 +2922,14 @@ Value* FastAddressSanitizer::getStaticBaseSize(Function &F, const Value *V1, con
 			else if (Name == "realloc") {
 				return CI->getArgOperand(1);
 			}
-			else if (Name == "__ctype_b_loc") {
+			/*else if (Name == "__ctype_b_loc") {
 				assert(0);
 				return ConstantInt::get(Int64Ty, 128 * sizeof(unsigned short));
 			}
 			else if (Name == "__ctype_toupper_loc" || Name == "__ctype_tolower_loc") {
 				assert(0);
 				return ConstantInt::get(Int64Ty, 128 * sizeof(int));
-			}
+			}*/
 		}
 	}
 
@@ -6860,11 +6860,53 @@ static void optimizeSizeCalls(Function &F,
 	}
 }
 
+static void
+transformLimit(Function &F, CallInst *Lim, bool MayNull)
+{
+	Instruction *InsertPt = Lim->getNextNode();
+	IRBuilder<> IRB(InsertPt);
+	auto Int32Ty = IRB.getInt32Ty();
+	auto Int32PtrTy = Int32Ty->getPointerTo();
+	auto Int8Ty = IRB.getInt8Ty();
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Base = Lim->getArgOperand(0);
+	auto Lim32 = IRB.CreateBitCast(Lim, Int32PtrTy);
+	Value *Size;
+
+
+	if (!MayNull) {
+		auto LimAddr = IRB.CreateGEP(Int32Ty, Lim32, ConstantInt::get(Int32Ty, -1));
+		Size = IRB.CreateLoad(LimAddr);
+		auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+		auto Limit = IRB.CreateGEP(Int8Ty, Base8, Size);
+		Lim->replaceAllUsesWith(Limit);
+		cast<Instruction>(Lim32)->setOperand(0, Lim);
+		return;
+	}
+
+	auto Cmp = IRB.CreateICmpNE(Lim32, Constant::getNullValue(Int32PtrTy));
+	Instruction *IfTerm = SplitBlockAndInsertIfThen(Cmp, InsertPt, false);
+	IRB.SetInsertPoint(IfTerm);
+	auto LimAddr = IRB.CreateGEP(Int32Ty, Lim32, ConstantInt::get(Int32Ty, -1));
+	Size = IRB.CreateLoad(LimAddr);
+	IRB.SetInsertPoint(InsertPt);
+  PHINode *PHI = IRB.CreatePHI(Int32Ty, 2);
+  BasicBlock *CondBlock = cast<Instruction>(Cmp)->getParent();
+  PHI->addIncoming(ConstantInt::get(Int32Ty, 0), CondBlock);
+  BasicBlock *ThenBlock = IfTerm->getParent();
+  PHI->addIncoming(Size, ThenBlock);
+
+	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+	auto Limit = IRB.CreateGEP(Int8Ty, Base8, PHI);
+	Lim->replaceAllUsesWith(Limit);
+	cast<Instruction>(Lim32)->setOperand(0, Lim);
+}
 
 
 static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, AAResults *AA, AssumptionCache *AC, const TargetLibraryInfo *TLI)
 {
 	DenseSet<CallInst*> Limits;
+	DenseSet<CallInst*> LimitsMayNull;
 	DenseSet<CallInst*> LimitCalls;
 	DenseSet<CallInst*> InteriorCalls;
 	DenseSet<CallInst*> CheckSize;
@@ -6909,9 +6951,11 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 					}
 					else if (Name == "san_get_limit_must_check") {
 						Limits.insert(CI);
+						LimitsMayNull.insert(CI);
 					}
 					else if (Name == "san_get_limit_check") {
 						Limits.insert(CI);
+						LimitsMayNull.insert(CI);
 					}
 
 				}
@@ -6971,6 +7015,15 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 
 	for (auto Lim : Limits) {
 		optimizeLimitLoop(F, Lim, &DT, &LI);
+	}
+
+	for (auto Lim : Limits) {
+		if (!LimitsMayNull.count(Lim)) {
+			transformLimit(F, Lim, false);
+		}
+		else {
+			transformLimit(F, Lim, true);
+		}
 	}
 
 	for (auto LC : LimitCalls) {
