@@ -5206,6 +5206,7 @@ static void collectSafeEscapes(Function &F,
 
 static Value*
 insertBoundsCheck(Function &F, CallBase *I, bool Intrin) {
+	return NULL;
 	int NumPointerArgs = 0;
 	bool is_strlen = false;
 	bool is_strcpy = false;
