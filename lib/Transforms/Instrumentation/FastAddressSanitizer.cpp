@@ -4863,16 +4863,18 @@ checkSizeWithLimit(Function &F, Value *Base, Value *Limit,
 	//if (LI && LI->getType()->isPointerTy() && LI->getParent() == I->getParent()) {
 		//IRB.SetInsertPoint(LI->getNextNode());
 	//}
+	if (CheckOffset) {
+		auto Fn = F.getParent()->getOrInsertFunction("san_interior_limit", Int8PtrTy, Base->getType(), V->getType(), Int64, Limit->getType());
+		auto Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize), Limit});
+		return IRB.CreateBitCast(Ret, RetTy);
+	}
+
 	if (Limit->getType()->isIntegerTy()) {
 		auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
 	}
 	assert(Limit->getType() == Int8PtrTy);
-	if (CheckOffset) {
-		auto Fn = F.getParent()->getOrInsertFunction("san_interior_limit", Int8PtrTy, Base->getType(), V->getType(), Int64, Int8PtrTy);
-		auto Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(Int64, TypeSize), Limit});
-		return IRB.CreateBitCast(Ret, RetTy);
-	}
+
 	auto Fn = F.getParent()->getOrInsertFunction("san_check_size_limit", Int8PtrTy, Base->getType(), Int64, Int8PtrTy);
 	auto Ret = IRB.CreateCall(Fn, {Base, ConstantInt::get(Int64, TypeSize), Limit});
 	return IRB.CreateBitCast(Ret, RetTy);
@@ -5871,7 +5873,7 @@ static void optimizeLimitLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 	createCondCall(F, CI, Base, DT, LI);
 }
 
-static void optimizeLimit(Function &F, CallInst *CI)
+static CallInst* optimizeLimit(Function &F, CallInst *CI)
 {
 	auto M = F.getParent();
 	IRBuilder<> IRB(CI);
@@ -5882,6 +5884,7 @@ static void optimizeLimit(Function &F, CallInst *CI)
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->replaceAllUsesWith(Call);
 	CI->eraseFromParent();
+	return Call;
 	
 
 #if 0
@@ -5931,7 +5934,7 @@ static void optimizeLimit(Function &F, CallInst *CI)
 }
 
 
-static void optimizeInterior(Function &F, CallInst *CI)
+static void optimizeInterior(Function &F, CallInst *CI, DenseMap<Value*, Value*> &LimitToRealBase)
 {
 	assert(!CI->uses().empty());
 
@@ -5991,8 +5994,22 @@ static void optimizeInterior(Function &F, CallInst *CI)
 #endif
 }
 
-static void optimizeCheckSize(Function &F, CallInst *CI)
+static void optimizeCheckSize(Function &F, CallInst *CI, DenseMap<Value*, Value*> &LimitToRealBase)
 {
+	assert(!CI->uses().empty());
+
+	auto M = F.getParent();
+	IRBuilder<> IRB(CI);
+	auto Ptr = CI->getArgOperand(0);
+	auto PtrSz = CI->getArgOperand(1);
+	auto Limit = CI->getArgOperand(2);
+	auto Fn = M->getOrInsertFunction("fasan_check_size", CI->getType(), Ptr->getType(), PtrSz->getType(), Limit->getType());
+	auto Call = IRB.CreateCall(Fn, {Ptr, PtrSz, Limit});
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
+	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
+	CI->replaceAllUsesWith(Call);
+	CI->eraseFromParent();
+#if 0
 	assert(!CI->uses().empty());
 	IRBuilder<> IRB(CI);
 	auto Int8Ty = IRB.getInt8Ty();
@@ -6013,6 +6030,7 @@ static void optimizeCheckSize(Function &F, CallInst *CI)
 
 	CI->replaceAllUsesWith(PtrVal);
 	CI->eraseFromParent();
+#endif
 }
 
 static BasicBlock* getTrapBB(Function *Fn)
@@ -6077,7 +6095,7 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 	callOnceInLoopAfterDef(F, CI, cast<Instruction>(Ptr)->getNextNode(), DT, LI);
 }
 
-static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *TrapBB)
+static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *TrapBB, DenseMap<Value*, Value*> &LimitToRealBase)
 {
 	auto M = F.getParent();
 	IRBuilder<> IRB(CI);
@@ -6089,6 +6107,7 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	FunctionCallee Fn;
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	auto Int8Ty = IRB.getInt8Ty();
+	Value *RealBase;
 
 	auto PaddingSz = cast<ConstantInt>(Padding)->getSExtValue();
 	assert(PaddingSz <= 0);
@@ -6103,13 +6122,23 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	if (Limit->getType()->isIntegerTy()) {
 		auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
+		RealBase = Base;
+	}
+	else {
+		if (!LimitToRealBase.count(Limit)) {
+			errs() << "Limit : " << *Limit << "\n";
+			errs() << F << "\n";
+		}
+		assert(LimitToRealBase.count(Limit));
+		RealBase = LimitToRealBase[Limit];
+		assert(RealBase);
 	}
 	assert(Limit->getType() == Int8PtrTy);
 
 	Fn = M->getOrInsertFunction("fasan_bounds",
-		CI->getType(), Base->getType(), Ptr8->getType(), PtrLimit->getType(), Limit->getType());
+		CI->getType(), RealBase->getType(), Ptr8->getType(), PtrLimit->getType(), Limit->getType());
 
-	auto Call = IRB.CreateCall(Fn, {Base, Ptr8, PtrLimit, Limit});
+	auto Call = IRB.CreateCall(Fn, {RealBase, Ptr8, PtrLimit, Limit});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->eraseFromParent();
@@ -6181,7 +6210,7 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 
 
 
-static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
+static void optimizeCheckSizeOffset(Function &F, CallInst *CI, DenseMap<Value*, Value*> &LimitToRealBase)
 {
 	assert(!CI->uses().empty());
 
@@ -6191,9 +6220,28 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI)
 	auto Ptr = CI->getArgOperand(1);
 	auto PtrSz = CI->getArgOperand(2);
 	auto Limit = CI->getArgOperand(3);
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Int8Ty = IRB.getInt8Ty();
+	Value *RealBase;
+
+	if (Limit->getType()->isIntegerTy()) {
+		auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
+		RealBase = Base;
+	}
+	else {
+		if (!LimitToRealBase.count(Limit)) {
+			errs() << "Limit : " << *Limit << "\n";
+			errs() << F << "\n";
+		}
+		assert(LimitToRealBase.count(Limit));
+		RealBase = LimitToRealBase[Limit];
+		assert(RealBase);
+	}
+
 	auto Fn = M->getOrInsertFunction("fasan_check_interior",
-		CI->getType(), Base->getType(), Ptr->getType(), PtrSz->getType(), Limit->getType());
-	auto Call = IRB.CreateCall(Fn, {Base, Ptr, PtrSz, Limit});
+		CI->getType(), RealBase->getType(), Ptr->getType(), PtrSz->getType(), Limit->getType());
+	auto Call = IRB.CreateCall(Fn, {RealBase, Ptr, PtrSz, Limit});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->replaceAllUsesWith(Call);
@@ -6862,7 +6910,7 @@ static void optimizeSizeCalls(Function &F,
 }
 
 static void
-transformLimit(Function &F, CallInst *Lim, bool MayNull)
+transformLimit(Function &F, CallInst *Lim, bool MayNull, DenseMap<Value*, Value*> &LimitToRealBase)
 {
 	Instruction *InsertPt = Lim->getNextNode();
 	IRBuilder<> IRB(InsertPt);
@@ -6871,17 +6919,20 @@ transformLimit(Function &F, CallInst *Lim, bool MayNull)
 	auto Int8Ty = IRB.getInt8Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	auto Base = Lim->getArgOperand(0);
-	auto Lim32 = IRB.CreateBitCast(Lim, Int32PtrTy);
 	Value *Size;
 
+	auto Lim32 = IRB.CreateBitCast(Lim, Int32PtrTy);
 
 	if (!MayNull) {
 		auto LimAddr = IRB.CreateGEP(Int32Ty, Lim32, ConstantInt::get(Int32Ty, -1));
 		Size = IRB.CreateLoad(LimAddr);
-		auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+		auto Base8 = IRB.CreateBitCast(Lim32, Int8PtrTy);
 		auto Limit = IRB.CreateGEP(Int8Ty, Base8, Size);
 		Lim->replaceAllUsesWith(Limit);
 		cast<Instruction>(Lim32)->setOperand(0, Lim);
+		LimitToRealBase[Limit] = Lim;
+		//errs() << "ADDING: " << *Limit << "  LIM: " << *Lim << "\n"; 
+
 		return;
 	}
 
@@ -6897,10 +6948,12 @@ transformLimit(Function &F, CallInst *Lim, bool MayNull)
   BasicBlock *ThenBlock = IfTerm->getParent();
   PHI->addIncoming(Size, ThenBlock);
 
-	auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
+	auto Base8 = IRB.CreateBitCast(Lim32, Int8PtrTy);
 	auto Limit = IRB.CreateGEP(Int8Ty, Base8, PHI);
 	Lim->replaceAllUsesWith(Limit);
 	cast<Instruction>(Lim32)->setOperand(0, Lim);
+	LimitToRealBase[Limit] = Lim;
+	//errs() << "ADDING: " << *Limit << "  LIM: " << *Lim << "\n"; 
 }
 
 
@@ -6994,7 +7047,7 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 	}
 
 	if (!Abort2Calls.empty() || !Abort3Calls.empty()) {
-		BasicBlock *TrapBB = getTrapBB(&F);
+		//BasicBlock *TrapBB = getTrapBB(&F);
 
 		for (auto LC : Abort2Calls) {
 			optimizeAbortLoop(F, LC, &DT, &LI);
@@ -7004,40 +7057,47 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 			optimizeAbortLoop(F, LC, &DT, &LI);
 		}
 
-		for (auto LC : Abort2Calls) {
-			optimizeAbort(F, LC, true, TrapBB);
-		}
-
-		for (auto LC : Abort3Calls) {
-			optimizeAbort(F, LC, false, TrapBB);
-		}
 	}
 
-
-	for (auto Lim : Limits) {
-		optimizeLimitLoop(F, Lim, &DT, &LI);
+	for (auto Lim : LimitCalls) {
+		auto NewLim = optimizeLimit(F, Lim);
+		assert(Limits.count(Lim));
+		Limits.erase(Lim);
+		Limits.insert(NewLim);
 	}
+
+	
+	DenseMap<Value*, Value*> LimitToRealBase;
 
 	for (auto Lim : Limits) {
 		if (!LimitsMayNull.count(Lim)) {
-			transformLimit(F, Lim, false);
+			transformLimit(F, Lim, false, LimitToRealBase);
 		}
 		else {
-			transformLimit(F, Lim, true);
+			transformLimit(F, Lim, true, LimitToRealBase);
 		}
 	}
 
-	for (auto LC : LimitCalls) {
-		optimizeLimit(F, LC);
+	for (auto LC : Abort2Calls) {
+		optimizeAbort(F, LC, true, NULL, LimitToRealBase);
 	}
+
+	for (auto LC : Abort3Calls) {
+		optimizeAbort(F, LC, false, NULL, LimitToRealBase);
+	}
+
 	for (auto LC : InteriorCalls) {
-		optimizeInterior(F, LC);
+		optimizeInterior(F, LC, LimitToRealBase);
 	}
 	for (auto LC : CheckSize) {
-		optimizeCheckSize(F, LC);
+		optimizeCheckSize(F, LC, LimitToRealBase);
 	}
 	for (auto LC : CheckSizeOffset) {
-		optimizeCheckSizeOffset(F, LC);
+		optimizeCheckSizeOffset(F, LC, LimitToRealBase);
+	}
+
+	for (auto Lim : Limits) {
+		optimizeLimitLoop(F, Lim, &DT, &LI);
 	}
 }
 
