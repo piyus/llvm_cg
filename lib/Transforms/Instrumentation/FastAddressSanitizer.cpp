@@ -5017,8 +5017,11 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		else {
 			if (SafePtrs.count(V)) {
 				IRBuilder<> IRB(I);
-				auto Fn = M->getOrInsertFunction("san_interior", IRB.getInt8PtrTy(), Base->getType(), V->getType(), IRB.getInt64Ty(), IRB.getInt64Ty());
-				Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(IRB.getInt64Ty(), TypeSize), ConstantInt::get(IRB.getInt64Ty(), ID)});
+				auto Fn = M->getOrInsertFunction("san_interior", IRB.getInt8PtrTy(), Base->getType(),
+					V->getType(), IRB.getInt64Ty(), IRB.getInt64Ty(), IRB.getInt8PtrTy());
+				Ret = IRB.CreateCall(Fn,
+					{Base, V, ConstantInt::get(IRB.getInt64Ty(), TypeSize),
+					ConstantInt::get(IRB.getInt64Ty(), ID), Constant::getNullValue(IRB.getInt8PtrTy())});
 				Ret = IRB.CreateBitCast(Ret, RetTy);
 			}
 			else {
@@ -5942,6 +5945,12 @@ static void optimizeInterior(Function &F, CallInst *CI, DenseMap<Value*, Value*>
 	IRBuilder<> IRB(CI);
 	auto Base = CI->getArgOperand(0);
 	auto Ptr = CI->getArgOperand(1);
+	auto Limit = CI->getArgOperand(4);
+	if (!isa<Constant>(Limit)) {
+		assert(LimitToRealBase.count(Limit));
+		Base = LimitToRealBase[Limit];
+		assert(Base);
+	}
 	auto Fn = M->getOrInsertFunction("fasan_interior", CI->getType(), Base->getType(), Ptr->getType());
 	auto Call = IRB.CreateCall(Fn, {Base, Ptr});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
@@ -6033,9 +6042,9 @@ static void optimizeCheckSize(Function &F, CallInst *CI, DenseMap<Value*, Value*
 #endif
 }
 
+#if 0
 static BasicBlock* getTrapBB(Function *Fn)
 {
-#if 0
   auto TrapBB = BasicBlock::Create(Fn->getContext(), "trap", Fn);
   IRBuilder<> IRB(TrapBB);
 
@@ -6045,9 +6054,9 @@ static BasicBlock* getTrapBB(Function *Fn)
   TrapCall->setDoesNotThrow();
   IRB.CreateUnreachable();
 	return TrapBB;
-#endif
 	return NULL;
 }
+#endif
 
 static void optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
 {
@@ -6763,19 +6772,72 @@ static void removeDuplicatesSizeCalls(Function &F,
 static CallInst* ReplaceInterior(Function &F, CallInst *Call)
 {
 	IRBuilder<> IRB(Call);
+	auto Int8PtrTy = IRB.getInt8PtrTy();
 	auto Int64Ty = IRB.getInt64Ty();
 	auto Base = Call->getArgOperand(0);
 	auto Ptr = Call->getArgOperand(1);
 	auto TySize = Call->getArgOperand(2);
 	auto Fn = F.getParent()->getOrInsertFunction("san_interior",
-		Call->getType(), Base->getType(), Ptr->getType(), TySize->getType(), Int64Ty);
-	auto Ret = IRB.CreateCall(Fn, {Base, Ptr, TySize, ConstantInt::get(Int64Ty, 0)});
+		Call->getType(), Base->getType(), Ptr->getType(), TySize->getType(), Int64Ty, Int8PtrTy);
+	auto Ret = IRB.CreateCall(Fn, {Base, Ptr, TySize, ConstantInt::get(Int64Ty, 0), Constant::getNullValue(Int8PtrTy)});
 	Call->replaceAllUsesWith(Ret);
 	errs() << "Replacing Interior -- \n";
 	errs() << "Orig: " << *Call << "\n";
 	errs() << "New: " << *Ret << "\n";
 	return Ret;
 }
+
+static void addLimitToInterior(Function &F,
+	DenseSet<CallInst*> &InteriorCalls,
+	DenseSet<CallInst*> &Limits,
+	DenseMap<Value*, Value*> &BaseToLenMap
+	)
+{
+	DominatorTree DT(F);
+	bool Found;
+
+	for (auto itr1 = InteriorCalls.begin(); itr1 != InteriorCalls.end(); itr1++) {
+		Found = false;
+		auto *Call1 = dyn_cast<CallInst>(*itr1);
+		auto Base1 = Call1->getArgOperand(0);
+		for (auto itr2 = Limits.begin(); itr2 != Limits.end(); itr2++) {
+
+      auto *Call2 = dyn_cast<CallInst>(*itr2);
+
+			auto Base2 = Call2->getArgOperand(0);
+			assert(!isa<BitCastInst>(Base1));
+			assert(!isa<BitCastInst>(Base2));
+			if (Base1 == Base2) {
+				if (DT.dominates(Call2->getParent(), Call1->getParent())) {
+					if (!DT.dominates(Call2, Call1)) {
+						Call2->removeFromParent();
+						Call2->insertBefore(Call1);
+					}
+					auto Limit = Call1->getArgOperand(4);
+					assert(cast<Constant>(Limit)->isNullValue());
+					Call1->setArgOperand(4, Call2);
+					Found = true;
+					break;
+				}
+			}
+		}
+		if (!Found) {
+			if (!BaseToLenMap.count(Base1)) {
+				errs() << "No Prior length: " << *Call1 << "\n";
+				errs() << F << "\n";
+				assert(BaseToLenMap.count(Base1));
+			}
+			auto Lim = BaseToLenMap[Base1];
+			if (!Lim->getType()->isIntegerTy()) {
+				errs() << "Base1:" << *Base1 << "\n";
+				errs() << F << "\n";
+				errs() << "Lim:" << *Lim << "\n";
+				assert(0);
+			}
+		}
+	}
+}
+
 
 static void optimizeInteriorCalls(Function &F,
 	DenseSet<CallInst*> &Interiors,
@@ -6918,7 +6980,7 @@ transformLimit(Function &F, CallInst *Lim, bool MayNull, DenseMap<Value*, Value*
 	auto Int32PtrTy = Int32Ty->getPointerTo();
 	auto Int8Ty = IRB.getInt8Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
-	auto Base = Lim->getArgOperand(0);
+	//auto Base = Lim->getArgOperand(0);
 	Value *Size;
 
 	auto Lim32 = IRB.CreateBitCast(Lim, Int32PtrTy);
@@ -6957,7 +7019,10 @@ transformLimit(Function &F, CallInst *Lim, bool MayNull, DenseMap<Value*, Value*
 }
 
 
-static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, AAResults *AA, AssumptionCache *AC, const TargetLibraryInfo *TLI)
+static void optimizeHandlers(Function &F,
+	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, AAResults *AA,
+	AssumptionCache *AC, const TargetLibraryInfo *TLI,
+	DenseMap<Value*, Value*> &BaseToLenMap)
 {
 	DenseSet<CallInst*> Limits;
 	DenseSet<CallInst*> LimitsMayNull;
@@ -7065,6 +7130,8 @@ static void optimizeHandlers(Function &F, std::map<Value*, std::pair<const Value
 		Limits.erase(Lim);
 		Limits.insert(NewLim);
 	}
+
+	addLimitToInterior(F, InteriorCalls, Limits, BaseToLenMap);
 
 	
 	DenseMap<Value*, Value*> LimitToRealBase;
@@ -7441,7 +7508,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
-	optimizeHandlers(F, UnsafeMap, AA, AC, TLI);
+	optimizeHandlers(F, UnsafeMap, AA, AC, TLI, BaseToLenMap);
 
 	Value *StackBase = NULL;
 	int MaxRecordIndex = (int)UnsafeAllocas.size();
