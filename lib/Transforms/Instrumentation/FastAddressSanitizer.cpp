@@ -5946,12 +5946,22 @@ static void optimizeInterior(Function &F, CallInst *CI, DenseMap<Value*, Value*>
 	auto Base = CI->getArgOperand(0);
 	auto Ptr = CI->getArgOperand(1);
 	auto Limit = CI->getArgOperand(4);
+	bool Static = false;
 	if (!isa<Constant>(Limit)) {
 		assert(LimitToRealBase.count(Limit));
 		Base = LimitToRealBase[Limit];
 		assert(Base);
 	}
-	auto Fn = M->getOrInsertFunction("fasan_interior", CI->getType(), Base->getType(), Ptr->getType());
+	else {
+		Static = true;
+	}
+	FunctionCallee Fn;
+	if (!Static) {
+		Fn = M->getOrInsertFunction("fasan_interior", CI->getType(), Base->getType(), Ptr->getType());
+	}
+	else {
+		Fn = M->getOrInsertFunction("fasan_interior1", CI->getType(), Base->getType(), Ptr->getType());
+	}
 	auto Call = IRB.CreateCall(Fn, {Base, Ptr});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
@@ -6117,6 +6127,7 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	auto Int8Ty = IRB.getInt8Ty();
 	Value *RealBase;
+	bool Static = false;
 
 	auto PaddingSz = cast<ConstantInt>(Padding)->getSExtValue();
 	assert(PaddingSz <= 0);
@@ -6132,6 +6143,7 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 		auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
 		RealBase = Base;
+		Static = true;
 	}
 	else {
 		if (!LimitToRealBase.count(Limit)) {
@@ -6144,8 +6156,14 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	}
 	assert(Limit->getType() == Int8PtrTy);
 
-	Fn = M->getOrInsertFunction("fasan_bounds",
-		CI->getType(), RealBase->getType(), Ptr8->getType(), PtrLimit->getType(), Limit->getType());
+	if (!Static) {
+		Fn = M->getOrInsertFunction("fasan_bounds",
+			CI->getType(), RealBase->getType(), Ptr8->getType(), PtrLimit->getType(), Limit->getType());
+	}
+	else {
+		Fn = M->getOrInsertFunction("fasan_bounds1",
+			CI->getType(), RealBase->getType(), Ptr8->getType(), PtrLimit->getType(), Limit->getType());
+	}
 
 	auto Call = IRB.CreateCall(Fn, {RealBase, Ptr8, PtrLimit, Limit});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
@@ -6232,11 +6250,13 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI, DenseMap<Value*, 
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	auto Int8Ty = IRB.getInt8Ty();
 	Value *RealBase;
+	bool Static = false;
 
 	if (Limit->getType()->isIntegerTy()) {
 		auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
 		RealBase = Base;
+		Static = true;
 	}
 	else {
 		if (!LimitToRealBase.count(Limit)) {
@@ -6248,8 +6268,16 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI, DenseMap<Value*, 
 		assert(RealBase);
 	}
 
-	auto Fn = M->getOrInsertFunction("fasan_check_interior",
-		CI->getType(), RealBase->getType(), Ptr->getType(), PtrSz->getType(), Limit->getType());
+	FunctionCallee Fn;
+
+	if (!Static) {
+		Fn = M->getOrInsertFunction("fasan_check_interior",
+			CI->getType(), RealBase->getType(), Ptr->getType(), PtrSz->getType(), Limit->getType());
+	}
+	else {
+		Fn = M->getOrInsertFunction("fasan_check_interior1",
+			CI->getType(), RealBase->getType(), Ptr->getType(), PtrSz->getType(), Limit->getType());
+	}
 	auto Call = IRB.CreateCall(Fn, {RealBase, Ptr, PtrSz, Limit});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
@@ -6874,7 +6902,7 @@ static void optimizeInteriorCalls(Function &F,
 				auto Ptr2 = Call2->getArgOperand(1);
 
 
-				if (DT.dominates(Call2, Call1)) {
+				if (DT.dominates(Call2->getParent(), Call1->getParent())) {
 					bool HasDiff = getGEPDiff(F, Ptr2, Ptr1, BAR, &DT, AC, Result);
 					if (HasDiff) {
 						int64_t Ptr1Sz = cast<ConstantInt>(Call1->getArgOperand(2))->getZExtValue();
@@ -6940,7 +6968,7 @@ static void optimizeSizeCalls(Function &F,
 				auto Ptr2 = Call2->getArgOperand(1);
 
 
-				if (DT.dominates(Call2, Call1)) {
+				if (DT.dominates(Call2->getParent(), Call1->getParent())) {
 					bool HasDiff = getGEPDiff(F, Ptr2, Ptr1, BAR, &DT, AC, Result);
 					if (HasDiff) {
 						int64_t Ptr1Sz = cast<ConstantInt>(Call1->getArgOperand(1))->getZExtValue();
