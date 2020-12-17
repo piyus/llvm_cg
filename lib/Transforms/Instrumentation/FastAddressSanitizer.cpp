@@ -5876,12 +5876,18 @@ static void optimizeLimitLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 	createCondCall(F, CI, Base, DT, LI);
 }
 
-static CallInst* optimizeLimit(Function &F, CallInst *CI)
+static CallInst* optimizeLimit(Function &F, CallInst *CI, bool MayNull)
 {
 	auto M = F.getParent();
 	IRBuilder<> IRB(CI);
 	auto Base = CI->getArgOperand(0);
-	auto Fn = M->getOrInsertFunction("fasan_limit", CI->getType(), Base->getType());
+	FunctionCallee Fn;
+	if (!MayNull) {
+		Fn = M->getOrInsertFunction("fasan_limit", CI->getType(), Base->getType());
+	}
+	else {
+		Fn = M->getOrInsertFunction("fasan_limit_check", CI->getType(), Base->getType());
+	}
 	auto Call = IRB.CreateCall(Fn, {Base});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
@@ -7054,6 +7060,7 @@ static void optimizeHandlers(Function &F,
 {
 	DenseSet<CallInst*> Limits;
 	DenseSet<CallInst*> LimitsMayNull;
+	DenseSet<CallInst*> LimitChecked;
 	DenseSet<CallInst*> LimitCalls;
 	DenseSet<CallInst*> InteriorCalls;
 	DenseSet<CallInst*> CheckSize;
@@ -7103,6 +7110,7 @@ static void optimizeHandlers(Function &F,
 					else if (Name == "san_get_limit_check") {
 						Limits.insert(CI);
 						LimitsMayNull.insert(CI);
+						LimitChecked.insert(CI);
 					}
 
 				}
@@ -7153,10 +7161,21 @@ static void optimizeHandlers(Function &F,
 	}
 
 	for (auto Lim : LimitCalls) {
-		auto NewLim = optimizeLimit(F, Lim);
+		auto NewLim = optimizeLimit(F, Lim, false);
 		assert(Limits.count(Lim));
 		Limits.erase(Lim);
 		Limits.insert(NewLim);
+	}
+
+	for (auto Lim : LimitChecked) {
+		if (Limits.count(Lim)) {
+			auto NewLim = optimizeLimit(F, Lim, true);
+			Limits.erase(Lim);
+			Limits.insert(NewLim);
+			assert(LimitsMayNull.count(Lim));
+			LimitsMayNull.erase(Lim);
+			LimitsMayNull.insert(NewLim);
+		}
 	}
 
 	addLimitToInterior(F, InteriorCalls, Limits, BaseToLenMap);
