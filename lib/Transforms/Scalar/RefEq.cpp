@@ -340,7 +340,7 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 		if (IsOp1Ptr) {
 			if (!isa<AllocaInst>(Op1) && !isa<Constant>(Op1)) {
 				Value *Base1 = GetUnderlyingObject(Op1, DL, 0);
-				if (!isa<AllocaInst>(Base1)) {
+				if (!isa<AllocaInst>(Base1) && !isa<GlobalVariable>(Base1)) {
 					auto NoInt = getNoInterior(F, I, Op1);
 					if (NoInt) {
 						I->setOperand(0, NoInt);
@@ -352,7 +352,7 @@ static void instrumentOtherPointerUsage(Function &F, DenseSet<Instruction*> &ICm
 		if (IsOp2Ptr) {
 			if (!isa<AllocaInst>(Op2) && !isa<Constant>(Op2)) {
 				Value *Base2 = GetUnderlyingObject(Op2, DL, 0);
-				if (!isa<AllocaInst>(Base2)) {
+				if (!isa<AllocaInst>(Base2) && !isa<GlobalVariable>(Base2)) {
 					auto NoInt = getNoInterior(F, I, Op2);
 					if (NoInt) {
 						I->setOperand(1, NoInt);

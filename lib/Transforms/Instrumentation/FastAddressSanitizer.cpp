@@ -4023,8 +4023,9 @@ static void addReturn(Function &F, Instruction *I, Value *Ptr, Value *Name) {
 static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 {
 	if (V->getType()->isPointerTy()) {
-		auto Ptr = V->stripPointerCasts();
-		if (isa<AllocaInst>(Ptr) || isa<GlobalVariable>(Ptr)) {
+  	const DataLayout &DL = F.getParent()->getDataLayout();
+		auto Ret = GetUnderlyingObject(V, DL);
+		if (isa<AllocaInst>(Ret) || isa<GlobalVariable>(Ret)) {
 			return V;
 		}
 	}
@@ -4041,7 +4042,7 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 static Value* buildNoInterior(Function &F, IRBuilder<> &IRB, Value *Ptr)
 {
 	if (isa<AllocaInst>(Ptr) || isa<GlobalVariable>(Ptr)) {
-		return Ptr;
+		assert(0);
 	}
 
 	Function *TheFn =
