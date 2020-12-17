@@ -4038,6 +4038,18 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	return V;
 }
 
+static Value* buildNoInterior(Function &F, IRBuilder<> &IRB, Value *Ptr)
+{
+	if (isa<AllocaInst>(Ptr) || isa<GlobalVariable>(Ptr)) {
+		return Ptr;
+	}
+
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrmask, {Ptr->getType(), Ptr->getType(), IRB.getInt64Ty()});
+	Ptr = IRB.CreateCall(TheFn, {Ptr, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<49)-1)});
+	return Ptr;
+}
+
 static Value* getNoInteriorCall(Function &F, Instruction *I, Value *V)
 {
 	IRBuilder<> IRB(I->getParent());
@@ -5961,8 +5973,10 @@ static void optimizeInterior(Function &F, CallInst *CI, DenseMap<Value*, Value*>
 	else {
 		Static = true;
 	}
+
 	FunctionCallee Fn;
 	if (!Static) {
+		Ptr = buildNoInterior(F, IRB, Ptr);
 		Fn = M->getOrInsertFunction("fasan_interior", CI->getType(), Base->getType(), Ptr->getType());
 	}
 	else {
@@ -6138,13 +6152,6 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	auto PaddingSz = cast<ConstantInt>(Padding)->getSExtValue();
 	assert(PaddingSz <= 0);
 
-	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
-	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
-
-	if (PaddingSz != 0) {
-		Ptr8 = IRB.CreateGEP(Int8Ty, Ptr8, Padding);
-	}
-
 	if (Limit->getType()->isIntegerTy()) {
 		auto Base8 = IRB.CreateBitCast(Base, Int8PtrTy);
 		Limit = IRB.CreateGEP(Int8Ty, Base8, Limit);
@@ -6159,8 +6166,18 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 		assert(LimitToRealBase.count(Limit));
 		RealBase = LimitToRealBase[Limit];
 		assert(RealBase);
+		Ptr = buildNoInterior(F, IRB, Ptr);
 	}
+
 	assert(Limit->getType() == Int8PtrTy);
+
+	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
+	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
+
+	if (PaddingSz != 0) {
+		Ptr8 = IRB.CreateGEP(Int8Ty, Ptr8, Padding);
+	}
+
 
 	if (!Static) {
 		Fn = M->getOrInsertFunction("fasan_bounds",
@@ -6277,6 +6294,7 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI, DenseMap<Value*, 
 	FunctionCallee Fn;
 
 	if (!Static) {
+		Ptr = buildNoInterior(F, IRB, Ptr);
 		Fn = M->getOrInsertFunction("fasan_check_interior",
 			CI->getType(), RealBase->getType(), Ptr->getType(), PtrSz->getType(), Limit->getType());
 	}
