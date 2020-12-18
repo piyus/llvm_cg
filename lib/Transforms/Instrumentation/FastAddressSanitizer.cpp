@@ -5956,7 +5956,7 @@ static CallInst* optimizeLimit(Function &F, CallInst *CI, bool MayNull)
 }
 
 
-static void optimizeInterior(Function &F, CallInst *CI, DenseMap<Value*, Value*> &LimitToRealBase)
+static CallInst* optimizeInterior(Function &F, CallInst *CI, DenseMap<Value*, Value*> &LimitToRealBase)
 {
 	assert(!CI->uses().empty());
 
@@ -5988,6 +5988,7 @@ static void optimizeInterior(Function &F, CallInst *CI, DenseMap<Value*, Value*>
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->replaceAllUsesWith(Call);
 	CI->eraseFromParent();
+	return Call;
 
 
 #if 0
@@ -6164,6 +6165,73 @@ static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 	CI->eraseFromParent();
 }
 
+static void optimizeFInterior(Function &F, CallInst *CI)
+{
+	IRBuilder<> IRB(CI);
+	auto Base = CI->getArgOperand(0);
+	auto Ptr = CI->getArgOperand(1);
+	auto Int64Ty = IRB.getInt64Ty();
+	auto MaxOffset = ConstantInt::get(Int64Ty, ((1ULL<<15)-1));
+
+
+	auto PtrInt = IRB.CreatePtrToInt(Ptr, Int64Ty);
+	auto BaseInt = IRB.CreatePtrToInt(Base, Int64Ty);
+	auto Diff = IRB.CreateSub(PtrInt, BaseInt);
+  auto Cmp = IRB.CreateICmp(ICmpInst::ICMP_ULT, Diff, MaxOffset);
+	auto FinalOffset = IRB.CreateSelect(Cmp, Diff, MaxOffset);
+	FinalOffset = IRB.CreateShl(FinalOffset, 49);
+	auto RetVal = IRB.CreateOr(PtrInt, FinalOffset);
+	RetVal = IRB.CreateIntToPtr(RetVal, CI->getType());
+	CI->replaceAllUsesWith(RetVal);
+	CI->eraseFromParent();
+}
+
+
+static void optimizeFInteriorCheck(Function &F, CallInst *CI)
+{
+
+	IRBuilder<> IRB(CI);
+	auto Base = CI->getArgOperand(0);
+	auto Ptr = CI->getArgOperand(1);
+	auto PtrSz = CI->getArgOperand(2);
+	auto Limit = CI->getArgOperand(3);
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Int8Ty = IRB.getInt8Ty();
+	auto Int64Ty = IRB.getInt64Ty();
+
+	if (Base->getType() != Int8PtrTy) {
+		Base = IRB.CreateBitCast(Base, Int8PtrTy);
+	}
+
+	if (Ptr->getType() != Int8PtrTy) {
+		Ptr = IRB.CreateBitCast(Ptr, Int8PtrTy);
+	}
+	assert(Limit->getType() == Int8PtrTy);
+	assert(PtrSz->getType()->isIntegerTy());
+
+	auto PtrLimit = IRB.CreateGEP(Int8Ty, Ptr, PtrSz);
+
+	auto Cmp1 = IRB.CreateICmpULT(Ptr, Base);
+	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
+	auto Invalid = IRB.CreateOr(Cmp1, Cmp2);
+
+
+	auto MaxOffset = ConstantInt::get(Int64Ty, ((1ULL<<15)-1));
+
+
+	auto PtrInt = IRB.CreatePtrToInt(Ptr, Int64Ty);
+	auto BaseInt = IRB.CreatePtrToInt(Base, Int64Ty);
+	auto Diff = IRB.CreateSub(PtrInt, BaseInt);
+  auto Cmp = IRB.CreateICmp(ICmpInst::ICMP_ULT, Diff, MaxOffset);
+	auto FinalOffset = IRB.CreateSelect(Cmp, Diff, MaxOffset);
+	FinalOffset = IRB.CreateShl(FinalOffset, 49);
+	auto RetVal = IRB.CreateOr(PtrInt, FinalOffset);
+	RetVal = IRB.CreateOr(RetVal, IRB.CreateShl(IRB.CreateZExt(Invalid, Int64Ty), 48));
+	RetVal = IRB.CreateIntToPtr(RetVal, CI->getType());
+	CI->replaceAllUsesWith(RetVal);
+	CI->eraseFromParent();
+}
+
 
 
 static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *TrapBB, DenseMap<Value*, Value*> &LimitToRealBase)
@@ -6292,7 +6360,7 @@ static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBloc
 
 
 
-static void optimizeCheckSizeOffset(Function &F, CallInst *CI, DenseMap<Value*, Value*> &LimitToRealBase)
+static CallInst* optimizeCheckSizeOffset(Function &F, CallInst *CI, DenseMap<Value*, Value*> &LimitToRealBase)
 {
 	assert(!CI->uses().empty());
 
@@ -6339,6 +6407,7 @@ static void optimizeCheckSizeOffset(Function &F, CallInst *CI, DenseMap<Value*, 
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->replaceAllUsesWith(Call);
 	CI->eraseFromParent();
+	return Call;
 
 
 #if 0
@@ -7315,6 +7384,8 @@ static void optimizeHandlers(Function &F,
 	}
 
 	DenseSet<CallInst*> FBounds;
+	DenseSet<CallInst*> FInteriors;
+	DenseSet<CallInst*> FCheckInteriors;
 
 	for (auto LC : Abort2Calls) {
 		auto FBound = optimizeAbort(F, LC, true, NULL, LimitToRealBase);
@@ -7327,13 +7398,15 @@ static void optimizeHandlers(Function &F,
 	}
 
 	for (auto LC : InteriorCalls) {
-		optimizeInterior(F, LC, LimitToRealBase);
+		auto Interior = optimizeInterior(F, LC, LimitToRealBase);
+		FInteriors.insert(Interior);
 	}
 	for (auto LC : CheckSize) {
 		optimizeCheckSize(F, LC, LimitToRealBase);
 	}
 	for (auto LC : CheckSizeOffset) {
-		optimizeCheckSizeOffset(F, LC, LimitToRealBase);
+		auto Interior = optimizeCheckSizeOffset(F, LC, LimitToRealBase);
+		FCheckInteriors.insert(Interior);
 	}
 
 	for (auto Lim : Limits) {
@@ -7346,6 +7419,14 @@ static void optimizeHandlers(Function &F,
 		for (auto FBound : FBounds) {
 			optimizeFBound(F, FBound, TrapBB);
 		}
+	}
+
+	for (auto Interior : FInteriors) {
+		optimizeFInterior(F, Interior);
+		
+	}
+	for (auto Interior : FCheckInteriors) {
+		optimizeFInteriorCheck(F, Interior);
 	}
 }
 
