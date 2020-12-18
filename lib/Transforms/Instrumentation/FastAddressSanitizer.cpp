@@ -7071,6 +7071,78 @@ transformLimit(Function &F, CallInst *Lim, bool MayNull, DenseMap<Value*, Value*
 	//errs() << "ADDING: " << *Limit << "  LIM: " << *Lim << "\n"; 
 }
 
+static void
+optimizePtrMask(Function &F, AAResults *AA)
+{
+	DenseSet<IntrinsicInst*> IntrinSet;
+  for (auto &BB : F) {
+    for (auto &Inst : BB) {
+			auto Intrin = dyn_cast<IntrinsicInst>(&Inst);
+			if (Intrin && Intrin->getIntrinsicID() == Intrinsic::ptrmask) {
+				IntrinSet.insert(Intrin);
+			}
+		}
+	}
+
+	DominatorTree DT(F);
+	DenseSet<CallInst*> ToDelete;
+
+	for (auto itr1 = IntrinSet.begin(); itr1 != IntrinSet.end(); itr1++) {
+		for (auto itr2 = std::next(itr1); itr2 != IntrinSet.end(); itr2++) {
+			auto *Call1 = dyn_cast<CallInst>(*itr1);
+      auto *Call2 = dyn_cast<CallInst>(*itr2);
+
+			if (ToDelete.count(Call1) || ToDelete.count(Call2)) {
+				continue;
+			}
+
+			auto Base1 = Call1->getArgOperand(0);
+			auto Base2 = Call2->getArgOperand(0);
+
+			auto Mask1 = cast<ConstantInt>(Call1->getArgOperand(1))->getZExtValue();
+			auto Mask2 = cast<ConstantInt>(Call2->getArgOperand(1))->getZExtValue();
+
+			if (Mask1 != Mask2) {
+				continue;
+			}
+
+			auto AR = AA->alias(MemoryLocation(Base1), MemoryLocation(Base2));
+			Value *Replacement;
+
+			if (AR == MustAlias) {
+
+				if (DT.dominates(Call1, Call2)) {
+					ToDelete.insert(Call2);
+					if (Call1->getType() != Call2->getType()) {
+						IRBuilder<> IRB(Call1->getNextNode());
+						Replacement = IRB.CreateBitCast(Call1, Call2->getType());
+					}
+					else {
+						Replacement = Call1;
+					}
+					Call2->replaceAllUsesWith(Replacement);
+				}
+				else if (DT.dominates(Call2, Call1)) {
+					ToDelete.insert(Call1);
+					if (Call1->getType() != Call2->getType()) {
+						IRBuilder<> IRB(Call2->getNextNode());
+						Replacement = IRB.CreateBitCast(Call2, Call1->getType());
+					}
+					else {
+						Replacement = Call2;
+					}
+					Call1->replaceAllUsesWith(Replacement);
+				}
+
+			}
+		}
+	}
+
+	for (auto Call : ToDelete) {
+		Call->eraseFromParent();
+	}
+}
+
 
 static void optimizeHandlers(Function &F,
 	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, AAResults *AA,
@@ -7232,6 +7304,7 @@ static void optimizeHandlers(Function &F,
 	for (auto Lim : Limits) {
 		optimizeLimitLoop(F, Lim, &DT, &LI);
 	}
+	optimizePtrMask(F, AA);
 }
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
