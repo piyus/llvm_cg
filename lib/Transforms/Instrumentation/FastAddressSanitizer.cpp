@@ -6073,7 +6073,6 @@ static void optimizeCheckSize(Function &F, CallInst *CI, DenseMap<Value*, Value*
 #endif
 }
 
-#if 0
 static BasicBlock* getTrapBB(Function *Fn)
 {
   auto TrapBB = BasicBlock::Create(Fn->getContext(), "trap", Fn);
@@ -6085,9 +6084,7 @@ static BasicBlock* getTrapBB(Function *Fn)
   TrapCall->setDoesNotThrow();
   IRB.CreateUnreachable();
 	return TrapBB;
-	return NULL;
 }
-#endif
 
 static void optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
 {
@@ -6135,7 +6132,41 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 	callOnceInLoopAfterDef(F, CI, cast<Instruction>(Ptr)->getNextNode(), DT, LI);
 }
 
-static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *TrapBB, DenseMap<Value*, Value*> &LimitToRealBase)
+static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
+{
+	auto InsertPt = CI->getNextNode();
+	IRBuilder<> IRB(InsertPt);
+	auto Base = CI->getArgOperand(0);
+	auto Ptr = CI->getArgOperand(1);
+	auto PtrLimit = CI->getArgOperand(2);
+	auto Limit = CI->getArgOperand(3);
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+
+	if (Base->getType() != Int8PtrTy) {
+		Base = IRB.CreateBitCast(Base, Int8PtrTy);
+	}
+
+	if (Ptr->getType() != Int8PtrTy) {
+		Ptr = IRB.CreateBitCast(Ptr, Int8PtrTy);
+	}
+	assert(PtrLimit->getType() == Int8PtrTy);
+	assert(Limit->getType() == Int8PtrTy);
+
+	auto Cmp1 = IRB.CreateICmpULT(Ptr, Base);
+	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
+	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
+
+
+	Instruction *Then = SplitBlockAndInsertIfThen(Cmp, InsertPt, false);
+	IRB.SetInsertPoint(Then);
+	IRB.CreateBr(TrapBB);
+	Then->eraseFromParent();
+	CI->eraseFromParent();
+}
+
+
+
+static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *TrapBB, DenseMap<Value*, Value*> &LimitToRealBase)
 {
 	auto M = F.getParent();
 	IRBuilder<> IRB(CI);
@@ -6193,7 +6224,7 @@ static void optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBlock *Tr
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->eraseFromParent();
-
+	return Call;
 
 #if 0
 	auto M = F.getParent();
@@ -7283,12 +7314,16 @@ static void optimizeHandlers(Function &F,
 		}
 	}
 
+	DenseSet<CallInst*> FBounds;
+
 	for (auto LC : Abort2Calls) {
-		optimizeAbort(F, LC, true, NULL, LimitToRealBase);
+		auto FBound = optimizeAbort(F, LC, true, NULL, LimitToRealBase);
+		FBounds.insert(FBound);
 	}
 
 	for (auto LC : Abort3Calls) {
-		optimizeAbort(F, LC, false, NULL, LimitToRealBase);
+		auto FBound = optimizeAbort(F, LC, false, NULL, LimitToRealBase);
+		FBounds.insert(FBound);
 	}
 
 	for (auto LC : InteriorCalls) {
@@ -7305,6 +7340,13 @@ static void optimizeHandlers(Function &F,
 		optimizeLimitLoop(F, Lim, &DT, &LI);
 	}
 	optimizePtrMask(F, AA);
+
+	if (!FBounds.empty()) {
+		BasicBlock *TrapBB = getTrapBB(&F);
+		for (auto FBound : FBounds) {
+			optimizeFBound(F, FBound, TrapBB);
+		}
+	}
 }
 
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
