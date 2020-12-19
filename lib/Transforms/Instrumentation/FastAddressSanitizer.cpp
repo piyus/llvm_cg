@@ -6035,7 +6035,7 @@ static CallInst* optimizeInterior(Function &F, CallInst *CI, DenseMap<Value*, Va
 #endif
 }
 
-static void optimizeCheckSize(Function &F, CallInst *CI, DenseMap<Value*, Value*> &LimitToRealBase)
+static CallInst* optimizeCheckSize(Function &F, CallInst *CI, DenseMap<Value*, Value*> &LimitToRealBase)
 {
 	assert(!CI->uses().empty());
 
@@ -6044,12 +6044,14 @@ static void optimizeCheckSize(Function &F, CallInst *CI, DenseMap<Value*, Value*
 	auto Ptr = CI->getArgOperand(0);
 	auto PtrSz = CI->getArgOperand(1);
 	auto Limit = CI->getArgOperand(2);
+
 	auto Fn = M->getOrInsertFunction("fasan_check_size", CI->getType(), Ptr->getType(), PtrSz->getType(), Limit->getType());
 	auto Call = IRB.CreateCall(Fn, {Ptr, PtrSz, Limit});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
 	CI->replaceAllUsesWith(Call);
 	CI->eraseFromParent();
+	return Call;
 #if 0
 	assert(!CI->uses().empty());
 	IRBuilder<> IRB(CI);
@@ -6229,6 +6231,41 @@ static void optimizeFInteriorCheck(Function &F, CallInst *CI)
 	RetVal = IRB.CreateOr(RetVal, IRB.CreateShl(IRB.CreateZExt(Invalid, Int64Ty), 48));
 	RetVal = IRB.CreateIntToPtr(RetVal, CI->getType());
 	CI->replaceAllUsesWith(RetVal);
+	CI->eraseFromParent();
+}
+
+static void optimizeFCheckSize(Function &F, CallInst *CI)
+{
+
+	IRBuilder<> IRB(CI);
+	auto Ptr = CI->getArgOperand(0);
+	auto PtrSz = CI->getArgOperand(1);
+	auto Limit = CI->getArgOperand(2);
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Int8Ty = IRB.getInt8Ty();
+	auto Int64Ty = IRB.getInt64Ty();
+
+
+	if (Ptr->getType() != Int8PtrTy) {
+		Ptr = IRB.CreateBitCast(Ptr, Int8PtrTy);
+	}
+	assert(Limit->getType() == Int8PtrTy);
+	assert(PtrSz->getType()->isIntegerTy());
+
+
+	auto PtrLimit = IRB.CreateGEP(Int8Ty, Ptr, PtrSz);
+	auto PtrBase = Ptr->stripPointerCasts();
+
+	if (!isa<AllocaInst>(PtrBase) && !isa<GlobalVariable>(PtrBase)) {
+		PtrLimit = buildNoInterior(F, IRB, PtrLimit);
+	}
+
+	auto Invalid = IRB.CreateICmpULT(Limit, PtrLimit);
+	auto PtrInt = IRB.CreatePtrToInt(Ptr, Int64Ty);
+	auto PtrVal = IRB.CreateOr(PtrInt, IRB.CreateShl(IRB.CreateZExt(Invalid, Int64Ty), 48));
+	PtrVal = IRB.CreateIntToPtr(PtrVal, CI->getType());
+
+	CI->replaceAllUsesWith(PtrVal);
 	CI->eraseFromParent();
 }
 
@@ -7386,6 +7423,7 @@ static void optimizeHandlers(Function &F,
 	DenseSet<CallInst*> FBounds;
 	DenseSet<CallInst*> FInteriors;
 	DenseSet<CallInst*> FCheckInteriors;
+	DenseSet<CallInst*> FCheckSizes;
 
 	for (auto LC : Abort2Calls) {
 		auto FBound = optimizeAbort(F, LC, true, NULL, LimitToRealBase);
@@ -7402,7 +7440,8 @@ static void optimizeHandlers(Function &F,
 		FInteriors.insert(Interior);
 	}
 	for (auto LC : CheckSize) {
-		optimizeCheckSize(F, LC, LimitToRealBase);
+		auto CI = optimizeCheckSize(F, LC, LimitToRealBase);
+		FCheckSizes.insert(CI);
 	}
 	for (auto LC : CheckSizeOffset) {
 		auto Interior = optimizeCheckSizeOffset(F, LC, LimitToRealBase);
@@ -7427,6 +7466,10 @@ static void optimizeHandlers(Function &F,
 	}
 	for (auto Interior : FCheckInteriors) {
 		optimizeFInteriorCheck(F, Interior);
+	}
+
+	for (auto CI : FCheckSizes) {
+		optimizeFCheckSize(F, CI);
 	}
 }
 
