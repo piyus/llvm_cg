@@ -6259,13 +6259,13 @@ static void optimizeFCheckSize(Function &F, CallInst *CI)
 	if (!isa<AllocaInst>(PtrBase) && !isa<GlobalVariable>(PtrBase)) {
 		PtrLimit = buildNoInterior(F, IRB, PtrLimit);
 	}
-
 	auto Invalid = IRB.CreateICmpULT(Limit, PtrLimit);
-	auto PtrInt = IRB.CreatePtrToInt(Ptr, Int64Ty);
-	auto PtrVal = IRB.CreateOr(PtrInt, IRB.CreateShl(IRB.CreateZExt(Invalid, Int64Ty), 48));
-	PtrVal = IRB.CreateIntToPtr(PtrVal, CI->getType());
+	Invalid = IRB.CreateShl(IRB.CreateZExt(Invalid, Int64Ty), 48);
 
-	CI->replaceAllUsesWith(PtrVal);
+	auto Fn = Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrunmask, {Int8PtrTy, Int8PtrTy, Int64Ty});
+	Ptr = IRB.CreateCall(Fn, {Ptr, Invalid});
+
+	CI->replaceAllUsesWith(Ptr);
 	CI->eraseFromParent();
 }
 
