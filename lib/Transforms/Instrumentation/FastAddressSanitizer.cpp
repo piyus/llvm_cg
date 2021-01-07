@@ -2949,7 +2949,7 @@ Value* FastAddressSanitizer::getStaticBaseSize(Function &F, const Value *V1, con
 static Value* sanGetLimit(Function &F, Value *V, IRBuilder<> &IRB)
 {
 	auto M = F.getParent();
-	auto Fn = M->getOrInsertFunction("san_get_limit", IRB.getInt8PtrTy(), V->getType());
+	auto Fn = M->getOrInsertFunction("san_get_limit_must_check", IRB.getInt8PtrTy(), V->getType());
 	return IRB.CreateCall(Fn, {V});
 }
 
