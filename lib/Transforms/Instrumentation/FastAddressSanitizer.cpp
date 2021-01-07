@@ -692,7 +692,7 @@ struct FastAddressSanitizer {
 			int &callsites, 
 			DenseMap<Value*, Value*> &PtrUseToLenMap);
 
-	bool isSafeAlloca(const AllocaInst *AllocaPtr);
+	bool isSafeAlloca(const AllocaInst *AllocaPtr, const TargetLibraryInfo *TLI);
   bool maybeInsertAsanInitAtFunctionEntry(Function &F);
   void maybeInsertDynamicShadowAtFunctionEntry(Function &F);
   void markEscapedLocalAllocas(Function &F);
@@ -3056,7 +3056,8 @@ static bool isPtrMask(const Value *V)
      I->getIntrinsicID() == Intrinsic::ptrmask1));
 }
 
-bool FastAddressSanitizer::isSafeAlloca(const AllocaInst *AllocaPtr) {
+bool FastAddressSanitizer::isSafeAlloca(const AllocaInst *AllocaPtr, const TargetLibraryInfo *TLI)
+{
   SmallPtrSet<const Value *, 16> Visited;
   SmallVector<const Value *, 8> WorkList;
   WorkList.push_back(AllocaPtr);
@@ -3090,12 +3091,16 @@ bool FastAddressSanitizer::isSafeAlloca(const AllocaInst *AllocaPtr) {
         if (I->isLifetimeStartOrEnd())
           continue;
         if (dyn_cast<MemIntrinsic>(I)) {
-        	return false;
+        	continue;
         }
 
 				if (isPtrMask(I)) {
           continue;
         }
+				LibFunc Func;
+    		if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
+					continue;
+				}
 
         ImmutableCallSite::arg_iterator B = CS.arg_begin(), E = CS.arg_end();
         for (ImmutableCallSite::arg_iterator A = B; A != E; ++A)
@@ -3882,7 +3887,6 @@ static Value* addHandler(Function &F, Instruction *I, Value *Ptr, Value *Val, De
 }
 #endif
 
-#if 0
 static uint64_t getAllocaSizeInBytes1(const AllocaInst &AI)
 {
 	uint64_t ArraySize = 1;
@@ -3896,6 +3900,7 @@ static uint64_t getAllocaSizeInBytes1(const AllocaInst &AI)
       AI.getModule()->getDataLayout().getTypeAllocSize(Ty);
   return SizeInBytes * ArraySize;
 }
+#if 0
 #endif
 
 #if 0
@@ -4239,6 +4244,53 @@ static void exitScope(Function *F, Value *V)
 	}
 }
 
+#define MAX_OFFSET ((1ULL<<15) - 1)
+static Value* allocaMalloc(Function *F, AllocaInst *AI)
+{
+	auto M = F->getParent();
+	auto Int32Ty = Type::getInt32Ty(M->getContext());
+	size_t alignment = 0;
+	Value *Size;
+	if (AI->isStaticAlloca()) {
+		size_t Sz = getAllocaSizeInBytes1(*AI);
+		if (Sz < MAX_OFFSET) {
+			return NULL;
+		}
+		Size = ConstantInt::get(Int32Ty, Sz);
+		alignment = AI->getAlignment();
+	}
+	else {
+  	//Size = getAllocaSize(AI);
+		return NULL;
+	}
+	auto Fn = M->getOrInsertFunction("san_alloca", AI->getType(), Size->getType(), Size->getType());
+
+	Instruction *InsertPt;
+	//if (AI->isStaticAlloca()) {
+  	InsertPt = dyn_cast<Instruction>(F->begin()->getFirstInsertionPt());
+	//}
+	//else {
+  	//InsertPt = cast<Instruction>(Size)->getNextNode();
+	//}
+	auto Call = CallInst::Create(Fn, {Size, ConstantInt::get(Int32Ty, alignment)}, "", InsertPt);
+  AI->replaceAllUsesWith(Call);
+	AI->eraseFromParent();
+	return Call;
+}
+
+static void allocaFree(Function *F, Value *V)
+{
+	auto M = F->getParent();
+	auto RetTy = Type::getVoidTy(M->getContext());
+	auto Fn = M->getOrInsertFunction("san_alloca_free", RetTy, V->getType());
+  for (auto &BB : *F) {
+    for (auto &Inst : BB) {
+			if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
+				CallInst::Create(Fn, {V}, "", Ret);
+			}
+		}
+	}
+}
 
 void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI, Value *StackBase, int &RecordIndex) {
 	uint64_t Size = getAllocaSizeInBytes(*AI);
@@ -4504,7 +4556,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 			}
 
 			if (auto AI = dyn_cast<AllocaInst>(&Inst)) {
-				if (!isSafeAlloca(AI)) {
+				if (!isSafeAlloca(AI, TLI)) {
 					UnsafeAllocas.insert(AI);
 				}
 			}
@@ -7814,6 +7866,20 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	optimizeHandlers(F, UnsafeMap, AA, AC, TLI, BaseToLenMap);
+
+	if (!UnsafeAllocas.empty()) {
+		DenseSet<AllocaInst*> ToDelete;
+		for (auto AI : UnsafeAllocas) {
+			auto Mem = allocaMalloc(&F, AI);
+			if (Mem) {
+				allocaFree(&F, Mem);
+				ToDelete.insert(AI);
+			}
+		}
+		for (auto AI : ToDelete) {
+			UnsafeAllocas.erase(AI);
+		}
+	}
 
 	Value *StackBase = NULL;
 	int MaxRecordIndex = (int)UnsafeAllocas.size();
