@@ -4245,51 +4245,76 @@ static void exitScope(Function *F, Value *V)
 }
 
 #define MAX_OFFSET ((1ULL<<15) - 1)
-static Value* allocaMalloc(Function *F, AllocaInst *AI)
+static Value* allocaToMalloc(Function *F, AllocaInst *AI, bool &DallocaReg)
 {
 	auto M = F->getParent();
 	auto Int32Ty = Type::getInt32Ty(M->getContext());
+	auto RetTy = Type::getVoidTy(M->getContext());
 	size_t alignment = 0;
 	Value *Size;
+	alignment = AI->getAlignment();
 	if (AI->isStaticAlloca()) {
 		size_t Sz = getAllocaSizeInBytes1(*AI);
 		if (Sz < MAX_OFFSET) {
 			return NULL;
 		}
 		Size = ConstantInt::get(Int32Ty, Sz);
-		alignment = AI->getAlignment();
 	}
 	else {
-  	//Size = getAllocaSize(AI);
-		return NULL;
-	}
-	auto Fn = M->getOrInsertFunction("san_alloca", AI->getType(), Size->getType(), Size->getType());
+  	Size = getAllocaSize(AI);
+		IRBuilder<> IRB(AI);
+		auto Int64Ty = IRB.getInt64Ty();
+		auto MaxOffset = ConstantInt::get(Int64Ty, MAX_OFFSET);
+		auto Cmp = IRB.CreateICmp(ICmpInst::ICMP_UGE, Size, MaxOffset);
+		auto InsertPt = AI->getNextNode();
+		Instruction *IfTerm;
+		IfTerm = SplitBlockAndInsertIfThen(Cmp, InsertPt, false);
+		auto Fn = M->getOrInsertFunction("san_dalloca", AI->getType(), Size->getType(), Int32Ty);
+		IRB.SetInsertPoint(IfTerm);
+		auto Call = IRB.CreateCall(Fn, {Size, ConstantInt::get(Int32Ty, alignment)});
+		IRB.SetInsertPoint(InsertPt);
+  	PHINode *PHI = IRB.CreatePHI(AI->getType(), 2);
+		AI->replaceAllUsesWith(PHI);
+  	PHI->addIncoming(AI, AI->getParent());
+  	PHI->addIncoming(Call, Call->getParent());
+		if (!DallocaReg) {
+			DallocaReg = true;
+  		Instruction *Entry = dyn_cast<Instruction>(F->begin()->getFirstInsertionPt());
+			IRB.SetInsertPoint(Entry);
+			Fn = M->getOrInsertFunction("san_dalloca_register", Int32Ty);
+			auto Reg = IRB.CreateCall(Fn, {});
 
-	Instruction *InsertPt;
-	//if (AI->isStaticAlloca()) {
-  	InsertPt = dyn_cast<Instruction>(F->begin()->getFirstInsertionPt());
-	//}
-	//else {
-  	//InsertPt = cast<Instruction>(Size)->getNextNode();
-	//}
-	auto Call = CallInst::Create(Fn, {Size, ConstantInt::get(Int32Ty, alignment)}, "", InsertPt);
-  AI->replaceAllUsesWith(Call);
-	AI->eraseFromParent();
-	return Call;
-}
-
-static void allocaFree(Function *F, Value *V)
-{
-	auto M = F->getParent();
-	auto RetTy = Type::getVoidTy(M->getContext());
-	auto Fn = M->getOrInsertFunction("san_alloca_free", RetTy, V->getType());
-  for (auto &BB : *F) {
-    for (auto &Inst : BB) {
-			if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
-				CallInst::Create(Fn, {V}, "", Ret);
+			Fn = M->getOrInsertFunction("san_dalloca_deregister", IRB.getVoidTy(), Int32Ty);
+			for (auto &BB : *F) {
+				auto Term = BB.getTerminator();
+				if (isa<ReturnInst>(Term)) {
+					IRB.SetInsertPoint(Term);
+					IRB.CreateCall(Fn, {Reg});
+				}
 			}
 		}
+
+		return NULL;
 	}
+
+  Instruction *Entry = dyn_cast<Instruction>(F->begin()->getFirstInsertionPt());
+	IRBuilder<> IRB(Entry);
+	auto Fn = M->getOrInsertFunction("san_alloca", AI->getType(), Size->getType(), Int32Ty);
+	auto Call = IRB.CreateCall(Fn, {Size, ConstantInt::get(Int32Ty, alignment)});
+  AI->replaceAllUsesWith(Call);
+	AI->eraseFromParent();
+
+	Fn = M->getOrInsertFunction("san_alloca_free", RetTy, Call->getType());
+
+	for (auto &BB : *F) {
+		auto Term = BB.getTerminator();
+		if (isa<ReturnInst>(Term)) {
+			IRB.SetInsertPoint(Term);
+			IRB.CreateCall(Fn, {Call});
+		}
+	}
+
+	return Call;
 }
 
 void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI, Value *StackBase, int &RecordIndex) {
@@ -7867,12 +7892,15 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	optimizeHandlers(F, UnsafeMap, AA, AC, TLI, BaseToLenMap);
 
+
 	if (!UnsafeAllocas.empty()) {
+		//DominatorTree DT(F);
+		//PostDominatorTree PDT(F);
 		DenseSet<AllocaInst*> ToDelete;
+		bool DallocaReg = false;
 		for (auto AI : UnsafeAllocas) {
-			auto Mem = allocaMalloc(&F, AI);
+			auto Mem = allocaToMalloc(&F, AI, DallocaReg);
 			if (Mem) {
-				allocaFree(&F, Mem);
 				ToDelete.insert(AI);
 			}
 		}
