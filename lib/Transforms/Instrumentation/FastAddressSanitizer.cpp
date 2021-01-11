@@ -2950,7 +2950,10 @@ static Value* sanGetLimit(Function &F, Value *V, IRBuilder<> &IRB)
 {
 	auto M = F.getParent();
 	auto Fn = M->getOrInsertFunction("san_get_limit_must_check", IRB.getInt8PtrTy(), V->getType());
-	return IRB.CreateCall(Fn, {V});
+	auto Ret = IRB.CreateCall(Fn, {V});
+	//errs() << "Adding in Get Limit:: " << *Ret << "\n";
+	//errs() << *(Ret->getParent()) << "\n";
+	return Ret;
 }
 
 static bool indefiniteBase(Value *V, const DataLayout &DL) {
@@ -3009,7 +3012,10 @@ Value* FastAddressSanitizer::getLimitSafe(Function &F, const Value *V1, const Da
 
 	if (indefiniteBase(V, DL)) {
 		auto Fn = M->getOrInsertFunction("san_get_limit_must_check", IRB.getInt8PtrTy(), V->getType());
-		return IRB.CreateCall(Fn, {V});
+		auto Ret = IRB.CreateCall(Fn, {V});
+		//errs() << "Adding in Get Limit Safe:: " << *Ret << "\n";
+		//errs() << *(Ret->getParent()) << "\n";
+		return Ret;
 	}
 
 	auto Fn = M->getOrInsertFunction("san_get_limit_check", IRB.getInt8PtrTy(), V->getType());
@@ -5061,6 +5067,10 @@ static Value* createCondSafeLimit(Function &F, Instruction *InsertPt, Value *Bas
 			Fn = F.getParent()->getOrInsertFunction("san_get_limit_check", IRB.getInt8PtrTy(), Base->getType());
 		}
 		Limit = IRB.CreateCall(Fn, {Base});
+		/*if (MustCheck) {
+			errs() << "Adding in Cond Safe:: " << *Limit << "\n";
+			errs() << *(InsertPt->getParent()) << "\n";
+		}*/
 	}
 	return Limit;
 }
@@ -5082,6 +5092,9 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 	auto M = F.getParent();
 	Type *RetTy = V->getType();
 
+	//errs() << "GetInterior: I :: " << *I << "\n";
+	//errs() << "GetInterior: V :: " << *V << "\n";
+
 
 	if (InteriorPointersSet.count(V)) {
 		assert(PtrToBaseMap.count(V));
@@ -5099,7 +5112,7 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 		size_t TypeSize = DL.getTypeStoreSize(PTy);
 
 
-		if (Indefinite) {
+		if (/*Indefinite*/false) {
 			IRBuilder<> IRB(I);
 			auto Fn = M->getOrInsertFunction("san_interior_must_check", RetTy, Base->getType(), V->getType(), IRB.getInt64Ty(), IRB.getInt64Ty());
 			Ret = IRB.CreateCall(Fn, {Base, V, ConstantInt::get(IRB.getInt64Ty(), TypeSize), ConstantInt::get(IRB.getInt64Ty(), ID)});
@@ -5133,7 +5146,7 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 						}
 					}
 #endif
-					Limit = createCondSafeLimit(F, InsertPt, Base, false, false);
+					Limit = createCondSafeLimit(F, InsertPt, Base, false, Indefinite);
 					IGetLengths.insert(Limit);
 					ILenToBaseMap[Limit] = Base;
 					if (ICondLoop.count(V)) {
@@ -5146,7 +5159,10 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 				}
 				else {
 					IRBuilder<> IRB(I);
-					return checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, RetTy, V, true);
+					Ret = checkSizeWithLimit(F, Base, Limit, IRB, TypeSize, RetTy, V, true);
+					//errs() << "Adding Interior:: " << *Ret << "\n";
+					//errs() << "Before:: " << *I << "\n";
+					return Ret;
 				}
 			}
 		}
@@ -5509,7 +5525,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			}
 		}
 		if (Limit && isa<Instruction>(Limit) &&
-				isa<PHINode>(I) &&
+				(isa<PHINode>(I) || isa<IntToPtrInst>(I)) &&
 				DT.dominates(cast<Instruction>(I), cast<Instruction>(Limit))) {
 			InsertPt = cast<Instruction>(Limit)->getNextNode();
 		}
@@ -7889,6 +7905,11 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			createCondCall(F, Call, Base, NULL, NULL);
 		}
 	}
+
+	/*if (verifyFunction(F, &errs())) {
+    F.dump();
+    report_fatal_error("verification of newFunction failed1!");
+  }*/
 
 	optimizeHandlers(F, UnsafeMap, AA, AC, TLI, BaseToLenMap);
 
