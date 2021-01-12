@@ -4324,10 +4324,15 @@ static Value* allocaToMalloc(Function *F, AllocaInst *AI, bool &DallocaReg)
 }
 
 void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI, Value *StackBase, int &RecordIndex) {
+	size_t Alignment = AI->getAlignment();
 	uint64_t Size = getAllocaSizeInBytes(*AI);
 	uint64_t HeaderVal = 0xfaceULL | (Size << 32);
 	auto AllocaSize = ConstantInt::get(Int64Ty, HeaderVal);
-  uint64_t Padding = alignTo(8, AI->getAlignment());
+	bool NeedRegisteration = (Size > 8);
+	if (!NeedRegisteration && Alignment < 8) {
+		Alignment = 8;
+	}
+  uint64_t Padding = alignTo(8, Alignment);
 
 	assert(Padding >= 8);
 
@@ -4348,7 +4353,7 @@ void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI, Value 
   auto *NewAI = new AllocaInst(
       TypeWithPadding, AI->getType()->getAddressSpace(), nullptr, "", AI);
   NewAI->takeName(AI);
-  NewAI->setAlignment(MaybeAlign(AI->getAlignment()));
+  NewAI->setAlignment(MaybeAlign(Alignment));
   NewAI->setUsedWithInAlloca(AI->isUsedWithInAlloca());
   NewAI->setSwiftError(AI->isSwiftError());
   NewAI->copyMetadata(*AI);
@@ -4358,7 +4363,9 @@ void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI, Value 
 	Builder.CreateStore(AllocaSize, SizeField);
   AI->replaceAllUsesWith(Field);
 	AI->eraseFromParent();
-	recordStackPointer(&F, cast<Instruction>(Field), StackBase, RecordIndex);
+	if (NeedRegisteration) {
+		recordStackPointer(&F, cast<Instruction>(Field), StackBase, RecordIndex);
+	}
 }
 
 void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI, Value *StackBase, int &RecordIndex) {
@@ -7935,7 +7942,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
 		StackBase = enterScope(&F, MaxRecordIndex);
-		exitScope(&F, StackBase);
 	}
 
 	int RecordIndex = 0;
@@ -7951,7 +7957,22 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
-	assert(RecordIndex == MaxRecordIndex);
+	//assert(RecordIndex == MaxRecordIndex);
+
+	if (StackBase) {
+		if (RestorePoints.empty() && !RecordIndex) {
+			errs() << "Removing Stack Base\n";
+			cast<CallInst>(StackBase)->eraseFromParent();
+		}
+		else {
+			if (RecordIndex != MaxRecordIndex) {
+				auto Call = cast<CallInst>(StackBase);
+				auto Int32Ty = Call->getArgOperand(0)->getType();
+				Call->setArgOperand(0, ConstantInt::get(Int32Ty, RecordIndex));
+			}
+			exitScope(&F, StackBase);
+		}
+	}
 
 
 	//instrumentPtrToInt(F, PtrToInt, GEPs, DL);
