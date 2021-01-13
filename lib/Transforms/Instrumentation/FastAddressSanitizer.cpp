@@ -5925,7 +5925,7 @@ addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
 	}
 }
 
-static void optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
+static bool optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
 {
 	auto Base = CI->getArgOperand(0);
 	assert(!isa<BitCastInst>(Base));
@@ -5935,14 +5935,14 @@ static void optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 
 	auto L2 = LI->getLoopFor(CI->getParent());
 	if (L2 == NULL) {
-		return;
+		return false;
 	}
 	auto L1 = LI->getLoopFor(BaseBB);
 	if (L1 == L2) {
-		return;
+		return false;
 	}
 	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
-		return;
+		return false;
 	}
 	auto Header = L2->getLoopPreheader();
 	assert(L2 != LI->getLoopFor(Header));
@@ -5959,7 +5959,9 @@ static void optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 		}
   	CI->removeFromParent();
 		CI->insertBefore(InsertPt);
+		return true;
 	}
+	return false;
 }
 
 static void optimizeLimitLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI)
@@ -6189,19 +6191,19 @@ static BasicBlock* getTrapBB(Function *Fn)
 	return TrapBB;
 }
 
-static void optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
+static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
 {
 	auto Ptr = cast<Instruction>(CI->getArgOperand(1));
 	auto L2 = LI->getLoopFor(CI->getParent());
 	if (L2 == NULL) {
-		return;
+		return false;
 	}
 	auto L1 = LI->getLoopFor(Ptr->getParent());
 	if (L1 == L2) {
-		return;
+		return false;
 	}
 	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
-		return;
+		return false;
 	}
 
 	auto Header = L2->getLoopPreheader();
@@ -6210,7 +6212,9 @@ static void optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 		auto InsertPt = Header->getTerminator();
   	CI->removeFromParent();
 		CI->insertBefore(InsertPt);
+		return true;
 	}
+	return false;
 }
 
 static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI)
@@ -7461,18 +7465,22 @@ static void optimizeHandlers(Function &F,
 	DominatorTree DT(F);
 	PostDominatorTree PDT(F);
 	LoopInfo LI(DT);
+	//ScalarEvolution SE(F, *TLI, *AC, DT, LI);
 
 
 	for (auto LC : Abort2Calls) {
-		optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT);
+		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT)) {
+		}
 	}
 
 	for (auto LC : Abort3Calls) {
-		optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT);
+		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT)) {
+		}
 	}
 
 	for (auto Lim : Limits) {
-		optimizeLimitLoopHeader(F, Lim, &DT, &LI, PDT);
+		while (optimizeLimitLoopHeader(F, Lim, &DT, &LI, PDT)) {
+		}
 	}
 
 	if (!Abort2Calls.empty() || !Abort3Calls.empty()) {
