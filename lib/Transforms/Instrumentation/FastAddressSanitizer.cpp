@@ -6009,12 +6009,11 @@ static CallInst* optimizeLimit(Function &F, CallInst *CI, bool MayNull)
 	CI->replaceAllUsesWith(Call);
 	CI->eraseFromParent();
 	return Call;
-	
 
 #if 0
-	assert(!CI->uses().empty());
-	IRBuilder<> IRB(CI);
-	auto Base = CI->getArgOperand(0);
+	assert(!Call->uses().empty());
+	IRBuilder<> IRB(Call);
+	auto Base = Call->getArgOperand(0);
 	auto Int8Ty = IRB.getInt8Ty();
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	auto Int64Ty = IRB.getInt64Ty();
@@ -6025,35 +6024,30 @@ static CallInst* optimizeLimit(Function &F, CallInst *CI, bool MayNull)
 	auto Offset = IRB.CreateLShr(BaseInt, 49);
 
   auto SlowPath = IRB.CreateICmp(ICmpInst::ICMP_UGE, Offset, ConstantInt::get(Int64Ty, ((1ULL<<15)-1)));
-	Instruction *IfTerm, *ElseTerm;
+	Instruction *IfTerm, *ElseTerm, *EndElse;
+	EndElse = Call->getNextNode();
 
   SplitBlockAndInsertIfThenElse(SlowPath, CI, &IfTerm, &ElseTerm);
 	IRB.SetInsertPoint(IfTerm);
 
-	Instruction *NewCall = CI->clone();
-  NewCall->insertBefore(IfTerm);
+	Call->removeFromParent();
+  Call->insertBefore(IfTerm);
 
 	IRB.SetInsertPoint(ElseTerm);
 
 	auto NewBase = IRB.CreateAnd(BaseInt, ConstantInt::get(Int64Ty, (0x1ULL<<49)-1));
 	NewBase = IRB.CreateSub(NewBase, Offset);
-	NewBase = IRB.CreateIntToPtr(NewBase, Int32PtrTy);
-	auto Size = IRB.CreateLoad(IRB.CreateGEP(Int32Ty, NewBase, ConstantInt::get(Int64Ty, -1)));
-	auto Limit = IRB.CreateGEP(Int8Ty, IRB.CreateBitCast(NewBase, Int8PtrTy), Size);
-	Offset = IRB.CreateShl(Offset, 49);
-	Limit = IRB.CreateGEP(Int8Ty, Limit, Offset);
+	NewBase = IRB.CreateIntToPtr(NewBase, Int8PtrTy);
 
-	IRB.SetInsertPoint(CI);
+	IRB.SetInsertPoint(EndTerm);
 
   PHINode *PHI = IRB.CreatePHI(Int8PtrTy, 2);
 
   BasicBlock *IfBlock = IfTerm->getParent();
-  PHI->addIncoming(NewCall, IfBlock);
   BasicBlock *ElseBlock = ElseTerm->getParent();
-  PHI->addIncoming(Limit, ElseBlock);
-
-	CI->replaceAllUsesWith(PHI);
-	CI->eraseFromParent();
+  PHI->addIncoming(NewBase, ElseBlock);
+	Call->replaceAllUsesWith(PHI);
+  PHI->addIncoming(Call, IfBlock);
 #endif
 }
 
@@ -7265,6 +7259,47 @@ static void optimizeSizeCalls(Function &F,
 	}
 }
 
+static Instruction*
+inlineLimit(Function &F, CallInst *Call)
+{
+	IRBuilder<> IRB(Call);
+	auto Base = Call->getArgOperand(0);
+	//auto Int8Ty = IRB.getInt8Ty();
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Int64Ty = IRB.getInt64Ty();
+	//auto Int32Ty = IRB.getInt32Ty();
+	//auto Int32PtrTy = Int32Ty->getPointerTo();
+
+	auto BaseInt = IRB.CreatePtrToInt(Base, Int64Ty);
+	auto Offset = IRB.CreateLShr(BaseInt, 49);
+
+  auto SlowPath = IRB.CreateICmp(ICmpInst::ICMP_UGE, Offset, ConstantInt::get(Int64Ty, ((1ULL<<15)-1)));
+	Instruction *IfTerm, *ElseTerm, *EndElse;
+	EndElse = Call->getNextNode();
+
+  SplitBlockAndInsertIfThenElse(SlowPath, Call, &IfTerm, &ElseTerm);
+	IRB.SetInsertPoint(IfTerm);
+
+	Call->removeFromParent();
+  Call->insertBefore(IfTerm);
+
+	IRB.SetInsertPoint(ElseTerm);
+
+	auto NewBase = IRB.CreateAnd(BaseInt, ConstantInt::get(Int64Ty, (0x1ULL<<49)-1));
+	NewBase = IRB.CreateSub(NewBase, Offset);
+	NewBase = IRB.CreateIntToPtr(NewBase, Int8PtrTy);
+
+	IRB.SetInsertPoint(EndElse);
+
+  PHINode *PHI = IRB.CreatePHI(Int8PtrTy, 2);
+
+  BasicBlock *IfBlock = IfTerm->getParent();
+  BasicBlock *ElseBlock = ElseTerm->getParent();
+  PHI->addIncoming(NewBase, ElseBlock);
+  PHI->addIncoming(Call, IfBlock);
+	return PHI;
+}
+
 static void
 transformLimit(Function &F, CallInst *Lim, bool MayNull, DenseMap<Value*, Value*> &LimitToRealBase)
 {
@@ -7287,6 +7322,9 @@ transformLimit(Function &F, CallInst *Lim, bool MayNull, DenseMap<Value*, Value*
 		Lim->replaceAllUsesWith(Limit);
 		cast<Instruction>(Lim32)->setOperand(0, Lim);
 		LimitToRealBase[Limit] = Lim;
+		//auto PHI = inlineLimit(F, Lim);
+		//cast<Instruction>(Lim32)->setOperand(0, PHI);
+		//LimitToRealBase[Limit] = PHI;
 		//errs() << "ADDING: " << *Limit << "  LIM: " << *Lim << "\n"; 
 
 		return;
