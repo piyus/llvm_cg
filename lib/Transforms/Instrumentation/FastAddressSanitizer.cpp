@@ -28,6 +28,8 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/BasicAliasAnalysis.h"
+#include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/BinaryFormat/MachO.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
@@ -5937,15 +5939,21 @@ static bool optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	if (L2 == NULL) {
 		return false;
 	}
-	auto L1 = LI->getLoopFor(BaseBB);
-	if (L1 == L2) {
-		return false;
-	}
-	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
-		return false;
-	}
 	auto Header = L2->getLoopPreheader();
 	assert(L2 != LI->getLoopFor(Header));
+
+	if (!DT->dominates(BaseBB, Header)) {
+		return false;
+	}
+
+	//auto L1 = LI->getLoopFor(BaseBB);
+	//if (L1 == L2) {
+		//return false;
+	//}
+	//if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
+	//	return false;
+	//}
+
 	if (PDT.dominates(CI->getParent(), Header)) {
 		auto InsertPt = Header->getFirstNonPHI();
 		if (Header == BaseBB) {
@@ -5976,18 +5984,14 @@ static void optimizeLimitLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 	if (L2 == NULL) {
 		return;
 	}
-	auto L1 = LI->getLoopFor(BaseBB);
-	if (L1 == L2) {
+
+	auto Header = L2->getLoopPreheader();
+	assert(L2 != LI->getLoopFor(Header));
+
+	if (!DT->dominates(BaseBB, Header)) {
 		return;
 	}
-	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
-		return;
-	}
-	//auto Header = L2->getLoopPreheader();
-	//auto Term = Header->getTerminator();
-  //CI->removeFromParent();
-	//CI->insertBefore(Term);
-	//auto L3 = LI->getLoopFor(Header);
+
 	createCondCall(F, CI, Base, DT, LI);
 }
 
@@ -6192,16 +6196,22 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	if (L2 == NULL) {
 		return false;
 	}
-	auto L1 = LI->getLoopFor(Ptr->getParent());
-	if (L1 == L2) {
-		return false;
-	}
-	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
-		return false;
-	}
 
 	auto Header = L2->getLoopPreheader();
 	assert(L2 != LI->getLoopFor(Header));
+
+	if (!DT->dominates(Ptr->getParent(), Header)) {
+		return false;
+	}
+
+	//auto L1 = LI->getLoopFor(Ptr->getParent());
+	//if (L1 == L2) {
+	//	return false;
+	//}
+	//if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
+	//	return false;
+	//}
+
 	if (PDT.dominates(CI->getParent(), Header)) {
 		auto InsertPt = Header->getTerminator();
   	CI->removeFromParent();
@@ -6211,25 +6221,44 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	return false;
 }
 
-static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI)
+#if 0
+static bool
+canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE)
+{
+	V = V->stripPointerCasts();
+	auto GEP = dyn_cast<GetElementPtrInst>(V);
+	if (!GEP) {
+		return false;
+	}
+	int NumOperands = GEP->getNumOperands();
+	int i;
+
+  for (i = 0; i < NumOperands; i++) {
+    auto *Op = dyn_cast<Instruction>(GEP->getOperand(i));
+		if (Op && LI->getLoopFor(Op->getParent()) == L) {
+			if (Op != L->getInductionVariable(SE)) {
+				return false;
+			}
+		}
+  }
+	return true;
+}
+#endif
+
+static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI/*, ScalarEvolution &SE*/)
 {
 	auto Ptr = cast<Instruction>(CI->getArgOperand(1));
 	auto L2 = LI->getLoopFor(CI->getParent());
 	if (L2 == NULL) {
 		return;
 	}
-	auto L1 = LI->getLoopFor(Ptr->getParent());
-	if (L1 == L2) {
+
+	auto Header = L2->getLoopPreheader();
+	assert(L2 != LI->getLoopFor(Header));
+
+	if (!DT->dominates(Ptr->getParent(), Header)) {
 		return;
 	}
-	if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
-		return;
-	}
-	//auto Header = L2->getLoopPreheader();
-	//auto Term = Header->getTerminator();
-  //CI->removeFromParent();
-	//CI->insertBefore(Term);
-	//auto L3 = LI->getLoopFor(Header);
 	callOnceInLoopAfterDef(F, CI, cast<Instruction>(Ptr)->getNextNode(), DT, LI);
 }
 
@@ -7423,6 +7452,7 @@ optimizePtrMask(Function &F, AAResults *AA)
 }
 
 
+
 static void optimizeHandlers(Function &F,
 	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, AAResults *AA,
 	AssumptionCache *AC, const TargetLibraryInfo *TLI,
@@ -7503,7 +7533,8 @@ static void optimizeHandlers(Function &F,
 	DominatorTree DT(F);
 	PostDominatorTree PDT(F);
 	LoopInfo LI(DT);
-	//ScalarEvolution SE(F, *TLI, *AC, DT, LI);
+	TargetLibraryInfo *_TLI = const_cast<TargetLibraryInfo*>(TLI);
+	ScalarEvolution SE(F, *_TLI, *AC, DT, LI);
 
 
 	for (auto LC : Abort2Calls) {
@@ -7597,6 +7628,14 @@ static void optimizeHandlers(Function &F,
 	for (auto Lim : Limits) {
 		optimizeLimitLoop(F, Lim, &DT, &LI);
 	}
+
+	if (verifyFunction(F, &errs())) {
+    F.dump();
+    report_fatal_error("verification of newFunction failed11!");
+  }
+
+
+
 	optimizePtrMask(F, AA);
 
 	if (!FBounds.empty()) {
