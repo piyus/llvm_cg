@@ -3197,46 +3197,6 @@ inSameLoop1(const Value *Base, const Value *Ptr1, const Value *Ptr2, LoopInfo &L
 	return true;
 }
 
-static Loop* baseIsOutSideLoopHelper(Instruction *Base, const Instruction *Ptr, LoopInfo &LI)
-{
-	auto L2 = LI.getLoopFor(cast<Instruction>(Ptr)->getParent());
-	if (L2 == NULL) {
-		return NULL;
-	}
-	auto L1 = LI.getLoopFor(cast<Instruction>(Base)->getParent());
-	if (L1 == NULL) {
-		return L2;
-	}
-	if (L1 == L2) {
-		return NULL;
-	}
-	if (LI.isNotAlreadyContainedIn(L2, L1)) {
-		return NULL;
-	}
-	return L2;
-}
-
-static Value*
-baseIsOutSideLoop(Instruction *Base, const Instruction *Ptr, LoopInfo &LI, PostDominatorTree &PDT, bool &NeedRecurrence)
-{
-	auto L2 = baseIsOutSideLoopHelper(Base, Ptr, LI);
-	if (L2 == NULL) {
-		return NULL;
-	}
-	auto Header = L2->getLoopPreheader();
-	if (PDT.dominates(Ptr->getParent(), Header)) {
-		//errs() << "Can be moved in the header: " << *Header << "\n";
-		if (baseIsOutSideLoopHelper(Base, Header->getFirstNonPHI(), LI)) {
-			NeedRecurrence = true;
-		}
-		return Header;
-	}
-	else {
-		NeedRecurrence = true;
-	}
-	return NULL;
-}
-
 #if 0
 static bool
 hasUnsafeUse(Function &F, Instruction *Ptr, DenseSet<Value*> &UnsafeUses)
@@ -3329,17 +3289,6 @@ postDominatesAnyPtrDef(Function &F, Instruction *Base, PostDominatorTree &PDT,
 		if (PDT.dominates(I, Base)) {
 			if (inSameLoop(Base, I, LI)) {
 				return true;
-			}
-		}
-		else {
-			auto Header = baseIsOutSideLoop(Base, I, LI, PDT, Recurrence);
-			if (Header) {
-				//LoopUsages[V] = Header;
-			}
-			if (Recurrence) {
-				//CondLoop.insert(V);
-				//errs() << "Need Recurrence For: " << *V << "\n";
-				//errs() << F << "\n";
 			}
 		}
 	}
@@ -5932,8 +5881,6 @@ static bool optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	auto Base = CI->getArgOperand(0);
 	assert(!isa<BitCastInst>(Base));
 
-	auto BaseI = dyn_cast<Instruction>(Base);
-	BasicBlock *BaseBB = (BaseI) ? BaseI->getParent() : &F.getEntryBlock();
 
 	auto L2 = LI->getLoopFor(CI->getParent());
 	if (L2 == NULL) {
@@ -5943,26 +5890,20 @@ static bool optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	if (Header == NULL) {
 		Header = L2->getLoopPredecessor();
 		if (Header == NULL) {
-			assert(!L2->isLoopInvariant(BaseBB));
+			assert(!L2->isLoopInvariant(Base));
 			return false;
 		}
 	}
 	assert(L2 != LI->getLoopFor(Header));
 
-	if (!DT->dominates(BaseBB, Header)) {
+	if (!L2->isLoopInvariant(Base)) {
 		return false;
 	}
 
-	//auto L1 = LI->getLoopFor(BaseBB);
-	//if (L1 == L2) {
-		//return false;
-	//}
-	//if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
-	//	return false;
-	//}
-
 	if (PDT.dominates(CI->getParent(), Header)) {
 		auto InsertPt = Header->getFirstNonPHI();
+		auto BaseI = dyn_cast<Instruction>(Base);
+		BasicBlock *BaseBB = (BaseI) ? BaseI->getParent() : NULL;
 		if (Header == BaseBB) {
 			assert(BaseI);
 			if (isa<PHINode>(BaseI)) {
@@ -5984,15 +5925,12 @@ static void optimizeLimitLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 	auto Base = CI->getArgOperand(0);
 	assert(!isa<BitCastInst>(Base));
 
-	auto BaseI = dyn_cast<Instruction>(Base);
-	BasicBlock *BaseBB = (BaseI) ? BaseI->getParent() : &F.getEntryBlock();
-
 	auto L2 = LI->getLoopFor(CI->getParent());
 	if (L2 == NULL) {
 		return;
 	}
 
-	if (!L2->isLoopInvariant(BaseBB)) {
+	if (!L2->isLoopInvariant(Base)) {
 		return;
 	}
 
@@ -6195,7 +6133,12 @@ static BasicBlock* getTrapBB(Function *Fn)
 
 static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
 {
-	auto Ptr = cast<Instruction>(CI->getArgOperand(1));
+	auto Ptr = CI->getArgOperand(1);
+	Ptr = Ptr->stripPointerCasts();
+
+	//%37 = bitcast %union.tree_node** %type4.i to i64**
+	//assert(!isa<BitCastInst>(Ptr) || isa<IntToPtrInst>(Ptr));
+
 	auto L2 = LI->getLoopFor(CI->getParent());
 	if (L2 == NULL) {
 		return false;
@@ -6206,23 +6149,16 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	if (Header == NULL) {
 		Header = L2->getLoopPredecessor();
 		if (Header == NULL) {
-			assert(!L2->isLoopInvariant(Ptr->getParent()));
+			assert(!L2->isLoopInvariant(Ptr));
 			return false;
 		}
 	}
 	assert(L2 != LI->getLoopFor(Header));
 
-	if (!DT->dominates(Ptr->getParent(), Header)) {
+	if (!L2->isLoopInvariant(Ptr)) {
 		return false;
 	}
 
-	//auto L1 = LI->getLoopFor(Ptr->getParent());
-	//if (L1 == L2) {
-	//	return false;
-	//}
-	//if (L1 && LI->isNotAlreadyContainedIn(L2, L1)) {
-	//	return false;
-	//}
 
 	if (PDT.dominates(CI->getParent(), Header)) {
 		auto InsertPt = Header->getTerminator();
@@ -6233,11 +6169,31 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	return false;
 }
 
-#if 0
+//#if 0
 static bool
 canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE)
 {
+
+	auto Bounds = L->getBounds(SE);
+	if (Bounds == None) {
+		errs() << "Bounds are not available\n";
+		errs() << *L << "\n";
+		return false;
+	}
+	auto Dir = Bounds->getDirection();
+	if (Dir == Loop::LoopBounds::Direction::Unknown) {
+		errs() << "Direction is unknown\n";
+		return false;
+	}
+	Value* Initial = &Bounds->getInitialIVValue();
+	Value* Final = &Bounds->getFinalIVValue();
+	//Loop::LoopBounds::Direction::Increasing
+	errs() << "Initial: " << *Initial << "\n";
+	errs() << "Final: " << *Final << "\n";
+	//errs() << "Dir: " << Dir << "\n";
+
 	V = V->stripPointerCasts();
+	errs() << "Checking : " << *V << "\n";
 	auto GEP = dyn_cast<GetElementPtrInst>(V);
 	if (!GEP) {
 		return false;
@@ -6247,28 +6203,37 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE)
 
   for (i = 0; i < NumOperands; i++) {
     auto *Op = dyn_cast<Instruction>(GEP->getOperand(i));
-		if (Op && LI->getLoopFor(Op->getParent()) == L) {
+		if (Op && !L->isLoopInvariant(Op)) {
 			if (Op != L->getInductionVariable(SE)) {
+				errs() << "Op - non-ind: " << *Op << "\n";
 				return false;
 			}
 		}
   }
 	return true;
 }
-#endif
+//#endif
 
-static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI/*, ScalarEvolution &SE*/)
+static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, ScalarEvolution &SE)
 {
-	auto Ptr = cast<Instruction>(CI->getArgOperand(1));
+	auto Ptr = CI->getArgOperand(1);
+	auto SP = Ptr->stripPointerCasts();
+	//assert(!isa<BitCastInst>(Ptr) || isa<IntToPtrInst>(Ptr));
+
 	auto L2 = LI->getLoopFor(CI->getParent());
 	if (L2 == NULL) {
 		return;
 	}
 
-	if (!L2->isLoopInvariant(Ptr->getParent())) {
+	/*if (canMoveOutsideLoop(SP, L2, SE)) {
+		errs() << "CAN MOVE: " << *CI << "\n";
+	}*/
+
+	if (!L2->isLoopInvariant(SP)) {
 		return;
 	}
-	callOnceInLoopAfterDef(F, CI, cast<Instruction>(Ptr)->getNextNode(), DT, LI);
+	auto InsertPt = isa<Instruction>(SP) ? cast<Instruction>(SP)->getNextNode() : cast<Instruction>(F.begin()->getFirstInsertionPt());
+	callOnceInLoopAfterDef(F, CI, InsertPt, DT, LI);
 }
 
 static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
@@ -7561,18 +7526,20 @@ static void optimizeHandlers(Function &F,
 		}
 	}
 
+	//errs() << "Before: " << F << "\n";
 	if (!Abort2Calls.empty() || !Abort3Calls.empty()) {
 		//BasicBlock *TrapBB = getTrapBB(&F);
 
 		for (auto LC : Abort2Calls) {
-			optimizeAbortLoop(F, LC, &DT, &LI);
+			optimizeAbortLoop(F, LC, &DT, &LI, SE);
 		}
 
 		for (auto LC : Abort3Calls) {
-			optimizeAbortLoop(F, LC, &DT, &LI);
+			optimizeAbortLoop(F, LC, &DT, &LI, SE);
 		}
 
 	}
+	//errs() << "After: " << F << "\n";
 
 	for (auto Lim : LimitCalls) {
 		auto NewLim = optimizeLimit(F, Lim, false);
