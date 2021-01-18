@@ -5940,6 +5940,9 @@ static bool optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 		return false;
 	}
 	auto Header = L2->getLoopPreheader();
+	if (Header == NULL) {
+		return false;
+	}
 	assert(L2 != LI->getLoopFor(Header));
 
 	if (!DT->dominates(BaseBB, Header)) {
@@ -5985,10 +5988,7 @@ static void optimizeLimitLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 		return;
 	}
 
-	auto Header = L2->getLoopPreheader();
-	assert(L2 != LI->getLoopFor(Header));
-
-	if (!DT->dominates(BaseBB, Header)) {
+	if (!L2->isLoopInvariant(BaseBB)) {
 		return;
 	}
 
@@ -6198,6 +6198,10 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	}
 
 	auto Header = L2->getLoopPreheader();
+
+	if (Header == NULL) {
+		return false;
+	}
 	assert(L2 != LI->getLoopFor(Header));
 
 	if (!DT->dominates(Ptr->getParent(), Header)) {
@@ -6253,10 +6257,7 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 		return;
 	}
 
-	auto Header = L2->getLoopPreheader();
-	assert(L2 != LI->getLoopFor(Header));
-
-	if (!DT->dominates(Ptr->getParent(), Header)) {
+	if (!L2->isLoopInvariant(Ptr->getParent())) {
 		return;
 	}
 	callOnceInLoopAfterDef(F, CI, cast<Instruction>(Ptr)->getNextNode(), DT, LI);
