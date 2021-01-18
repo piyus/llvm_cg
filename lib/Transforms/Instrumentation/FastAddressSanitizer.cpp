@@ -5941,7 +5941,11 @@ static bool optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	}
 	auto Header = L2->getLoopPreheader();
 	if (Header == NULL) {
-		return false;
+		Header = L2->getLoopPredecessor();
+		if (Header == NULL) {
+			assert(!L2->isLoopInvariant(BaseBB));
+			return false;
+		}
 	}
 	assert(L2 != LI->getLoopFor(Header));
 
@@ -6200,7 +6204,11 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	auto Header = L2->getLoopPreheader();
 
 	if (Header == NULL) {
-		return false;
+		Header = L2->getLoopPredecessor();
+		if (Header == NULL) {
+			assert(!L2->isLoopInvariant(Ptr->getParent()));
+			return false;
+		}
 	}
 	assert(L2 != LI->getLoopFor(Header));
 
