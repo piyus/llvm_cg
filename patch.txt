@@ -1,0 +1,464 @@
+diff --git a/include/llvm/Analysis/LoopInfo.h b/include/llvm/Analysis/LoopInfo.h
+index a0104512..5e56b085 100644
+--- a/include/llvm/Analysis/LoopInfo.h
++++ b/include/llvm/Analysis/LoopInfo.h
+@@ -669,6 +669,7 @@ public:
+     /// getCanonicalPredicate() returns sgt for this example.
+     /// Note: The IR is not changed.
+     ICmpInst::Predicate getCanonicalPredicate() const;
++    ICmpInst::Predicate getPredicate1(bool &StepInst) const;
+ 
+     /// An enum for the direction of the loop
+     /// - for (int i = 0; i < ub; ++i)  --> Increasing
+diff --git a/lib/Analysis/LoopInfo.cpp b/lib/Analysis/LoopInfo.cpp
+index 3dc29b40..3627f4ac 100644
+--- a/lib/Analysis/LoopInfo.cpp
++++ b/lib/Analysis/LoopInfo.cpp
+@@ -227,6 +227,37 @@ Optional<Loop::LoopBounds> Loop::LoopBounds::getBounds(const Loop &L,
+ 
+ using Direction = Loop::LoopBounds::Direction;
+ 
++ICmpInst::Predicate Loop::LoopBounds::getPredicate1(bool &StepInst) const {
++	StepInst = false;
++  BasicBlock *Latch = L.getLoopLatch();
++  assert(Latch && "Expecting valid latch");
++
++  BranchInst *BI = dyn_cast_or_null<BranchInst>(Latch->getTerminator());
++  assert(BI && BI->isConditional() && "Expecting conditional latch branch");
++
++  ICmpInst *LatchCmpInst = dyn_cast<ICmpInst>(BI->getCondition());
++  assert(LatchCmpInst &&
++         "Expecting the latch compare instruction to be a CmpInst");
++
++  // Need to inverse the predicate when first successor is not the loop
++  // header
++  ICmpInst::Predicate Pred = (BI->getSuccessor(0) == L.getHeader())
++                                 ? LatchCmpInst->getPredicate()
++                                 : LatchCmpInst->getInversePredicate();
++
++  if (LatchCmpInst->getOperand(0) == &getFinalIVValue())
++    Pred = ICmpInst::getSwappedPredicate(Pred);
++
++  // Need to flip strictness of the predicate when the latch compare instruction
++  // is not using StepInst
++  if (LatchCmpInst->getOperand(0) == &getStepInst() ||
++      LatchCmpInst->getOperand(1) == &getStepInst()) {
++		StepInst = true;
++	}
++	return Pred;
++}
++
++
+ ICmpInst::Predicate Loop::LoopBounds::getCanonicalPredicate() const {
+   BasicBlock *Latch = L.getLoopLatch();
+   assert(Latch && "Expecting valid latch");
+diff --git a/lib/Transforms/Instrumentation/FastAddressSanitizer.cpp b/lib/Transforms/Instrumentation/FastAddressSanitizer.cpp
+index a4e8b4fa..8e60583a 100644
+--- a/lib/Transforms/Instrumentation/FastAddressSanitizer.cpp
++++ b/lib/Transforms/Instrumentation/FastAddressSanitizer.cpp
+@@ -82,6 +82,8 @@
+ #include "llvm/Transforms/Utils/Local.h"
+ #include "llvm/Transforms/Utils/ModuleUtils.h"
+ #include "llvm/Transforms/Utils/PromoteMemToReg.h"
++#include "llvm/Transforms/Utils/LoopSimplify.h"
++#include "llvm/Transforms/Utils/LoopUtils.h"
+ #include <algorithm>
+ #include <cassert>
+ #include <cstddef>
+@@ -3329,13 +3331,17 @@ abortIfTrue(Function &F, Instruction *InsertPt, Value *Base,
+ 	FunctionCallee Fn;
+ 	if (!indefiniteBase(Base, DL)) {
+ 		Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Base->getType(),
+-			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(), IRB.getInt64Ty(), Callsite->getType());
++			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(),
++			IRB.getInt64Ty(), Callsite->getType(), IRB.getInt8PtrTy());
+ 	}
+ 	else {
+ 		Fn = M->getOrInsertFunction("san_abort3", IRB.getVoidTy(), Base->getType(),
+-			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(), IRB.getInt64Ty(), Callsite->getType());
++			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(),
++			IRB.getInt64Ty(), Callsite->getType(), IRB.getInt8PtrTy());
+ 	}
+-	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, TySize, ConstantInt::get(IRB.getInt64Ty(), 0),  Callsite});
++	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, TySize,
++		ConstantInt::get(IRB.getInt64Ty(), 0),  Callsite,
++		Constant::getNullValue(IRB.getInt8PtrTy())});
+ 
+ 	//auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy());
+ 	//auto Call = IRB.CreateCall(Fn, {});
+@@ -6131,93 +6137,197 @@ static BasicBlock* getTrapBB(Function *Fn)
+ 	return TrapBB;
+ }
+ 
+-static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
++static bool
++canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
++	BasicBlock *Header, Instruction* &Lo, Instruction* &Hi,
++	DominatorTree *DT)
+ {
+-	auto Ptr = CI->getArgOperand(1);
+-	Ptr = Ptr->stripPointerCasts();
+-
+-	//%37 = bitcast %union.tree_node** %type4.i to i64**
+-	//assert(!isa<BitCastInst>(Ptr) || isa<IntToPtrInst>(Ptr));
+-
+-	auto L2 = LI->getLoopFor(CI->getParent());
+-	if (L2 == NULL) {
++	V = V->stripPointerCasts();
++	auto GEP = dyn_cast<GetElementPtrInst>(V);
++	if (!GEP) {
+ 		return false;
+ 	}
+ 
+-	auto Header = L2->getLoopPreheader();
+-
+-	if (Header == NULL) {
+-		Header = L2->getLoopPredecessor();
+-		if (Header == NULL) {
+-			assert(!L2->isLoopInvariant(Ptr));
+-			return false;
+-		}
+-	}
+-	assert(L2 != LI->getLoopFor(Header));
+-
+-	if (!L2->isLoopInvariant(Ptr)) {
++	if (!L->isLoopSimplifyForm()) {
++		//errs() << "Not In Simplyfy Form\n";
+ 		return false;
+ 	}
+ 
+-
+-	if (PDT.dominates(CI->getParent(), Header)) {
+-		auto InsertPt = Header->getTerminator();
+-  	CI->removeFromParent();
+-		CI->insertBefore(InsertPt);
+-		return true;
++	//errs() << "V:: " << *V << "\n";
++	auto IndVar = L->getInductionVariable(SE);
++	if (IndVar == NULL) {
++		//errs() << "No IndVar\n";
++		return false;
+ 	}
+-	return false;
+-}
+-
+-//#if 0
+-static bool
+-canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE)
+-{
+ 
+ 	auto Bounds = L->getBounds(SE);
+ 	if (Bounds == None) {
+-		errs() << "Bounds are not available\n";
+-		errs() << *L << "\n";
++		//errs() << "Bounds are not available\n";
++		//errs() << *L << "\n";
+ 		return false;
+ 	}
+ 	auto Dir = Bounds->getDirection();
+ 	if (Dir == Loop::LoopBounds::Direction::Unknown) {
+-		errs() << "Direction is unknown\n";
++		//errs() << "Direction is unknown\n";
+ 		return false;
+ 	}
+ 	Value* Initial = &Bounds->getInitialIVValue();
+ 	Value* Final = &Bounds->getFinalIVValue();
+-	//Loop::LoopBounds::Direction::Increasing
+-	errs() << "Initial: " << *Initial << "\n";
+-	errs() << "Final: " << *Final << "\n";
+-	//errs() << "Dir: " << Dir << "\n";
+ 
+-	V = V->stripPointerCasts();
+-	errs() << "Checking : " << *V << "\n";
+-	auto GEP = dyn_cast<GetElementPtrInst>(V);
+-	if (!GEP) {
+-		return false;
++	if (isa<Instruction>(Initial)) {
++		auto Inst = cast<Instruction>(Initial);
++		if (!DT->dominates(Inst->getParent(), Header)) {
++			return false;
++		}
+ 	}
++
++	if (isa<Instruction>(Final)) {
++		auto Inst = cast<Instruction>(Final);
++		if (!DT->dominates(Inst->getParent(), Header)) {
++			return false;
++		}
++	}
++
++	//Loop::LoopBounds::Direction::Increasing
++	//errs() << "Initial: " << *Initial << "\n";
++	//errs() << "Final: " << *Final << "\n";
++	bool StepInst;
++	auto Pred = Bounds->getPredicate1(StepInst);
++	bool Equals = CmpInst::isTrueWhenEqual(Pred);
++	//assert(Equals == 0);
++	//errs() << "Equals:: " << Equals << "\n";
++	//errs() << "Pred:: " << Pred << "\n";
++
+ 	int NumOperands = GEP->getNumOperands();
+ 	int i;
+ 
+   for (i = 0; i < NumOperands; i++) {
+     auto *Op = dyn_cast<Instruction>(GEP->getOperand(i));
+ 		if (Op && !L->isLoopInvariant(Op)) {
+-			if (Op != L->getInductionVariable(SE)) {
+-				errs() << "Op - non-ind: " << *Op << "\n";
+-				return false;
++			if (Op != IndVar) {
++				//auto Aux = dyn_cast<PHINode>(Op);
++				//if (!Aux || !L->isAuxiliaryInductionVariable(*Aux, SE)) {
++					return false;
++				//}
++				//errs() << "Aux-OP:: " << *Aux << "\n";
+ 			}
+ 		}
+   }
++	auto InsertPt = Header->getTerminator();
++
++	if (StepInst) {
++		if (Equals == 0) {
++			IRBuilder<> IRB(InsertPt);
++			auto StepValue = Bounds->getStepValue();
++			assert(StepValue);
++			Final = IRB.CreateSub(Final, StepValue);
++		}
++	}
++	else {
++		if (Equals) {
++			IRBuilder<> IRB(InsertPt);
++			auto StepValue = Bounds->getStepValue();
++			assert(StepValue);
++			Final = IRB.CreateAdd(Final, StepValue);
++		}
++	}
++
++	//auto StepI = &Bounds->getStepInst();
++	//errs() << "StepI:: " << *StepI << "\n";
++
++	Lo = GEP->clone();
++	Lo->insertBefore(InsertPt);
++	Hi = GEP->clone();
++	Hi->insertBefore(InsertPt);
++
++	Value *LoVal = (Dir == Loop::LoopBounds::Direction::Increasing) ? Initial : Final;
++	Value *HiVal = (Dir == Loop::LoopBounds::Direction::Increasing) ? Final : Initial;
++
++	//errs() << "LoVal:: " << *LoVal << "\n";
++	//errs() << "HiVal:: " << *HiVal << "\n";
++	bool HasInv = false;
++
++  for (i = 0; i < NumOperands; i++) {
++    auto *Op = dyn_cast<Instruction>(Lo->getOperand(i));
++		if (Op && !L->isLoopInvariant(Op)) {
++			//errs() << "Op:: " << *Op << "\n";
++			//assert(Op == IndVar || L->isAuxiliaryInductionVariable(*(cast<PHINode>(Op)), SE));
++			Lo->setOperand(i, LoVal);
++			Hi->setOperand(i, HiVal);
++			HasInv = true;
++		}
++  }
++	assert(HasInv);
++	//errs() << "Lo:: " << *Lo << "\n";
++	//errs() << "Hi:: " << *Hi << "\n";
++	//errs() << "IndVar:: " << *IndVar << "\n";
++
++	return true;
++}
++
++
++static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT,
++	ScalarEvolution &SE)
++{
++	Instruction *Lo;
++	Instruction *Hi;
++
++	auto Ptr = CI->getArgOperand(1);
++	Ptr = Ptr->stripPointerCasts();
++
++	//%37 = bitcast %union.tree_node** %type4.i to i64**
++	//assert(!isa<BitCastInst>(Ptr) || isa<IntToPtrInst>(Ptr));
++
++	auto L2 = LI->getLoopFor(CI->getParent());
++	if (L2 == NULL) {
++		return false;
++	}
++
++	auto Header = L2->getLoopPreheader();
++
++	if (Header == NULL) {
++		Header = L2->getLoopPredecessor();
++		if (Header == NULL) {
++			assert(!L2->isLoopInvariant(Ptr));
++			return false;
++		}
++	}
++	assert(L2 != LI->getLoopFor(Header));
++
++	if (!PDT.dominates(CI->getParent(), Header)) {
++		return false;
++	}
++
++	if (!L2->isLoopInvariant(Ptr)) {
++		if (canMoveOutsideLoop(Ptr, L2, SE, Header, Lo, Hi, DT)) {
++
++			errs() << "Moving Abort:: " << *CI << "\n";
++			auto InsertPt = Header->getTerminator();
++  		CI->removeFromParent();
++			CI->insertBefore(InsertPt);
++			CI->setArgOperand(1, Lo);
++
++			IRBuilder<> IRB(CI);
++			auto TySize = CI->getArgOperand(3);
++			Hi = cast<Instruction>(IRB.CreateGEP(IRB.CreateBitCast(Hi, IRB.getInt8PtrTy()), TySize));
++			CI->setArgOperand(6, Hi);
++			CI->setArgOperand(4, ConstantInt::get(IRB.getInt64Ty(), 0));
++			return false;
++		}
++		return false;
++	}
++
++	auto InsertPt = Header->getTerminator();
++  CI->removeFromParent();
++	CI->insertBefore(InsertPt);
+ 	return true;
+ }
+-//#endif
+ 
+ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, ScalarEvolution &SE)
+ {
+ 	auto Ptr = CI->getArgOperand(1);
+ 	auto SP = Ptr->stripPointerCasts();
++	auto PtrLimit = CI->getArgOperand(6);
+ 	//assert(!isa<BitCastInst>(Ptr) || isa<IntToPtrInst>(Ptr));
+ 
+ 	auto L2 = LI->getLoopFor(CI->getParent());
+@@ -6225,19 +6335,21 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
+ 		return;
+ 	}
+ 
+-	/*if (canMoveOutsideLoop(SP, L2, SE)) {
+-		errs() << "CAN MOVE: " << *CI << "\n";
+-	}*/
+-
+-	if (!L2->isLoopInvariant(SP)) {
++	//assert(L2->isLoopInvariant(PtrLimit));
++	if (!L2->isLoopInvariant(SP) || !L2->isLoopInvariant(PtrLimit)) {
+ 		return;
+ 	}
++	assert(isa<Constant>(PtrLimit));
+ 	auto InsertPt = isa<Instruction>(SP) ? cast<Instruction>(SP)->getNextNode() : cast<Instruction>(F.begin()->getFirstInsertionPt());
+ 	callOnceInLoopAfterDef(F, CI, InsertPt, DT, LI);
+ }
+ 
+ static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
+ {
++	if (CI->hasMetadata("preheader")) {
++		errs() << "Metadata:: " << *CI << "\n";
++		return;
++	}
+ 	auto InsertPt = CI->getNextNode();
+ 	IRBuilder<> IRB(InsertPt);
+ 	auto Base = CI->getArgOperand(0);
+@@ -6386,6 +6498,7 @@ static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBloc
+ 	auto Int8Ty = IRB.getInt8Ty();
+ 	Value *RealBase;
+ 	bool Static = false;
++	bool PreHeader = false;
+ 
+ 	auto PaddingSz = cast<ConstantInt>(Padding)->getSExtValue();
+ 	assert(PaddingSz <= 0);
+@@ -6409,8 +6522,19 @@ static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBloc
+ 
+ 	assert(Limit->getType() == Int8PtrTy);
+ 
++	Value* PtrLimit = CI->getArgOperand(6);
+ 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
+-	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
++
++	if (isa<Constant>(PtrLimit)) {
++		assert(cast<Constant>(PtrLimit)->isNullValue());
++		PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
++	}
++	else {
++		PreHeader = true;
++		if (!Static) {
++			PtrLimit = buildNoInterior(F, IRB, PtrLimit);
++		}
++	}
+ 
+ 	if (PaddingSz != 0) {
+ 		Ptr8 = IRB.CreateGEP(Int8Ty, Ptr8, Padding);
+@@ -6430,6 +6554,11 @@ static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBloc
+ 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
+ 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
+ 	CI->eraseFromParent();
++
++	if (PreHeader) {
++		MDNode* N = MDNode::get(Call->getContext(), {});
++		Call->setMetadata("preheader", N);
++	}
+ 	return Call;
+ 
+ #if 0
+@@ -7511,13 +7640,23 @@ static void optimizeHandlers(Function &F,
+ 	ScalarEvolution SE(F, *_TLI, *AC, DT, LI);
+ 
+ 
++	//errs() << "Before Loop Header:: " << F << "\n";
++  if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
++		errs() << "Before Loop Header\n" << F << "\n";
++	}
++
+ 	for (auto LC : Abort2Calls) {
+-		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT)) {
++		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT, SE)) {
+ 		}
+ 	}
+ 
++  if (!ClDebugFunc.empty() && F.getName().startswith(ClDebugFunc)) {
++		errs() << "After Loop Header\n" << F << "\n";
++	}
++	//errs() << "After Loop Header:: " << F << "\n";
++
+ 	for (auto LC : Abort3Calls) {
+-		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT)) {
++		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT, SE)) {
+ 		}
+ 	}
+ 
+@@ -7634,15 +7773,33 @@ static void optimizeHandlers(Function &F,
+ 	}
+ }
+ 
++
++static void
++simplifyAll(Function &F, const TargetLibraryInfo *TLI, AssumptionCache *AC)
++{
++	DominatorTree DT(F);
++	LoopInfo LI(DT);
++	TargetLibraryInfo *_TLI = const_cast<TargetLibraryInfo*>(TLI);
++	ScalarEvolution SE(F, *_TLI, *AC, DT, LI);
++	
++	for (auto &L : LI) {
++    simplifyLoop(L, &DT, &LI, &SE, AC, nullptr, false /* PreserveLCSSA */);
++		//formLCSSARecursively(*L, DT, &LI, &SE);
++	}
++}
++
+ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
+                                                  const TargetLibraryInfo *TLI,
+ 																								 AAResults *AA,
+ 																								 AssumptionCache *AC) {
++	simplifyAll(F, TLI, AC);
+ 	//FIXME: only if used in phi
+ 	//copyArgsByValToAllocas1(F);
+ 	//errs() << "Printing function\n" << F << "\n";
+ 	//createInteriorFn(&F);
+ 
++
++
+ 	DenseSet<Value*> UnsafeUses;
+ 	DenseMap<Value*, uint64_t> UnsafePointers;
+   const DataLayout &DL = F.getParent()->getDataLayout();

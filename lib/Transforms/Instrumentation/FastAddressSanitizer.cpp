@@ -6169,7 +6169,7 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	return false;
 }
 
-//#if 0
+#if 0
 static bool
 canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE)
 {
@@ -6212,9 +6212,9 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE)
   }
 	return true;
 }
-//#endif
+#endif
 
-static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, ScalarEvolution &SE)
+static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI/*, ScalarEvolution &SE*/)
 {
 	auto Ptr = CI->getArgOperand(1);
 	auto SP = Ptr->stripPointerCasts();
@@ -7508,7 +7508,7 @@ static void optimizeHandlers(Function &F,
 	PostDominatorTree PDT(F);
 	LoopInfo LI(DT);
 	TargetLibraryInfo *_TLI = const_cast<TargetLibraryInfo*>(TLI);
-	ScalarEvolution SE(F, *_TLI, *AC, DT, LI);
+	//ScalarEvolution SE(F, *_TLI, *AC, DT, LI);
 
 
 	for (auto LC : Abort2Calls) {
@@ -7531,11 +7531,11 @@ static void optimizeHandlers(Function &F,
 		//BasicBlock *TrapBB = getTrapBB(&F);
 
 		for (auto LC : Abort2Calls) {
-			optimizeAbortLoop(F, LC, &DT, &LI, SE);
+			optimizeAbortLoop(F, LC, &DT, &LI/*, SE*/);
 		}
 
 		for (auto LC : Abort3Calls) {
-			optimizeAbortLoop(F, LC, &DT, &LI, SE);
+			optimizeAbortLoop(F, LC, &DT, &LI/*, SE*/);
 		}
 
 	}
