@@ -6268,7 +6268,7 @@ static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 	CI->eraseFromParent();
 }
 
-static void optimizeFInterior(Function &F, CallInst *CI)
+static void optimizeFInterior(Function &F, CallInst *CI, AAResults *AA)
 {
 	IRBuilder<> IRB(CI);
 	auto Base = CI->getArgOperand(0);
@@ -6276,6 +6276,7 @@ static void optimizeFInterior(Function &F, CallInst *CI)
 	auto Int64Ty = IRB.getInt64Ty();
 	auto MaxOffset = ConstantInt::get(Int64Ty, ((1ULL<<15)-1));
 
+	assert(AA->alias(MemoryLocation(Base), MemoryLocation(Ptr)) != MustAlias);
 
 	auto PtrInt = IRB.CreatePtrToInt(Ptr, Int64Ty);
 	auto BaseInt = IRB.CreatePtrToInt(Base, Int64Ty);
@@ -6290,7 +6291,7 @@ static void optimizeFInterior(Function &F, CallInst *CI)
 }
 
 
-static void optimizeFInteriorCheck(Function &F, CallInst *CI)
+static void optimizeFInteriorCheck(Function &F, CallInst *CI, AAResults *AA)
 {
 
 	IRBuilder<> IRB(CI);
@@ -6301,6 +6302,8 @@ static void optimizeFInteriorCheck(Function &F, CallInst *CI)
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	auto Int8Ty = IRB.getInt8Ty();
 	auto Int64Ty = IRB.getInt64Ty();
+
+	assert(AA->alias(MemoryLocation(Base), MemoryLocation(Ptr)) != MustAlias);
 
 	if (Base->getType() != Int8PtrTy) {
 		Base = IRB.CreateBitCast(Base, Int8PtrTy);
@@ -7622,11 +7625,11 @@ static void optimizeHandlers(Function &F,
 	}
 
 	for (auto Interior : FInteriors) {
-		optimizeFInterior(F, Interior);
+		optimizeFInterior(F, Interior, AA);
 		
 	}
 	for (auto Interior : FCheckInteriors) {
-		optimizeFInteriorCheck(F, Interior);
+		optimizeFInteriorCheck(F, Interior, AA);
 	}
 
 	for (auto CI : FCheckSizes) {
