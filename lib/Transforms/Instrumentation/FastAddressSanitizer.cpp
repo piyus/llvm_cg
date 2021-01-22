@@ -82,6 +82,8 @@
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
+#include "llvm/Transforms/Utils/LoopSimplify.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -7637,10 +7639,25 @@ static void optimizeHandlers(Function &F,
 	}
 }
 
+static void
+simplifyAll(Function &F, const TargetLibraryInfo *TLI, AssumptionCache *AC)
+{
+	DominatorTree DT(F);
+	LoopInfo LI(DT);
+	TargetLibraryInfo *_TLI = const_cast<TargetLibraryInfo*>(TLI);
+	ScalarEvolution SE(F, *_TLI, *AC, DT, LI);
+	
+	for (auto &L : LI) {
+    simplifyLoop(L, &DT, &LI, &SE, AC, nullptr, false /* PreserveLCSSA */);
+		//formLCSSARecursively(*L, DT, &LI, &SE);
+	}
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA,
 																								 AssumptionCache *AC) {
+	simplifyAll(F, TLI, AC);
 	//FIXME: only if used in phi
 	//copyArgsByValToAllocas1(F);
 	//errs() << "Printing function\n" << F << "\n";
