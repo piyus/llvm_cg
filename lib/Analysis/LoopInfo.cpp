@@ -227,6 +227,36 @@ Optional<Loop::LoopBounds> Loop::LoopBounds::getBounds(const Loop &L,
 
 using Direction = Loop::LoopBounds::Direction;
 
+ICmpInst::Predicate Loop::LoopBounds::getPredicate1(bool &StepInst) const {
+	StepInst = false;
+  BasicBlock *Latch = L.getLoopLatch();
+  assert(Latch && "Expecting valid latch");
+
+  BranchInst *BI = dyn_cast_or_null<BranchInst>(Latch->getTerminator());
+  assert(BI && BI->isConditional() && "Expecting conditional latch branch");
+
+  ICmpInst *LatchCmpInst = dyn_cast<ICmpInst>(BI->getCondition());
+  assert(LatchCmpInst &&
+         "Expecting the latch compare instruction to be a CmpInst");
+
+  // Need to inverse the predicate when first successor is not the loop
+  // header
+  ICmpInst::Predicate Pred = (BI->getSuccessor(0) == L.getHeader())
+                                 ? LatchCmpInst->getPredicate()
+                                 : LatchCmpInst->getInversePredicate();
+
+  if (LatchCmpInst->getOperand(0) == &getFinalIVValue())
+    Pred = ICmpInst::getSwappedPredicate(Pred);
+
+  // Need to flip strictness of the predicate when the latch compare instruction
+  // is not using StepInst
+  if (LatchCmpInst->getOperand(0) == &getStepInst() ||
+      LatchCmpInst->getOperand(1) == &getStepInst()) {
+		StepInst = true;
+	}
+	return Pred;
+}
+
 ICmpInst::Predicate Loop::LoopBounds::getCanonicalPredicate() const {
   BasicBlock *Latch = L.getLoopLatch();
   assert(Latch && "Expecting valid latch");

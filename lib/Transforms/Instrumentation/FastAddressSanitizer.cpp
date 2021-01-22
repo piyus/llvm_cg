@@ -3331,13 +3331,16 @@ abortIfTrue(Function &F, Instruction *InsertPt, Value *Base,
 	FunctionCallee Fn;
 	if (!indefiniteBase(Base, DL)) {
 		Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Base->getType(),
-			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(), IRB.getInt64Ty(), Callsite->getType());
+			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(), 
+			IRB.getInt64Ty(), Callsite->getType(), IRB.getInt8PtrTy());
 	}
 	else {
 		Fn = M->getOrInsertFunction("san_abort3", IRB.getVoidTy(), Base->getType(),
-			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(), IRB.getInt64Ty(), Callsite->getType());
+			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(),
+			IRB.getInt64Ty(), Callsite->getType(), IRB.getInt8PtrTy());
 	}
-	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, TySize, ConstantInt::get(IRB.getInt64Ty(), 0),  Callsite});
+	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, TySize, ConstantInt::get(IRB.getInt64Ty(), 0),
+		Callsite, Constant::getNullValue(IRB.getInt8PtrTy())});
 
 	//auto Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy());
 	//auto Call = IRB.CreateCall(Fn, {});
@@ -6133,8 +6136,140 @@ static BasicBlock* getTrapBB(Function *Fn)
 	return TrapBB;
 }
 
-static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT)
+static bool
+canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
+	BasicBlock *Header, Instruction* &Lo, Instruction* &Hi,
+	DominatorTree *DT)
 {
+	V = V->stripPointerCasts();
+	auto GEP = dyn_cast<GetElementPtrInst>(V);
+	if (!GEP) {
+		return false;
+	}
+
+	if (!L->isLoopSimplifyForm()) {
+		//errs() << "Not In Simplyfy Form\n";
+		return false;
+	}
+
+	//errs() << "V:: " << *V << "\n";
+	auto IndVar = L->getInductionVariable(SE);
+	if (IndVar == NULL) {
+		//errs() << "No IndVar\n";
+		return false;
+	}
+
+	auto Bounds = L->getBounds(SE);
+	if (Bounds == None) {
+		//errs() << "Bounds are not available\n";
+		//errs() << *L << "\n";
+		return false;
+	}
+	auto Dir = Bounds->getDirection();
+	if (Dir == Loop::LoopBounds::Direction::Unknown) {
+		//errs() << "Direction is unknown\n";
+		return false;
+	}
+	Value* Initial = &Bounds->getInitialIVValue();
+	Value* Final = &Bounds->getFinalIVValue();
+
+	if (isa<Instruction>(Initial)) {
+		auto Inst = cast<Instruction>(Initial);
+		if (!DT->dominates(Inst->getParent(), Header)) {
+			return false;
+		}
+	}
+
+	if (isa<Instruction>(Final)) {
+		auto Inst = cast<Instruction>(Final);
+		if (!DT->dominates(Inst->getParent(), Header)) {
+			return false;
+		}
+	}
+
+	//Loop::LoopBounds::Direction::Increasing
+	//errs() << "Initial: " << *Initial << "\n";
+	//errs() << "Final: " << *Final << "\n";
+	bool StepInst;
+	auto Pred = Bounds->getPredicate1(StepInst);
+	bool Equals = CmpInst::isTrueWhenEqual(Pred);
+	//assert(Equals == 0);
+	//errs() << "Equals:: " << Equals << "\n";
+	//errs() << "Pred:: " << Pred << "\n";
+
+	int NumOperands = GEP->getNumOperands();
+	int i;
+
+  for (i = 0; i < NumOperands; i++) {
+    auto *Op = dyn_cast<Instruction>(GEP->getOperand(i));
+		if (Op && !L->isLoopInvariant(Op)) {
+			if (Op != IndVar) {
+				//auto Aux = dyn_cast<PHINode>(Op);
+				//if (!Aux || !L->isAuxiliaryInductionVariable(*Aux, SE)) {
+					return false;
+				//}
+				//errs() << "Aux-OP:: " << *Aux << "\n";
+			}
+		}
+  }
+	auto InsertPt = Header->getTerminator();
+
+	if (StepInst) {
+		if (Equals == 0) {
+			IRBuilder<> IRB(InsertPt);
+			auto StepValue = Bounds->getStepValue();
+			assert(StepValue);
+			Final = IRB.CreateSub(Final, StepValue);
+		}
+	}
+	else {
+		if (Equals) {
+			IRBuilder<> IRB(InsertPt);
+			auto StepValue = Bounds->getStepValue();
+			assert(StepValue);
+			Final = IRB.CreateAdd(Final, StepValue);
+		}
+	}
+
+	//auto StepI = &Bounds->getStepInst();
+	//errs() << "StepI:: " << *StepI << "\n";
+
+	Lo = GEP->clone();
+	Lo->insertBefore(InsertPt);
+	Hi = GEP->clone();
+	Hi->insertBefore(InsertPt);
+
+	Value *LoVal = (Dir == Loop::LoopBounds::Direction::Increasing) ? Initial : Final;
+	Value *HiVal = (Dir == Loop::LoopBounds::Direction::Increasing) ? Final : Initial;
+
+	//errs() << "LoVal:: " << *LoVal << "\n";
+	//errs() << "HiVal:: " << *HiVal << "\n";
+	bool HasInv = false;
+
+  for (i = 0; i < NumOperands; i++) {
+    auto *Op = dyn_cast<Instruction>(Lo->getOperand(i));
+		if (Op && !L->isLoopInvariant(Op)) {
+			//errs() << "Op:: " << *Op << "\n";
+			//assert(Op == IndVar || L->isAuxiliaryInductionVariable(*(cast<PHINode>(Op)), SE));
+			Lo->setOperand(i, LoVal);
+			Hi->setOperand(i, HiVal);
+			HasInv = true;
+		}
+  }
+	assert(HasInv);
+	//errs() << "Lo:: " << *Lo << "\n";
+	//errs() << "Hi:: " << *Hi << "\n";
+	//errs() << "IndVar:: " << *IndVar << "\n";
+
+	return true;
+}
+
+static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT,
+	ScalarEvolution &SE)
+{
+	Instruction *Lo;
+	Instruction *Hi;
+
 	auto Ptr = CI->getArgOperand(1);
 	Ptr = Ptr->stripPointerCasts();
 
@@ -6158,6 +6293,22 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	assert(L2 != LI->getLoopFor(Header));
 
 	if (!L2->isLoopInvariant(Ptr)) {
+
+		if (PDT.dominates(CI->getParent(), Header)) {
+			if (canMoveOutsideLoop(Ptr, L2, SE, Header, Lo, Hi, DT)) {
+				errs() << "Moving Abort:: " << *CI << "\n";
+				auto InsertPt = Header->getTerminator();
+  			CI->removeFromParent();
+				CI->insertBefore(InsertPt);
+				CI->setArgOperand(1, Lo);
+				IRBuilder<> IRB(CI);
+				auto TySize = CI->getArgOperand(3);
+				Hi = cast<Instruction>(IRB.CreateGEP(IRB.CreateBitCast(Hi, IRB.getInt8PtrTy()), TySize));
+				CI->setArgOperand(6, Hi);
+				CI->setArgOperand(4, ConstantInt::get(IRB.getInt64Ty(), 0));
+			}
+		}
+
 		return false;
 	}
 
@@ -6220,6 +6371,7 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 {
 	auto Ptr = CI->getArgOperand(1);
 	auto SP = Ptr->stripPointerCasts();
+	auto PtrLimit = CI->getArgOperand(6);
 	//assert(!isa<BitCastInst>(Ptr) || isa<IntToPtrInst>(Ptr));
 
 	auto L2 = LI->getLoopFor(CI->getParent());
@@ -6231,9 +6383,10 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 		errs() << "CAN MOVE: " << *CI << "\n";
 	}*/
 
-	if (!L2->isLoopInvariant(SP)) {
+	if (!L2->isLoopInvariant(SP) || !L2->isLoopInvariant(PtrLimit)) {
 		return;
 	}
+	assert(isa<Constant>(PtrLimit));
 	auto InsertPt = isa<Instruction>(SP) ? cast<Instruction>(SP)->getNextNode() : cast<Instruction>(F.begin()->getFirstInsertionPt());
 	callOnceInLoopAfterDef(F, CI, InsertPt, DT, LI);
 }
@@ -6414,8 +6567,18 @@ static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBloc
 
 	assert(Limit->getType() == Int8PtrTy);
 
+	Value* PtrLimit = CI->getArgOperand(6);
 	auto Ptr8 = IRB.CreateBitCast(Ptr, Int8PtrTy);
-	Value *PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
+
+	if (isa<Constant>(PtrLimit)) {
+		assert(cast<Constant>(PtrLimit)->isNullValue());
+		PtrLimit = IRB.CreateGEP(Int8Ty, Ptr8, TySize);
+	}
+	else {
+		if (!Static) {
+			PtrLimit = buildNoInterior(F, IRB, PtrLimit);
+		}
+	}
 
 	if (PaddingSz != 0) {
 		Ptr8 = IRB.CreateGEP(Int8Ty, Ptr8, Padding);
@@ -7513,16 +7676,16 @@ static void optimizeHandlers(Function &F,
 	PostDominatorTree PDT(F);
 	LoopInfo LI(DT);
 	TargetLibraryInfo *_TLI = const_cast<TargetLibraryInfo*>(TLI);
-	//ScalarEvolution SE(F, *_TLI, *AC, DT, LI);
+	ScalarEvolution SE(F, *_TLI, *AC, DT, LI);
 
 
 	for (auto LC : Abort2Calls) {
-		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT)) {
+		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT, SE)) {
 		}
 	}
 
 	for (auto LC : Abort3Calls) {
-		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT)) {
+		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT, SE)) {
 		}
 	}
 

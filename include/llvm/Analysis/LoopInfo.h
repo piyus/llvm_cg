@@ -669,6 +669,7 @@ public:
     /// getCanonicalPredicate() returns sgt for this example.
     /// Note: The IR is not changed.
     ICmpInst::Predicate getCanonicalPredicate() const;
+    ICmpInst::Predicate getPredicate1(bool &StepInst) const;
 
     /// An enum for the direction of the loop
     /// - for (int i = 0; i < ub; ++i)  --> Increasing
