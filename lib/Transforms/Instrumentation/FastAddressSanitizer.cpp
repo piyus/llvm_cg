@@ -5902,8 +5902,13 @@ static bool optimizeLimitLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	assert(L2 != LI->getLoopFor(Header));
 
 	if (!L2->isLoopInvariant(Base)) {
-		return false;
+		bool Changed;
+		bool Ret = L2->makeLoopInvariant(Base, Changed, NULL, NULL);
+		if (!Ret) {
+			return false;
+		}
 	}
+
 
 	if (PDT.dominates(CI->getParent(), Header)) {
 		auto InsertPt = Header->getFirstNonPHI();
@@ -6295,6 +6300,11 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	if (!L2->isLoopInvariant(Ptr)) {
 
 		if (PDT.dominates(CI->getParent(), Header)) {
+			
+			bool Changed = true;
+			bool Ret = L2->makeLoopInvariant(Ptr, Changed, NULL, NULL);
+			assert(!Ret);
+			
 			if (canMoveOutsideLoop(Ptr, L2, SE, Header, Lo, Hi, DT)) {
 				errs() << "Moving Abort:: " << *CI << "\n";
 				auto InsertPt = Header->getTerminator();
