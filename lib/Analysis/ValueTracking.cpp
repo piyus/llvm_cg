@@ -4515,6 +4515,9 @@ bool llvm::isSafeToSpeculativelyExecute(const Value *V,
     const LoadInst *LI = cast<LoadInst>(Inst);
     if (mustSuppressSpeculation(*LI))
       return false;
+		if (LI->hasMetadata("fasansize")) {
+			return true;
+		}
     const DataLayout &DL = LI->getModule()->getDataLayout();
     return isDereferenceableAndAlignedPointer(
         LI->getPointerOperand(), LI->getType(), MaybeAlign(LI->getAlignment()),
@@ -4522,6 +4525,10 @@ bool llvm::isSafeToSpeculativelyExecute(const Value *V,
   }
   case Instruction::Call: {
     auto *CI = cast<const CallInst>(Inst);
+		if (CI->hasMetadata("fasansize")) {
+			assert(0);
+			return true;
+		}
     const Function *Callee = CI->getCalledFunction();
 
     // The called function could have undefined behavior or side-effects, even

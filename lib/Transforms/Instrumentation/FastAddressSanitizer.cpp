@@ -5962,6 +5962,8 @@ static CallInst* optimizeLimit(Function &F, CallInst *CI, bool MayNull)
 	auto Call = IRB.CreateCall(Fn, {Base});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
+	//MDNode *N = MDNode::get(Call->getContext(), {});
+	//Call->setMetadata("fasansize", N);
 	CI->replaceAllUsesWith(Call);
 	CI->eraseFromParent();
 	return Call;
@@ -7519,12 +7521,17 @@ transformLimit(Function &F, CallInst *Lim, bool MayNull, DenseMap<Value*, Value*
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 	//auto Base = Lim->getArgOperand(0);
 	Value *Size;
+	//MDNode *N;
 
 	auto Lim32 = IRB.CreateBitCast(Lim, Int32PtrTy);
 
 	if (!MayNull) {
 		auto LimAddr = IRB.CreateGEP(Int32Ty, Lim32, ConstantInt::get(Int32Ty, -1));
 		Size = IRB.CreateLoad(LimAddr);
+
+		//N = MDNode::get(Size->getContext(), {});
+		//cast<Instruction>(Size)->setMetadata("fasansize", N);
+
 		auto Base8 = IRB.CreateBitCast(Lim32, Int8PtrTy);
 		auto Limit = IRB.CreateGEP(Int8Ty, Base8, Size);
 		Lim->replaceAllUsesWith(Limit);
@@ -7543,6 +7550,8 @@ transformLimit(Function &F, CallInst *Lim, bool MayNull, DenseMap<Value*, Value*
 	IRB.SetInsertPoint(IfTerm);
 	auto LimAddr = IRB.CreateGEP(Int32Ty, Lim32, ConstantInt::get(Int32Ty, -1));
 	Size = IRB.CreateLoad(LimAddr);
+	//N = MDNode::get(Size->getContext(), {});
+	//cast<Instruction>(Size)->setMetadata("fasansize", N);
 	IRB.SetInsertPoint(InsertPt);
   PHINode *PHI = IRB.CreatePHI(Int32Ty, 2);
   BasicBlock *CondBlock = cast<Instruction>(Cmp)->getParent();
