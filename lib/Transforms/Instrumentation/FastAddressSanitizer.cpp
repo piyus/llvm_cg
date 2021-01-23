@@ -6269,6 +6269,36 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
 	return true;
 }
 
+static void optimizeAbortLoopHeaderHelper(Function &F, CallInst *CI, PostDominatorTree &PDT,
+	Instruction *Hi, Instruction *Lo, LoopInfo *LI)
+{
+	auto L2 = LI->getLoopFor(CI->getParent());
+	if (L2 == NULL) {
+		return;
+	}
+
+	bool Changed;
+	bool Ret = L2->makeLoopInvariant(Hi, Changed, NULL, NULL);
+	Ret &= L2->makeLoopInvariant(Lo, Changed, NULL, NULL);
+
+	if (Ret == false) {
+		return;
+	}
+
+	auto Header = L2->getLoopPreheader();
+	if (Header == NULL) {
+		return;
+	}
+
+	if (PDT.dominates(CI->getParent(), Header)) {
+		auto InsertPt = Header->getTerminator();
+  	CI->removeFromParent();
+		CI->insertBefore(InsertPt);
+		optimizeAbortLoopHeaderHelper(F, CI, PDT, Hi, Lo, LI);
+		errs() << "NewMove:: " << *CI << "\n";
+	}
+}
+
 static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT, LoopInfo *LI, PostDominatorTree &PDT,
 	ScalarEvolution &SE)
 {
@@ -6300,11 +6330,7 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	if (!L2->isLoopInvariant(Ptr)) {
 
 		if (PDT.dominates(CI->getParent(), Header)) {
-			
-			bool Changed = true;
-			bool Ret = L2->makeLoopInvariant(Ptr, Changed, NULL, NULL);
-			assert(!Ret);
-			
+
 			if (canMoveOutsideLoop(Ptr, L2, SE, Header, Lo, Hi, DT)) {
 				errs() << "Moving Abort:: " << *CI << "\n";
 				auto InsertPt = Header->getTerminator();
@@ -6316,6 +6342,7 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 				Hi = cast<Instruction>(IRB.CreateGEP(IRB.CreateBitCast(Hi, IRB.getInt8PtrTy()), TySize));
 				CI->setArgOperand(6, Hi);
 				CI->setArgOperand(4, ConstantInt::get(IRB.getInt64Ty(), 0));
+				optimizeAbortLoopHeaderHelper(F, CI, PDT, Hi, Lo, LI);
 			}
 		}
 
@@ -6396,7 +6423,7 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 	if (!L2->isLoopInvariant(SP) || !L2->isLoopInvariant(PtrLimit)) {
 		return;
 	}
-	assert(isa<Constant>(PtrLimit));
+	//assert(isa<Constant>(PtrLimit));
 	auto InsertPt = isa<Instruction>(SP) ? cast<Instruction>(SP)->getNextNode() : cast<Instruction>(F.begin()->getFirstInsertionPt());
 	callOnceInLoopAfterDef(F, CI, InsertPt, DT, LI);
 }
