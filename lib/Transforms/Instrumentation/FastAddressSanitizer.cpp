@@ -6144,6 +6144,22 @@ static BasicBlock* getTrapBB(Function *Fn)
 }
 
 static bool
+isIndVarArith(Instruction *I, Value *IndVar, Loop *L)
+{
+	auto Opcode = I->getOpcode();
+	if (!(Opcode == Instruction::Add || Opcode == Instruction::Sub)) {
+		return false;
+	}
+	if (I->getOperand(0) == IndVar && L->isLoopInvariant(I->getOperand(1))) {
+		return true;
+	}
+	if (I->getOperand(1) == IndVar && L->isLoopInvariant(I->getOperand(0))) {
+		return true;
+	}
+	return false;
+}
+
+static bool
 canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
 	BasicBlock *Header, Instruction* &Lo, Instruction* &Hi,
 	DominatorTree *DT)
@@ -6211,9 +6227,12 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
     auto *Op = dyn_cast<Instruction>(GEP->getOperand(i));
 		if (Op && !L->isLoopInvariant(Op)) {
 			if (Op != IndVar) {
+				if (!isIndVarArith(cast<Instruction>(Op), IndVar, L)) {
+					return false;
+				}
+				errs() << "IndVarArith:: " << *Op << "\n";
 				//auto Aux = dyn_cast<PHINode>(Op);
 				//if (!Aux || !L->isAuxiliaryInductionVariable(*Aux, SE)) {
-					return false;
 				//}
 				//errs() << "Aux-OP:: " << *Aux << "\n";
 			}
@@ -6258,8 +6277,28 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
 		if (Op && !L->isLoopInvariant(Op)) {
 			//errs() << "Op:: " << *Op << "\n";
 			//assert(Op == IndVar || L->isAuxiliaryInductionVariable(*(cast<PHINode>(Op)), SE));
-			Lo->setOperand(i, LoVal);
-			Hi->setOperand(i, HiVal);
+			if (isIndVarArith(Op, IndVar, L)) {
+				auto NewLow = Op->clone();
+				auto NewHi = Op->clone();
+				NewLow->insertBefore(Lo);
+				NewHi->insertBefore(Hi);
+				if (NewLow->getOperand(0) == IndVar) {
+					NewLow->setOperand(0, LoVal);
+					NewHi->setOperand(0, HiVal);
+				}
+				else {
+					assert(NewLow->getOperand(1) == IndVar);
+					NewLow->setOperand(1, LoVal);
+					NewHi->setOperand(1, HiVal);
+				}
+				Lo->setOperand(i, NewLow);
+				Hi->setOperand(i, NewHi);
+			}
+			else {
+				assert(Op == IndVar);
+				Lo->setOperand(i, LoVal);
+				Hi->setOperand(i, HiVal);
+			}
 			HasInv = true;
 		}
   }
