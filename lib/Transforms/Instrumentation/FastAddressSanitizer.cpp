@@ -6895,7 +6895,8 @@ canReplace(DominatorTree &DT,
 }
 
 static bool
-getGEPDiff(Function &F, Value *V1, Value *V2, BasicAAResult *BAR, DominatorTree *DT, AssumptionCache *AC, int64_t &Result)
+getGEPDiff(Function &F, Value *V1, Value *V2, BasicAAResult *BAR,
+	DominatorTree *DT, AssumptionCache *AC, int64_t &Result, AAResults *AA)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
 	BasicAAResult::DecomposedGEP DecompGEP1, DecompGEP2;
@@ -6904,6 +6905,12 @@ getGEPDiff(Function &F, Value *V1, Value *V2, BasicAAResult *BAR, DominatorTree 
 	V2 = V2->stripPointerCasts();
 
 	if (V1 == V2) {
+		Result = 0;
+		return true;
+	}
+
+	auto AR = AA->alias(MemoryLocation(V1), MemoryLocation(V2));
+	if (AR == MustAlias) {
 		Result = 0;
 		return true;
 	}
@@ -7032,7 +7039,7 @@ static void removeDuplicatesAborts(Function &F,
 			assert(!isa<BitCastInst>(Base2));
 
 			if (Base1 == Base2) {
-				bool Found = getGEPDiff(F, Ptr1, Ptr2, BAR, &DT, AC, Result);
+				bool Found = getGEPDiff(F, Ptr1, Ptr2, BAR, &DT, AC, Result, AA);
 				if (Found) {
 					//bool Removed = false;
 
@@ -7382,6 +7389,7 @@ static void optimizeInteriorCalls(Function &F,
 	DenseSet<CallInst*> &CheckSizeOffset,
 	DenseSet<CallInst*> &Aborts,
 	AssumptionCache *AC,
+	AAResults *AA,
 	const TargetLibraryInfo *TLI
 	)
 {
@@ -7412,7 +7420,7 @@ static void optimizeInteriorCalls(Function &F,
 
 
 				if (DT.dominates(Call2->getParent(), Call1->getParent())) {
-					bool HasDiff = getGEPDiff(F, Ptr2, Ptr1, BAR, &DT, AC, Result);
+					bool HasDiff = getGEPDiff(F, Ptr2, Ptr1, BAR, &DT, AC, Result, AA);
 					if (HasDiff) {
 						int64_t Ptr1Sz = cast<ConstantInt>(Call1->getArgOperand(2))->getZExtValue();
 						int64_t Ptr2Sz = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
@@ -7447,6 +7455,7 @@ static void optimizeSizeCalls(Function &F,
 	DenseSet<CallInst*> &CheckSize,
 	DenseSet<CallInst*> &Aborts,
 	AssumptionCache *AC,
+	AAResults *AA,
 	const TargetLibraryInfo *TLI
 	)
 {
@@ -7478,7 +7487,7 @@ static void optimizeSizeCalls(Function &F,
 
 
 				if (DT.dominates(Call2->getParent(), Call1->getParent())) {
-					bool HasDiff = getGEPDiff(F, Ptr2, Ptr1, BAR, &DT, AC, Result);
+					bool HasDiff = getGEPDiff(F, Ptr2, Ptr1, BAR, &DT, AC, Result, AA);
 					if (HasDiff) {
 						int64_t Ptr1Sz = cast<ConstantInt>(Call1->getArgOperand(1))->getZExtValue();
 						int64_t Ptr2Sz = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
@@ -7748,8 +7757,8 @@ static void optimizeHandlers(Function &F,
 
 	removeDuplicatesAborts(F, Aborts, Abort2Calls, Abort3Calls, AA, AC, TLI);
 	removeDuplicatesInterior(F, Interiors, InteriorCalls, CheckSizeOffset, AA);
-	optimizeInteriorCalls(F, Interiors, InteriorCalls, CheckSizeOffset, Aborts, AC, TLI);
-	optimizeSizeCalls(F, CheckSize, Aborts, AC, TLI);
+	optimizeInteriorCalls(F, Interiors, InteriorCalls, CheckSizeOffset, Aborts, AC, AA, TLI);
+	optimizeSizeCalls(F, CheckSize, Aborts, AC, AA, TLI);
 	// FIXME: remove only if same size
 	removeDuplicatesSizeCalls(F, CheckSize);
 	optimizeLimits(F, Limits, LimitCalls);
