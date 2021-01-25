@@ -5947,6 +5947,30 @@ static void optimizeLimitLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 	createCondCall(F, CI, Base, DT, LI);
 }
 
+static void optimizeFLimit(Function &F, CallInst *Call, DominatorTree *DT, LoopInfo *LI)
+{
+  BasicBlock *CondBlock = Call->getParent();
+	auto Base = Call->getArgOperand(0);
+	assert(!isa<BitCastInst>(Base));
+	IRBuilder<> IRB(Call);
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Int64Ty = IRB.getInt64Ty();
+	Base = IRB.CreateBitCast(Base, Int8PtrTy);
+	auto HighVal = IRB.CreateIntToPtr(ConstantInt::get(Int64Ty, ((1ULL<<48)-1)), Int8PtrTy);
+  auto Cmp = IRB.CreateICmp(ICmpInst::ICMP_UGT, Base, HighVal);
+	Instruction *Term = SplitBlockAndInsertIfThen(Cmp, Call, false, NULL, DT, LI);
+	auto IfEnd = Call->getNextNode();
+  Call->removeFromParent();
+	Call->insertBefore(Term);
+
+	IRB.SetInsertPoint(IfEnd);
+  PHINode *PHI = IRB.CreatePHI(Int8PtrTy, 2);
+  PHI->addIncoming(Base, CondBlock);
+  BasicBlock *ThenBlock = Term->getParent();
+	Call->replaceAllUsesWith(PHI);
+  PHI->addIncoming(Call, ThenBlock);
+}
+
 static CallInst* optimizeLimit(Function &F, CallInst *CI, bool MayNull)
 {
 	auto M = F.getParent();
@@ -7867,12 +7891,17 @@ static void optimizeHandlers(Function &F,
 		optimizeLimitLoop(F, Lim, &DT, &LI);
 	}
 
+
+	for (auto Lim : Limits) {
+		if (!LimitsMayNull.count(Lim)) {
+			optimizeFLimit(F, Lim, &DT, &LI);
+		}
+	}
+
 	if (verifyFunction(F, &errs())) {
     F.dump();
     report_fatal_error("verification of newFunction failed11!");
   }
-
-
 
 	optimizePtrMask(F, AA);
 
