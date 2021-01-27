@@ -4284,7 +4284,7 @@ void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI, Value 
 	uint64_t Size = getAllocaSizeInBytes(*AI);
 	uint64_t HeaderVal = 0xfaceULL | (Size << 32);
 	auto AllocaSize = ConstantInt::get(Int64Ty, HeaderVal);
-	bool NeedRegisteration = (Size > 8);
+	bool NeedRegisteration = 1; //(Size > 8);
 	if (!NeedRegisteration && Alignment < 8) {
 		Alignment = 8;
 	}
