@@ -670,6 +670,7 @@ struct FastAddressSanitizer {
 		DenseSet<Value*> &InteriorPointersSet,
 		DenseSet<Instruction*> &GEPs,
 		DenseSet<Value*> &LargerThanBase,
+		DenseSet<CallInst*> &MemCalls,
 		const TargetLibraryInfo *TLI
 		);
 	void patchDynamicAlloca(Function &F, AllocaInst *AI, Value *StackBase, int &RecordIndex);
@@ -715,6 +716,14 @@ private:
 	Value *getLimit(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI);
 	Value *getLimitSafe(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI);
 	Value* getStaticBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI);
+	void insertChecksBeforeMemCalls(Function &F,
+		DenseMap<Value*, Value*> &PtrToBaseMap,
+		DenseMap<Value*, Value*> &BaseToLenMap,
+		DenseMap<Value*, Value*> &LenToBaseMap,
+		DenseMap<Value*, Value*> &PtrUseToLenMap,
+		DenseSet<Value*> &GetLengths,
+		CallInst *CI, Value *Ptr, Value *Len,
+		const TargetLibraryInfo *TLI);
 
   /// Helper to cleanup per-function state.
   struct FunctionStateRAII {
@@ -3148,6 +3157,9 @@ static void addUnsafePointer(DenseMap<Value*, uint64_t> &Map, Value *V, uint64_t
 
 static bool
 isNonAccessInst(const Instruction *I, Value *Ptr) {
+	if (isa<MemIntrinsic>(I)) {
+		return false;
+	}
 	if (isa<ReturnInst>(I) || isa<CallInst>(I)) {
 		return true;
 	}
@@ -3331,7 +3343,7 @@ abortIfTrue(Function &F, Instruction *InsertPt, Value *Base,
 	FunctionCallee Fn;
 	if (!indefiniteBase(Base, DL)) {
 		Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Base->getType(),
-			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(), 
+			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(),
 			IRB.getInt64Ty(), Callsite->getType(), IRB.getInt8PtrTy());
 	}
 	else {
@@ -3532,7 +3544,7 @@ addBoundsCheckWithLenAtUse(Function &F, Value *Base, Value *Ptr, Value *TySize,
 	}
 }
 
-static void
+static Value*
 addLengthAtPtrUseHelper(Function &F, Value *Base,
 	DenseMap<Value*, Value*> &PtrUseToLenMap,
 	DenseSet<Value*> &GetLengths,
@@ -3565,6 +3577,7 @@ addLengthAtPtrUseHelper(Function &F, Value *Base,
 	GetLengths.insert(Limit);
 	LenToBaseMap[Limit] = Base;
 	PtrUseToLenMap[User] = Limit;
+	return Limit;
 }
 
 
@@ -4404,6 +4417,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 	DenseSet<Value*> &InteriorPointersSet,
 	DenseSet<Instruction*> &GEPs,
 	DenseSet<Value*> &LargerThanBase,
+	DenseSet<CallInst*> &MemCalls,
 	const TargetLibraryInfo *TLI)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
@@ -4552,6 +4566,16 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 			if (auto AI = dyn_cast<AllocaInst>(&Inst)) {
 				if (!isSafeAlloca(AI, TLI)) {
 					UnsafeAllocas.insert(AI);
+				}
+			}
+
+			if (auto MI = dyn_cast<MemIntrinsic>(&Inst)) {
+				//const DataLayout &DL = MI->getModule()->getDataLayout();
+				auto ID = MI->getIntrinsicID();
+				addUnsafePointer(UnsafePointers, MI->getArgOperand(0), 1);
+				MemCalls.insert(MI);
+				if (ID != Intrinsic::memset) {
+					addUnsafePointer(UnsafePointers, MI->getArgOperand(1), 1);
 				}
 			}
 
@@ -4727,6 +4751,9 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 		int64_t Offset;
 
 		if (isa<ConstantExpr>(V)) {
+			continue;
+		}
+		if (isa<Constant>(V) && cast<Constant>(V)->isNullValue()) {
 			continue;
 		}
 
@@ -5845,7 +5872,9 @@ static AllocaInst* copyArgsByValToAllocas1(Function &F, Argument &Arg) {
 
 
 static void
-addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
+addUnsafeAllocas(Function &F, Value *Node,
+	DenseSet<AllocaInst*> &UnsafeAllocas,
+	DenseSet<std::pair<Value*, Value*>> &NewAllocas)
 {
   SmallPtrSet<Value *, 4> Visited;
   SmallVector<Value *, 4> Worklist;
@@ -5872,6 +5901,7 @@ addUnsafeAllocas(Function &F, Value *Node, DenseSet<AllocaInst*> &UnsafeAllocas)
 				AllocaInst *AI = copyArgsByValToAllocas1(F, *(cast<Argument>(Op)));
 				if (AI) {
 					UnsafeAllocas.insert(AI);
+					NewAllocas.insert(std::make_pair(AI, Op));
 				}
 			}
 			else if (isa<PHINode>(Op) || isa<SelectInst>(Op)) {
@@ -6372,6 +6402,7 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 
 	auto Ptr = CI->getArgOperand(1);
 	Ptr = Ptr->stripPointerCasts();
+	auto TySize = CI->getArgOperand(3);
 
 	//%37 = bitcast %union.tree_node** %type4.i to i64**
 	//assert(!isa<BitCastInst>(Ptr) || isa<IntToPtrInst>(Ptr));
@@ -6392,6 +6423,10 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 	}
 	assert(L2 != LI->getLoopFor(Header));
 
+	if (!L2->isLoopInvariant(TySize)) {
+		return false;
+	}
+
 	if (!L2->isLoopInvariant(Ptr)) {
 
 		if (PDT.dominates(CI->getParent(), Header)) {
@@ -6401,6 +6436,11 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 				auto InsertPt = Header->getTerminator();
   			CI->removeFromParent();
 				CI->insertBefore(InsertPt);
+				auto OrigPtr = CI->getArgOperand(1);
+				if (OrigPtr->getType() != Lo->getType()) {
+					IRBuilder<> IRB(CI);
+					Lo = cast<Instruction>(IRB.CreateBitCast(Lo, OrigPtr->getType()));
+				}
 				CI->setArgOperand(1, Lo);
 				IRBuilder<> IRB(CI);
 				auto TySize = CI->getArgOperand(3);
@@ -6495,6 +6535,7 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 
 static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 {
+	return;
 	auto InsertPt = CI->getNextNode();
 	IRBuilder<> IRB(InsertPt);
 	auto Base = CI->getArgOperand(0);
@@ -6974,6 +7015,9 @@ getGEPDiff(Function &F, Value *V1, Value *V2, BasicAAResult *BAR,
 static bool
 removeCall2(CallInst *Call1, CallInst *Call2, int64_t Diff, PostDominatorTree &PDT, Value *Base, LoopInfo &LI)
 {
+	if (!isa<ConstantInt>(Call1->getArgOperand(3)) || !isa<ConstantInt>(Call2->getArgOperand(3))) {
+		return false;
+	}
 
 	int64_t Call1TySz = cast<ConstantInt>(Call1->getArgOperand(3))->getZExtValue();
 	int64_t Call2TySz = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
@@ -7445,7 +7489,7 @@ static void optimizeInteriorCalls(Function &F,
 
 				if (DT.dominates(Call2->getParent(), Call1->getParent())) {
 					bool HasDiff = getGEPDiff(F, Ptr2, Ptr1, BAR, &DT, AC, Result, AA);
-					if (HasDiff) {
+					if (HasDiff && isa<ConstantInt>(Call2->getArgOperand(3))) {
 						int64_t Ptr1Sz = cast<ConstantInt>(Call1->getArgOperand(2))->getZExtValue();
 						int64_t Ptr2Sz = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
 						assert(Ptr1Sz > 0 && Ptr2Sz > 0);
@@ -7512,7 +7556,7 @@ static void optimizeSizeCalls(Function &F,
 
 				if (DT.dominates(Call2->getParent(), Call1->getParent())) {
 					bool HasDiff = getGEPDiff(F, Ptr2, Ptr1, BAR, &DT, AC, Result, AA);
-					if (HasDiff) {
+					if (HasDiff && isa<ConstantInt>(Call2->getArgOperand(3))) {
 						int64_t Ptr1Sz = cast<ConstantInt>(Call1->getArgOperand(1))->getZExtValue();
 						int64_t Ptr2Sz = cast<ConstantInt>(Call2->getArgOperand(3))->getZExtValue();
 						assert(Ptr1Sz > 0 && Ptr2Sz > 0);
@@ -7790,12 +7834,12 @@ static void optimizeHandlers(Function &F,
 	assertLimits(F, Limits);
 
 
+
 	DominatorTree DT(F);
 	PostDominatorTree PDT(F);
 	LoopInfo LI(DT);
 	TargetLibraryInfo *_TLI = const_cast<TargetLibraryInfo*>(TLI);
 	ScalarEvolution SE(F, *_TLI, *AC, DT, LI);
-
 
 	for (auto LC : Abort2Calls) {
 		while (optimizeAbortLoopHeader(F, LC, &DT, &LI, PDT, SE)) {
@@ -7939,6 +7983,68 @@ simplifyAll(Function &F, const TargetLibraryInfo *TLI, AssumptionCache *AC)
 	}
 }
 
+void
+FastAddressSanitizer::insertChecksBeforeMemCalls(Function &F,
+	DenseMap<Value*, Value*> &PtrToBaseMap,
+	DenseMap<Value*, Value*> &BaseToLenMap,
+	DenseMap<Value*, Value*> &LenToBaseMap,
+	DenseMap<Value*, Value*> &PtrUseToLenMap,
+	DenseSet<Value*> &GetLengths,
+	CallInst *CI, Value *Ptr, Value *Len,
+	const TargetLibraryInfo *TLI)
+{
+	if (isa<ConstantExpr>(Ptr)) {
+		return;
+	}
+
+	if (isa<Constant>(Ptr) && cast<Constant>(Ptr)->isNullValue()) {
+		return;
+	}
+
+	//auto Int32Ty = Type::getInt32Ty(F.getParent()->getContext());
+	assert(PtrToBaseMap.count(Ptr));
+	auto Base = PtrToBaseMap[Ptr];
+
+	//errs() << "Base:: " << *Base << "\n";
+	//errs() << "Ptr:: " << *Ptr << "\n";
+	//errs() << "CI:: " << *CI << "\n";
+
+	if (isa<ConstantInt>(Len)) {
+		int64_t PtrLen = cast<ConstantInt>(Len)->getZExtValue();
+		int64_t Offset = 0;
+  	const DataLayout &DL = F.getParent()->getDataLayout();
+		Value *OtherBase = GetPointerBaseWithConstantOffset(Ptr, Offset, DL);
+		if (Base == OtherBase && Offset >= 0) {
+			PtrLen += Offset;
+			bool Static = false;
+			int64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
+			assert(!Static || PtrLen <= BaseSize);
+			if (PtrLen <= BaseSize) {
+				return;
+			}
+		}
+	}
+
+	if (!BaseToLenMap.count(Base)) {
+		const DataLayout &DL = F.getParent()->getDataLayout();
+		auto Size = getStaticBaseSize(F, Base, DL, TLI);
+		if (Size) {
+			BaseToLenMap[Base] = Size;
+		}
+	}
+
+	if (BaseToLenMap.count(Base)) {
+		auto Limit = BaseToLenMap[Base];
+		abortIfTrue(F, CI, Base, Ptr, Limit, Len, ConstantInt::get(Int32Ty, 0));
+	}
+	else {
+		assert(!PtrUseToLenMap.count(CI));
+		auto Limit = addLengthAtPtrUseHelper(F, Base, PtrUseToLenMap, GetLengths, LenToBaseMap, CI);
+		PtrUseToLenMap.erase(CI);
+		abortIfTrue(F, CI, Base, Ptr, Limit, Len, ConstantInt::get(Int32Ty, 0));
+	}
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA,
@@ -7976,6 +8082,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	DenseSet<Value*> InteriorPointersSet;
 	DenseSet<Value*> LargerThanBase;
+	DenseSet<CallInst*> MemCalls;
 
 	createReplacementMap(&F, ReplacementMap);
 
@@ -7988,7 +8095,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	recordAllUnsafeAccesses(F, UnsafeUses, UnsafePointers, CallSites,
 		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt, RestorePoints, 
-		InteriorPointersSet, GEPs, LargerThanBase, TLI);
+		InteriorPointersSet, GEPs, LargerThanBase, MemCalls, TLI);
 
 	//if (UnsafePointers.empty()) {
 	//	return true;
@@ -8017,14 +8124,28 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	DenseMap<Value*, Value*> PhiOrSelBaseToOrig;
 
+	DenseSet<std::pair<Value*, Value*>> NewAllocas;
+
 	for (auto It : PtrToBaseMap) {
 		Value *Base = It.second;
 		if (isa<PHINode>(Base) || isa<SelectInst>(Base)) {
 			assert(PhiAndSelectMap.count(Base));
 			PtrToBaseMap[It.first] = PhiAndSelectMap[Base];
 			PhiOrSelBaseToOrig[PhiAndSelectMap[Base]] = Base;
-			addUnsafeAllocas(F, PhiAndSelectMap[Base], UnsafeAllocas);
+			addUnsafeAllocas(F, PhiAndSelectMap[Base], UnsafeAllocas, NewAllocas);
 			//errs() << "SRC: " << *It.first << "  BASE: " << *PhiAndSelectMap[Base] << "\n";
+		}
+	}
+
+	for (auto Itr : NewAllocas) {
+		auto AI = Itr.first;
+		auto ByVal = Itr.second;
+		PtrToBaseMap[AI] = AI;
+		for (auto It : PtrToBaseMap) {
+			Value *Base = It.second;
+			if (Base == ByVal) {
+				PtrToBaseMap[It.first] = AI;
+			}
 		}
 	}
 
@@ -8216,6 +8337,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (!MayNull) {
 			SafePtrs.insert(Ptr);
 		}
+
 		if (!BaseToLenMap.count(Base)) {
 			if (!MayNull) {
 				assert(PtrToLenMap.count(Ptr));
@@ -8232,6 +8354,20 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			addBoundsCheck(F, Base, Ptr, Limit, TySize, UnsafeUses, callsites, MayNull);
 		}
 	}
+
+	for (auto MC : MemCalls) {
+		auto Ptr1 = MC->getArgOperand(0);
+		auto Ptr2 = MC->getArgOperand(1);
+		auto Len = MC->getArgOperand(2);
+		assert(Ptr1->getType()->isPointerTy());
+		insertChecksBeforeMemCalls(F, PtrToBaseMap, BaseToLenMap, LenToBaseMap,
+			PtrUseToLenMap, GetLengths, MC, Ptr1, Len, TLI);
+		if (Ptr2->getType()->isPointerTy()) {
+			insertChecksBeforeMemCalls(F, PtrToBaseMap, BaseToLenMap, LenToBaseMap,
+				PtrUseToLenMap, GetLengths, MC, Ptr2, Len, TLI);
+		}
+	}
+
 
 	/*if (verifyFunction(F, &errs())) {
     F.dump();
