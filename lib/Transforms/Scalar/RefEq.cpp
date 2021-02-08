@@ -54,6 +54,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Support/CommandLine.h"
@@ -389,6 +390,35 @@ static bool isInteriorConstant(Value *V) {
 	return (C->getZExtValue() >> 48) > 0;
 }
 
+static void checkAllMemIntrinsics(Function &F)
+{
+	DenseSet<MemIntrinsic*> MISet;
+
+  for (auto &BB : F) {
+    for (auto &Inst : BB) {
+			auto MI = dyn_cast<MemIntrinsic>(&Inst);
+			if (MI) {
+				MISet.insert(MI);
+			}
+		}
+	}
+
+	for (auto MI : MISet) {
+		auto Len = MI->getArgOperand(2);
+		if (isa<ConstantInt>(Len)) {
+			auto Sz = cast<ConstantInt>(Len)->getZExtValue();
+			assert(Sz > 0);
+		}
+		else {
+			IRBuilder<> IRB(MI);
+    	Value *ValidLen = IRB.CreateICmpNE(Len, Constant::getNullValue(Len->getType()));
+    	Instruction *Term = SplitBlockAndInsertIfThen(ValidLen, MI, false);
+			MI->removeFromParent();
+			MI->insertBefore(Term);
+		}
+	}
+}
+
 /// This is the main transformation entry point for a function.
 bool RefEqLegacyPass::runOnFunction(Function &F) {
   const DataLayout &DL = F.getParent()->getDataLayout();
@@ -429,6 +459,7 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
 	instrumentOtherPointerUsage(F, ICmpOrSub, GEPs, DL);
 	if (FirstCall) {
 		setBoundsForArgv(F);
+		checkAllMemIntrinsics(F);
 	}
 	return true;
 }
