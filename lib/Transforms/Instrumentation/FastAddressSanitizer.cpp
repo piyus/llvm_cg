@@ -3244,13 +3244,13 @@ removeOnlyNonAccessPtrs(Function &F, DenseSet<Value*> &TmpSet, DenseSet<Value*> 
 }
 #endif
 
-static bool 
+static bool
 postDominatesAnyUse(Function &F, Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, LoopInfo &LI)
 {
 	//errs() << "CHECKING1 : " << *Ptr << "\n";
 	for (const Use &UI : Ptr->uses()) {
 	  auto I = cast<const Instruction>(UI.getUser());
-		if (UnsafeUses.count(I)) {
+		if (UnsafeUses.count(I) || isa<MemIntrinsic>(I)) {
 			if (!isNonAccessInst(I, Ptr) && PDT.dominates(I, Ptr)) {
 				if (inSameLoop(Ptr, I, LI)) {
 					return true;
