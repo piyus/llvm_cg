@@ -653,6 +653,79 @@ bool TargetLibraryInfoImpl::isInteriorSafe(LibFunc F) const {
 	return false;
 }
 
+int TargetLibraryInfoImpl::getLengthArgument(LibFunc F) const {
+  switch (F) {
+  	case LibFunc_strncpy: return 2;
+  	case LibFunc_strncat: return 2;
+  	case LibFunc_stpncpy: return 2;
+  	//case LibFunc_strxfrm: return 2;
+  	case LibFunc_strncmp: return 2;
+  	case LibFunc_strncasecmp: return 2;
+  	//case LibFunc_strndup: return 1;
+  	//case LibFunc_snprintf: return 1;
+  	case LibFunc_memcmp: return 2;
+  	case LibFunc_memchr: return 2;
+  	case LibFunc_memrchr: return 2;
+  	case LibFunc_bcopy: return 2;
+  	case LibFunc_bcmp: return 2;
+  	case LibFunc_bzero: return 1;
+  	//case LibFunc_vsnprintf: return 1;
+		default:
+			return -1;
+	}
+	return -1;
+}
+
+bool TargetLibraryInfoImpl::mustAccessMemory(LibFunc F) const {
+  switch (F) {
+  	case LibFunc_strlen:
+  	case LibFunc_wcslen:
+  	case LibFunc_strchr:
+  	case LibFunc_strrchr:
+  	case LibFunc_strtol:
+  	case LibFunc_strtod:
+  	case LibFunc_strtof:
+  	case LibFunc_strtoul:
+  	case LibFunc_strtoll:
+  	case LibFunc_strtold:
+  	case LibFunc_strtoull:
+  	case LibFunc_strcpy:            // return ptr
+  	case LibFunc_strncpy: //  2
+  	case LibFunc_strcat:
+  	case LibFunc_strncat: //  2
+  	case LibFunc_stpcpy:
+  	case LibFunc_stpncpy: //  2
+  	//case LibFunc_strxfrm: //  2
+  	case LibFunc_strcmp:
+  	case LibFunc_strspn:
+  	case LibFunc_strncmp:     // 2
+  	case LibFunc_strcspn:
+  	case LibFunc_strcoll:
+  	case LibFunc_strcasecmp:
+  	case LibFunc_strncasecmp: // 2
+  	case LibFunc_strstr:
+  	case LibFunc_strpbrk:
+  	case LibFunc_strtok:
+  	case LibFunc_strtok_r:
+  	case LibFunc_strdup:
+  	//case LibFunc_strndup:  // 1
+  	case LibFunc_sprintf:         // ret: num bytes
+  	//case LibFunc_snprintf: // 1   // ret: num bytes
+  	case LibFunc_memcmp: // 2
+  	case LibFunc_memchr: // 2
+  	case LibFunc_memrchr: // 2
+  	case LibFunc_bcopy: // 2
+  	case LibFunc_bcmp: // 2
+  	case LibFunc_bzero: // 1
+  	case LibFunc_vsprintf:             // ret: num bytes
+  	//case LibFunc_vsnprintf: // 1       // ret: num bytes
+			return true;
+		default:
+			return false;
+	}
+	return false;
+}
+
 bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
                                                    LibFunc F,
                                                    const DataLayout *DL) const {

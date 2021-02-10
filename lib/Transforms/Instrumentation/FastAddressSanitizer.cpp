@@ -3245,13 +3245,33 @@ removeOnlyNonAccessPtrs(Function &F, DenseSet<Value*> &TmpSet, DenseSet<Value*> 
 #endif
 
 static bool
-postDominatesAnyUse(Function &F, Instruction *Ptr, PostDominatorTree &PDT, DenseSet<Value*> &UnsafeUses, LoopInfo &LI)
+mustAccessMemory(Instruction *I, const TargetLibraryInfo *TLI) {
+	auto CS = dyn_cast<CallInst>(I);
+	if (CS == NULL) {
+		return false;
+	}
+	if (isa<MemIntrinsic>(CS)) {
+		return true;
+	}
+	LibFunc Func;
+  if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
+		if (TLI->mustAccessMemory(Func)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool
+postDominatesAnyUse(Function &F, Instruction *Ptr, PostDominatorTree &PDT,
+	DenseSet<Value*> &UnsafeUses, LoopInfo &LI, const TargetLibraryInfo *TLI)
 {
 	//errs() << "CHECKING1 : " << *Ptr << "\n";
 	for (const Use &UI : Ptr->uses()) {
-	  auto I = cast<const Instruction>(UI.getUser());
-		if (UnsafeUses.count(I) || isa<MemIntrinsic>(I)) {
-			if (!isNonAccessInst(I, Ptr) && PDT.dominates(I, Ptr)) {
+	  auto I = cast<Instruction>(UI.getUser());
+		bool MustAccessMem = UnsafeUses.count(I) ? false : mustAccessMemory(I, TLI);
+		if (UnsafeUses.count(I) || MustAccessMem) {
+			if ((MustAccessMem || !isNonAccessInst(I, Ptr)) && PDT.dominates(I, Ptr)) {
 				if (inSameLoop(Ptr, I, LI)) {
 					return true;
 				}
@@ -8165,7 +8185,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		bool MayNull = false;
 		auto PtrI = dyn_cast<Instruction>(Ptr);
 		assert(PtrI && "Ptr is not an Instruction");
-		if (!postDominatesAnyUse(F, PtrI, PDT, UnsafeUses, LI)) {
+		if (!postDominatesAnyUse(F, PtrI, PDT, UnsafeUses, LI, TLI)) {
 			PtrMayBeNull.insert(Ptr);
 			MayNull = true;
 		}

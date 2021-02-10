@@ -92,8 +92,9 @@ public:
 
 private:
   // This transformation requires dominator postdominator info
-  //void getAnalysisUsage(AnalysisUsage &AU) const override {
-  //}
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<TargetLibraryInfoWrapperPass>();
+  }
 };
 
 } // end anonymous namespace
@@ -106,6 +107,7 @@ FunctionPass *llvm::createRefEqPass(bool FirstCall) { return new RefEqLegacyPass
 
 INITIALIZE_PASS_BEGIN(RefEqLegacyPass, "refeq", "RefEq Optimization",
                       false, false)
+INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
 INITIALIZE_PASS_END(RefEqLegacyPass, "refeq", "RefEq Optimization",
                     false, false)
 
@@ -390,9 +392,96 @@ static bool isInteriorConstant(Value *V) {
 	return (C->getZExtValue() >> 48) > 0;
 }
 
-static void checkAllMemIntrinsics(Function &F)
+static void insertCheck1(CallInst *CI, int Idx)
+{
+	auto Len = CI->getArgOperand(Idx);
+	assert(Len->getType()->isIntegerTy());
+	IRBuilder<> IRB(CI);
+
+	if (!isa<ConstantInt>(Len)) {
+  	Value *ValidLen = IRB.CreateICmpNE(Len, Constant::getNullValue(Len->getType()));
+  	Instruction *Term = SplitBlockAndInsertIfThen(ValidLen, CI, false);
+		CI->removeFromParent();
+		CI->insertBefore(Term);
+	}
+	else {
+		if (cast<ConstantInt>(Len)->getZExtValue() == 0) {
+			CI->eraseFromParent();
+		}
+	}
+}
+
+static Value* getReturnValue(CallInst *CI, LibFunc Func)
+{
+	switch (Func) {
+  	case LibFunc_strncpy:
+  	case LibFunc_strncat:
+  	case LibFunc_stpncpy:
+			return CI->getArgOperand(0);
+  	case LibFunc_bcopy:
+			return NULL;
+
+  	case LibFunc_strncmp:
+  	case LibFunc_strncasecmp:
+  	case LibFunc_memcmp:
+  	case LibFunc_memchr:
+  	case LibFunc_memrchr:
+  	case LibFunc_bcmp:
+  	case LibFunc_bzero:
+			return Constant::getNullValue(CI->getType());
+		default:
+			assert(0);
+	}
+	return NULL;
+}
+
+static void insertCheck2(CallInst *CI, LibFunc Func, const TargetLibraryInfo *TLI)
+{
+	int LenIdx = TLI->getLengthArgument(Func);
+	if (LenIdx == -1) {
+		return;
+	}
+	auto Len = CI->getArgOperand(LenIdx);
+
+	if (isa<ConstantInt>(Len)) {
+		auto Sz = cast<ConstantInt>(Len)->getZExtValue();
+		if (Sz == 0) {
+			auto Ret = getReturnValue(CI, Func);
+			if (Ret) {
+				assert(CI->getType() == Ret->getType());
+				CI->replaceAllUsesWith(Ret);
+			}
+			CI->eraseFromParent();
+			return;
+		}
+	}
+	else {
+		IRBuilder<> IRB(CI);
+		auto *NextInst = CI->getNextNode();
+		auto OrigBlock = CI->getParent();
+  	Value *ValidLen = IRB.CreateICmpNE(Len, Constant::getNullValue(Len->getType()));
+  	Instruction *Term = SplitBlockAndInsertIfThen(ValidLen, CI, false);
+		CI->removeFromParent();
+		CI->insertBefore(Term);
+
+		auto IfBlock = Term->getParent();
+
+		auto Ret = getReturnValue(CI, Func);
+		if (Ret) {
+			assert(CI->getType() == Ret->getType());
+			IRB.SetInsertPoint(NextInst);
+  		PHINode *PHI = IRB.CreatePHI(CI->getType(), 2);
+			CI->replaceAllUsesWith(PHI);
+			PHI->addIncoming(Ret, OrigBlock);
+			PHI->addIncoming(CI, IfBlock);
+		}
+	}
+}
+
+static void checkAllMemIntrinsics(Function &F, const TargetLibraryInfo *TLI)
 {
 	DenseSet<MemIntrinsic*> MISet;
+	DenseSet<std::pair<CallInst*, unsigned>> CallSet;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -400,27 +489,28 @@ static void checkAllMemIntrinsics(Function &F)
 			if (MI) {
 				MISet.insert(MI);
 			}
+			else {
+				LibFunc Func;
+				auto CS = dyn_cast<CallInst>(&Inst);
+				if (CS && TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
+					CallSet.insert(std::make_pair(CS, Func));
+				}
+			}
 		}
 	}
 
 	for (auto MI : MISet) {
-		auto Len = MI->getArgOperand(2);
-		if (isa<ConstantInt>(Len)) {
-			auto Sz = cast<ConstantInt>(Len)->getZExtValue();
-			assert(Sz > 0);
-		}
-		else {
-			IRBuilder<> IRB(MI);
-    	Value *ValidLen = IRB.CreateICmpNE(Len, Constant::getNullValue(Len->getType()));
-    	Instruction *Term = SplitBlockAndInsertIfThen(ValidLen, MI, false);
-			MI->removeFromParent();
-			MI->insertBefore(Term);
-		}
+		insertCheck1(MI, 2);
+	}
+
+	for (auto Iter : CallSet) {
+		insertCheck2(Iter.first, (LibFunc)Iter.second, TLI);
 	}
 }
 
 /// This is the main transformation entry point for a function.
 bool RefEqLegacyPass::runOnFunction(Function &F) {
+  const TargetLibraryInfo *TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F);
   const DataLayout &DL = F.getParent()->getDataLayout();
 	DenseSet<Instruction*> ICmpOrSub;
 	DenseSet<Instruction*> GEPs;
@@ -459,7 +549,7 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
 	instrumentOtherPointerUsage(F, ICmpOrSub, GEPs, DL);
 	if (FirstCall) {
 		setBoundsForArgv(F);
-		checkAllMemIntrinsics(F);
+		checkAllMemIntrinsics(F, TLI);
 	}
 	return true;
 }

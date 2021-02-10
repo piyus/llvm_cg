@@ -79,6 +79,8 @@ class TargetLibraryInfoImpl {
 
 public:
 	bool isInteriorSafe(LibFunc F) const;
+	int getLengthArgument(LibFunc F) const;
+	bool mustAccessMemory(LibFunc F) const;
   /// List of known vector-functions libraries.
   ///
   /// The vector-functions library defines, which functions are vectorizable
@@ -260,6 +262,14 @@ public:
     OverrideAsUnavailable = TLI.OverrideAsUnavailable;
     return *this;
   }
+
+	int getLengthArgument(LibFunc F) const {
+		return Impl->getLengthArgument(F);
+	}
+
+	bool mustAccessMemory(LibFunc F) const {
+		return Impl->mustAccessMemory(F);
+	}
 
 	bool isInteriorSafe(LibFunc F) const {
 		return Impl->isInteriorSafe(F);
