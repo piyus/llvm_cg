@@ -57,6 +57,7 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/BuildLibCalls.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include <algorithm>
@@ -435,8 +436,23 @@ static Value* getReturnValue(CallInst *CI, LibFunc Func)
 	return NULL;
 }
 
-static void insertCheck2(CallInst *CI, LibFunc Func, const TargetLibraryInfo *TLI)
+static void insertCheck2(Function &F, CallInst *CI, LibFunc Func, const TargetLibraryInfo *TLI)
 {
+	if (Func == LibFunc_strcpy) {
+  	const DataLayout &DL = F.getParent()->getDataLayout();
+		auto Ptr = CI->getArgOperand(1);
+		auto Dst = CI->getArgOperand(0);
+		IRBuilder<> IRB(CI);
+		auto Len = emitStrLen(Ptr, IRB, DL, TLI);
+		Len = IRB.CreateAdd(Len, ConstantInt::get(Len->getType(), 1));
+		CallInst *NewCI = IRB.CreateMemCpy(Dst,
+			Align::None(), Ptr, Align::None(), Len);
+  	NewCI->setAttributes(CI->getAttributes());
+		CI->replaceAllUsesWith(Dst);
+		CI->eraseFromParent();
+		return;
+	}
+
 	int LenIdx = TLI->getLengthArgument(Func);
 	if (LenIdx == -1) {
 		return;
@@ -504,7 +520,7 @@ static void checkAllMemIntrinsics(Function &F, const TargetLibraryInfo *TLI)
 	}
 
 	for (auto Iter : CallSet) {
-		insertCheck2(Iter.first, (LibFunc)Iter.second, TLI);
+		insertCheck2(F, Iter.first, (LibFunc)Iter.second, TLI);
 	}
 }
 
