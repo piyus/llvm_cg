@@ -716,14 +716,14 @@ private:
 	Value *getLimit(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI);
 	Value *getLimitSafe(Function &F, const Value *V, const DataLayout &DL, const TargetLibraryInfo *TLI);
 	Value* getStaticBaseSize(Function &F, const Value *V1, const DataLayout &DL, const TargetLibraryInfo *TLI);
-	void insertChecksBeforeMemCalls(Function &F,
+	void insertChecksForMemCalls(Function &F,
 		DenseMap<Value*, Value*> &PtrToBaseMap,
 		DenseMap<Value*, Value*> &BaseToLenMap,
 		DenseMap<Value*, Value*> &LenToBaseMap,
 		DenseMap<Value*, Value*> &PtrUseToLenMap,
 		DenseSet<Value*> &GetLengths,
 		CallInst *CI, Value *Ptr, Value *Len,
-		const TargetLibraryInfo *TLI);
+		const TargetLibraryInfo *TLI, bool After);
 
   /// Helper to cleanup per-function state.
   struct FunctionStateRAII {
@@ -3363,12 +3363,12 @@ abortIfTrue(Function &F, Instruction *InsertPt, Value *Base,
 	FunctionCallee Fn;
 	if (!indefiniteBase(Base, DL)) {
 		Fn = M->getOrInsertFunction("san_abort2", IRB.getVoidTy(), Base->getType(),
-			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(),
+			Ptr->getType(), Limit->getType(), TySize->getType(),
 			IRB.getInt64Ty(), Callsite->getType(), IRB.getInt8PtrTy());
 	}
 	else {
 		Fn = M->getOrInsertFunction("san_abort3", IRB.getVoidTy(), Base->getType(),
-			Ptr->getType(), Limit->getType(), IRB.getInt64Ty(),
+			Ptr->getType(), Limit->getType(), TySize->getType(),
 			IRB.getInt64Ty(), Callsite->getType(), IRB.getInt8PtrTy());
 	}
 	auto Call = IRB.CreateCall(Fn, {Base, Ptr, Limit, TySize, ConstantInt::get(IRB.getInt64Ty(), 0),
@@ -4596,6 +4596,15 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 				MemCalls.insert(MI);
 				if (ID != Intrinsic::memset) {
 					addUnsafePointer(UnsafePointers, MI->getArgOperand(1), 1);
+				}
+			}
+			else if (auto CS = dyn_cast<CallInst>(&Inst)) {
+				LibFunc Func;
+				if (CS && TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
+					if (Func == LibFunc_strlen || Func == LibFunc_sprintf || Func == LibFunc_vsprintf) {
+						addUnsafePointer(UnsafePointers, CS->getArgOperand(0), 1);
+						MemCalls.insert(CS);
+					}
 				}
 			}
 
@@ -8004,14 +8013,14 @@ simplifyAll(Function &F, const TargetLibraryInfo *TLI, AssumptionCache *AC)
 }
 
 void
-FastAddressSanitizer::insertChecksBeforeMemCalls(Function &F,
+FastAddressSanitizer::insertChecksForMemCalls(Function &F,
 	DenseMap<Value*, Value*> &PtrToBaseMap,
 	DenseMap<Value*, Value*> &BaseToLenMap,
 	DenseMap<Value*, Value*> &LenToBaseMap,
 	DenseMap<Value*, Value*> &PtrUseToLenMap,
 	DenseSet<Value*> &GetLengths,
 	CallInst *CI, Value *Ptr, Value *Len,
-	const TargetLibraryInfo *TLI)
+	const TargetLibraryInfo *TLI, bool After)
 {
 	if (isa<ConstantExpr>(Ptr)) {
 		return;
@@ -8045,6 +8054,11 @@ FastAddressSanitizer::insertChecksBeforeMemCalls(Function &F,
 		}
 	}
 
+	if (!Len->getType()->isIntegerTy()) {
+		errs() << "Len:: " << *Len << "\n";
+		assert(0);
+	}
+
 	if (!BaseToLenMap.count(Base)) {
 		const DataLayout &DL = F.getParent()->getDataLayout();
 		auto Size = getStaticBaseSize(F, Base, DL, TLI);
@@ -8053,15 +8067,17 @@ FastAddressSanitizer::insertChecksBeforeMemCalls(Function &F,
 		}
 	}
 
+	auto InsertPt = (After) ? CI->getNextNode() : CI;
+
 	if (BaseToLenMap.count(Base)) {
 		auto Limit = BaseToLenMap[Base];
-		abortIfTrue(F, CI, Base, Ptr, Limit, Len, ConstantInt::get(Int32Ty, 0));
+		abortIfTrue(F, InsertPt, Base, Ptr, Limit, Len, ConstantInt::get(Int32Ty, 0));
 	}
 	else {
 		assert(!PtrUseToLenMap.count(CI));
 		auto Limit = addLengthAtPtrUseHelper(F, Base, PtrUseToLenMap, GetLengths, LenToBaseMap, CI);
 		PtrUseToLenMap.erase(CI);
-		abortIfTrue(F, CI, Base, Ptr, Limit, Len, ConstantInt::get(Int32Ty, 0));
+		abortIfTrue(F, InsertPt, Base, Ptr, Limit, Len, ConstantInt::get(Int32Ty, 0));
 	}
 }
 
@@ -8376,15 +8392,29 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	for (auto MC : MemCalls) {
-		auto Ptr1 = MC->getArgOperand(0);
-		auto Ptr2 = MC->getArgOperand(1);
-		auto Len = MC->getArgOperand(2);
-		assert(Ptr1->getType()->isPointerTy());
-		insertChecksBeforeMemCalls(F, PtrToBaseMap, BaseToLenMap, LenToBaseMap,
-			PtrUseToLenMap, GetLengths, MC, Ptr1, Len, TLI);
-		if (Ptr2->getType()->isPointerTy()) {
-			insertChecksBeforeMemCalls(F, PtrToBaseMap, BaseToLenMap, LenToBaseMap,
-				PtrUseToLenMap, GetLengths, MC, Ptr2, Len, TLI);
+		if (isa<MemIntrinsic>(MC)) {
+			auto Ptr1 = MC->getArgOperand(0);
+			auto Ptr2 = MC->getArgOperand(1);
+			auto Len = MC->getArgOperand(2);
+			assert(Ptr1->getType()->isPointerTy());
+			insertChecksForMemCalls(F, PtrToBaseMap, BaseToLenMap, LenToBaseMap,
+				PtrUseToLenMap, GetLengths, MC, Ptr1, Len, TLI, false);
+			if (Ptr2->getType()->isPointerTy()) {
+				insertChecksForMemCalls(F, PtrToBaseMap, BaseToLenMap, LenToBaseMap,
+					PtrUseToLenMap, GetLengths, MC, Ptr2, Len, TLI, false);
+			}
+		}
+		else {
+			LibFunc Func;
+			if (TLI->getLibFunc(ImmutableCallSite(MC), Func)) {
+				assert(Func == LibFunc_strlen || Func == LibFunc_sprintf || Func == LibFunc_vsprintf);
+				auto Ptr1 = MC->getArgOperand(0);
+				insertChecksForMemCalls(F, PtrToBaseMap, BaseToLenMap, LenToBaseMap,
+					PtrUseToLenMap, GetLengths, MC, Ptr1, MC, TLI, true);
+			}
+			else {
+				assert(0);
+			}
 		}
 	}
 
