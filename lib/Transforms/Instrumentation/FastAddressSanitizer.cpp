@@ -4601,7 +4601,8 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 			else if (auto CS = dyn_cast<CallInst>(&Inst)) {
 				LibFunc Func;
 				if (CS && TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
-					if (Func == LibFunc_strlen || Func == LibFunc_sprintf || Func == LibFunc_vsprintf) {
+					if (Func == LibFunc_strlen || Func == LibFunc_sprintf || Func == LibFunc_vsprintf
+							|| Func == LibFunc_snprintf || Func == LibFunc_vsnprintf) {
 						addUnsafePointer(UnsafePointers, CS->getArgOperand(0), 1);
 						MemCalls.insert(CS);
 					}
@@ -8022,17 +8023,24 @@ FastAddressSanitizer::insertChecksForMemCalls(Function &F,
 	CallInst *CI, Value *Ptr, Value *Len,
 	const TargetLibraryInfo *TLI, bool After)
 {
-	if (isa<ConstantExpr>(Ptr)) {
-		return;
-	}
-
 	if (isa<Constant>(Ptr) && cast<Constant>(Ptr)->isNullValue()) {
 		return;
 	}
 
 	//auto Int32Ty = Type::getInt32Ty(F.getParent()->getContext());
-	assert(PtrToBaseMap.count(Ptr));
-	auto Base = PtrToBaseMap[Ptr];
+
+
+	Value *Base;
+	if (isa<ConstantExpr>(Ptr)) {
+		Base = cast<ConstantExpr>(Ptr)->getOperand(0);
+		if (!isa<GlobalVariable>(Base)) {
+			return;
+		}
+	}
+	else {
+		assert(PtrToBaseMap.count(Ptr));
+		Base = PtrToBaseMap[Ptr];
+	}
 
 	//errs() << "Base:: " << *Base << "\n";
 	//errs() << "Ptr:: " << *Ptr << "\n";
@@ -8407,10 +8415,20 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		else {
 			LibFunc Func;
 			if (TLI->getLibFunc(ImmutableCallSite(MC), Func)) {
-				assert(Func == LibFunc_strlen || Func == LibFunc_sprintf || Func == LibFunc_vsprintf);
-				auto Ptr1 = MC->getArgOperand(0);
-				insertChecksForMemCalls(F, PtrToBaseMap, BaseToLenMap, LenToBaseMap,
-					PtrUseToLenMap, GetLengths, MC, Ptr1, MC, TLI, true);
+				if (Func == LibFunc_strlen || Func == LibFunc_sprintf || Func == LibFunc_vsprintf) {
+					auto Ptr1 = MC->getArgOperand(0);
+					insertChecksForMemCalls(F, PtrToBaseMap, BaseToLenMap, LenToBaseMap,
+						PtrUseToLenMap, GetLengths, MC, Ptr1, MC, TLI, true);
+				}
+				else if (Func == LibFunc_snprintf || Func == LibFunc_vsnprintf) {
+					auto Ptr1 = MC->getArgOperand(0);
+					auto Len = MC->getArgOperand(1);
+					insertChecksForMemCalls(F, PtrToBaseMap, BaseToLenMap, LenToBaseMap,
+						PtrUseToLenMap, GetLengths, MC, Ptr1, Len, TLI, false);
+				}
+				else {
+					assert(0);
+				}
 			}
 			else {
 				assert(0);
