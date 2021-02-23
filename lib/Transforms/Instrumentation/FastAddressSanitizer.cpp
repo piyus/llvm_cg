@@ -6770,6 +6770,13 @@ static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBloc
 	auto Call = IRB.CreateCall(Fn, {RealBase, Ptr8, PtrLimit, Limit});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
+
+	if (F.getSubprogram()) {
+    if (auto DL = CI->getDebugLoc()) {
+      Call->setDebugLoc(DL);
+		}
+  }
+
 	CI->eraseFromParent();
 	return Call;
 
