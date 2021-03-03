@@ -6477,6 +6477,8 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 				Hi = cast<Instruction>(IRB.CreateGEP(IRB.CreateBitCast(Hi, IRB.getInt8PtrTy()), TySize));
 				CI->setArgOperand(6, Hi);
 				CI->setArgOperand(4, ConstantInt::get(IRB.getInt64Ty(), 0));
+				MDNode* N = MDNode::get(CI->getContext(), {});
+				CI->setMetadata("san_loopind", N);
 				optimizeAbortLoopHeaderHelper(F, CI, PDT, Hi, Lo, LI);
 			}
 		}
@@ -6565,7 +6567,6 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 
 static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 {
-	return;
 	auto InsertPt = CI->getNextNode();
 	IRBuilder<> IRB(InsertPt);
 	auto Base = CI->getArgOperand(0);
@@ -6587,6 +6588,11 @@ static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 	auto Cmp1 = IRB.CreateICmpULT(Ptr, Base);
 	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
 	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
+
+	if (CI->hasMetadata("san_loopind")) {
+		auto Cmp3 = IRB.CreateICmpULT(PtrLimit, Base);
+		Cmp = IRB.CreateOr(Cmp, Cmp3);
+	}
 
 
 	Instruction *Then = SplitBlockAndInsertIfThen(Cmp, InsertPt, false);
@@ -6770,6 +6776,11 @@ static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBloc
 	auto Call = IRB.CreateCall(Fn, {RealBase, Ptr8, PtrLimit, Limit});
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::NoCallerSaved);
 	Call->addAttribute(AttributeList::FunctionIndex, Attribute::InaccessibleMemOnly);
+
+	if (CI->hasMetadata("san_loopind")) {
+		MDNode* N = MDNode::get(Call->getContext(), {});
+		Call->setMetadata("san_loopind", N);
+	}
 
 	if (F.getSubprogram()) {
     if (auto DL = CI->getDebugLoc()) {
@@ -7083,12 +7094,14 @@ removeCall2(CallInst *Call1, CallInst *Call2, int64_t Diff, PostDominatorTree &P
 	if (DiffLo > 0) {
 		auto SizeTy = Call1->getArgOperand(4)->getType();
 		int64_t NewPadding = Call1Padding - DiffLo;
+		assert(NewPadding < (4<<20) && -NewPadding < (4<<20));
 		Call1->setArgOperand(4, ConstantInt::get(SizeTy, NewPadding));
 	}
 
 	if (DiffHi < 0) {
 		auto SizeTy = Call1->getArgOperand(3)->getType();
 		int64_t NewSize = Call1TySz - DiffHi;
+		assert(NewSize < (4<<20) && -NewSize < (4<<20));
 		Call1->setArgOperand(3, ConstantInt::get(SizeTy, NewSize));
 	}
 	//errs() << "Call1: " << *Call1 << "\n";
