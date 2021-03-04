@@ -84,6 +84,8 @@
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
 #include "llvm/Transforms/Utils/LoopSimplify.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
+#include "llvm/Support/LowLevelTypeImpl.h"
+#include "llvm/CodeGen/Analysis.h"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -6567,6 +6569,7 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 
 static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 {
+	//return;
 	auto InsertPt = CI->getNextNode();
 	IRBuilder<> IRB(InsertPt);
 	auto Base = CI->getArgOperand(0);
@@ -8109,6 +8112,116 @@ FastAddressSanitizer::insertChecksForMemCalls(Function &F,
 	}
 }
 
+
+static void initializeAllocasAndMalloc(Function &F, const TargetLibraryInfo *TLI)
+{
+	DenseSet<std::pair<Instruction*, Value*>> AllocSet;
+  const DataLayout &DL = F.getParent()->getDataLayout();
+	auto M = F.getParent();
+	auto Int64Ty = Type::getInt64Ty(M->getContext());
+
+  for (auto &BB : F) {
+    for (auto &Inst : BB) {
+			auto AI = dyn_cast<AllocaInst>(&Inst);
+			if (AI) {
+				if (AI->isStaticAlloca()) {
+					uint64_t Size = getAllocaSizeInBytes1(*AI);
+					AllocSet.insert(std::make_pair(AI, ConstantInt::get(Int64Ty, Size)));
+				}
+				else {
+  				Value *Size = getAllocaSize(AI);
+					AllocSet.insert(std::make_pair(AI, Size));
+				}
+			}
+			else if (auto CI = dyn_cast<CallInst>(&Inst)) {
+				LibFunc Func;
+				if (TLI->getLibFunc(ImmutableCallSite(CI), Func)) {
+					auto Name = CI->getCalledFunction()->getName();
+					if (Name == "malloc") {
+						AllocSet.insert(std::make_pair(CI, CI->getArgOperand(0)));
+					}
+				}
+			}
+		}
+	}
+
+	for (auto Pair : AllocSet) {
+		Instruction *I = Pair.first;
+		auto Size = Pair.second;
+		SmallVector<LLT, 8> ValueVTs;
+    SmallVector<uint64_t, 8> Offsets;
+		Type *PTy = NULL;
+
+		if (isa<AllocaInst>(I)) {
+			PTy = I->getType()->getPointerElementType();
+		}
+		else {
+			for (const Use &UI : I->uses()) {
+	  		auto I = cast<Instruction>(UI.getUser());
+				if (isa<BitCastInst>(I)) {
+					PTy = I->getType()->getPointerElementType();
+					break;
+				}
+			}
+		}
+		if (PTy == NULL) {
+			return;
+		}
+
+		auto Int64PtrTy = Type::getInt64PtrTy(F.getParent()->getContext());
+		int NumberOfPtrs = 0, NumberOfBits = 0;
+		unsigned long long BitIdx = 0;
+		unsigned long long BitMap = 0;
+		auto TySize = DL.getTypeAllocSize(PTy);
+
+    computeValueLLTs(DL, *PTy, ValueVTs, &Offsets);
+
+    for (unsigned i = 0; i < ValueVTs.size(); i++)
+    {
+			assert(Offsets[i] < TySize * 8);
+      if (ValueVTs[i].isPointer())
+      {
+				NumberOfPtrs++;
+				BitIdx = (Offsets[i] / 64) % 64;
+				if (!((BitMap >> BitIdx) & 1)) {
+					NumberOfBits++;
+				}
+				BitMap |= (1ULL << BitIdx);
+      }
+    }
+
+		if (NumberOfPtrs) {
+			IRBuilder<> IRB(I->getNextNode());
+
+			auto StaticSize = (isa<ConstantInt>(Size)) ? cast<ConstantInt>(Size)->getZExtValue() : 0;
+			if (StaticSize == TySize && NumberOfPtrs <= 4 && TySize <= 512) {
+				auto Ptr8 = IRB.CreateBitCast(I, IRB.getInt8PtrTy());
+				for (unsigned i = 0; i < 64 && NumberOfPtrs; i++) {
+					if ((BitMap >> i) & 1) {
+						NumberOfPtrs--;
+						size_t offset = (i * 8);
+						auto GEP = IRB.CreateGEP(Ptr8, ConstantInt::get(IRB.getInt64Ty(), offset));
+						IRB.CreateStore(ConstantInt::getNullValue(Int64Ty), IRB.CreateBitCast(GEP, Int64PtrTy));
+					}
+				}
+			}
+			else {
+				if (((NumberOfPtrs * 80) >= ((int)TySize * 7)) || NumberOfBits >= 48) {
+					auto Ptr8 = IRB.CreateBitCast(I, IRB.getInt8PtrTy());
+					IRB.CreateMemSet(Ptr8, ConstantInt::get(IRB.getInt8Ty(), 0), Size, Align::None());
+				}
+				else {
+					auto Fn = M->getOrInsertFunction("san_typeset",
+						IRB.getVoidTy(), I->getType(), Size->getType(), Int64Ty, Int64Ty);
+					IRB.CreateCall(Fn, {I, Size, ConstantInt::get(Int64Ty, TySize), 
+						ConstantInt::get(Int64Ty, BitMap)});
+				}
+			}
+		}
+	}
+
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA,
@@ -8503,6 +8616,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			createCondCall(F, Call, Base, NULL, NULL);
 		}
 	}
+
+
+	initializeAllocasAndMalloc(F, TLI);
 
 	/*if (verifyFunction(F, &errs())) {
     F.dump();
