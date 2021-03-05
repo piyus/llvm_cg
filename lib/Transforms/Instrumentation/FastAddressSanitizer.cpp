@@ -5015,6 +5015,9 @@ static void createCondCall(Function &F, Instruction *_Call,
 		IRB.SetInsertPoint(InstPt);
 	}
 	else {
+		if (isa<Constant>(Base)) {
+			return;
+		}
 		auto InstPt = cast<Instruction>(Base)->getNextNode();
 		IRB.SetInsertPoint(InstPt);
 	}
@@ -6330,6 +6333,9 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
 		if (Equals == 0) {
 			IRBuilder<> IRB(InsertPt);
 			auto StepValue = Bounds->getStepValue();
+			if (!StepValue) {
+				return false;
+			}
 			assert(StepValue);
 			Final = IRB.CreateSub(Final, StepValue);
 		}
@@ -6339,6 +6345,9 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
 			IRBuilder<> IRB(InsertPt);
 			auto StepValue = Bounds->getStepValue();
 			assert(StepValue);
+			if (!StepValue) {
+				return false;
+			}
 			Final = IRB.CreateAdd(Final, StepValue);
 		}
 	}
