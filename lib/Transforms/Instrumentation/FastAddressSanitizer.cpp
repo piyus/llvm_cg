@@ -8194,14 +8194,39 @@ static void initializeAllocasAndMalloc(Function &F, const TargetLibraryInfo *TLI
 			IRBuilder<> IRB(I->getNextNode());
 
 			auto StaticSize = (isa<ConstantInt>(Size)) ? cast<ConstantInt>(Size)->getZExtValue() : 0;
-			if (StaticSize == TySize && NumberOfPtrs <= 4 && TySize <= 512) {
-				auto Ptr8 = IRB.CreateBitCast(I, IRB.getInt8PtrTy());
-				for (unsigned i = 0; i < 64 && NumberOfPtrs; i++) {
-					if ((BitMap >> i) & 1) {
-						NumberOfPtrs--;
-						size_t offset = (i * 8);
-						auto GEP = IRB.CreateGEP(Ptr8, ConstantInt::get(IRB.getInt64Ty(), offset));
-						IRB.CreateStore(ConstantInt::getNullValue(Int64Ty), IRB.CreateBitCast(GEP, Int64PtrTy));
+			if (StaticSize == TySize && TySize <= 512) {
+				if (NumberOfPtrs <= 8) {
+					auto Ptr8 = IRB.CreateBitCast(I, IRB.getInt8PtrTy());
+					for (unsigned i = 0; i < 64 && NumberOfPtrs; i++) {
+						if ((BitMap >> i) & 1) {
+							NumberOfPtrs--;
+							size_t offset = (i * 8);
+							auto GEP = IRB.CreateGEP(Ptr8, ConstantInt::get(IRB.getInt64Ty(), offset));
+							IRB.CreateStore(ConstantInt::getNullValue(Int64Ty), IRB.CreateBitCast(GEP, Int64PtrTy));
+						}
+					}
+				}
+				else {
+					unsigned i;
+					for (i = 63; i > 0; i--) {
+						if ((BitMap >> i) & 1) {
+							break;
+						}
+					}
+					assert(i > 0);
+					size_t TotalSize = (i+1)*8;
+					size_t PtrSize = NumberOfPtrs * 8;
+					assert(TotalSize <= TySize);
+					if (TotalSize < PtrSize * 2) {
+						auto Ptr8 = IRB.CreateBitCast(I, IRB.getInt8PtrTy());
+						IRB.CreateMemSet(Ptr8, ConstantInt::get(IRB.getInt8Ty(), 0), 
+							ConstantInt::get(Int64Ty, TotalSize), Align::None());
+					}
+					else {
+						auto Fn = M->getOrInsertFunction("san_typeset",
+							IRB.getVoidTy(), I->getType(), Size->getType(), Int64Ty, Int64Ty);
+						IRB.CreateCall(Fn, {I, Size, ConstantInt::get(Int64Ty, TySize), 
+							ConstantInt::get(Int64Ty, BitMap)});
 					}
 				}
 			}
