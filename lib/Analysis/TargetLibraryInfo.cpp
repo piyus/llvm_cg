@@ -775,6 +775,12 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 		return true;
 	case LibFunc_vasprintf1:
 		return true;
+	case LibFunc_pcre_compile2:
+		return true;
+	case LibFunc_pcre_exec:
+		return true;
+	case LibFunc_pcre_fullinfo:
+		return true;
 	case LibFunc_obstack_begin:
 		return true;
 	case LibFunc_obstack_free:

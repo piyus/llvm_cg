@@ -1180,6 +1180,16 @@ TLI_DEFINE_STRING_INTERNAL("opendir")
 /// int pclose(FILE *stream);
 TLI_DEFINE_ENUM_INTERNAL(pclose)
 TLI_DEFINE_STRING_INTERNAL("pclose")
+
+TLI_DEFINE_ENUM_INTERNAL(pcre_compile2)
+TLI_DEFINE_STRING_INTERNAL("pcre_compile2")
+
+TLI_DEFINE_ENUM_INTERNAL(pcre_exec)
+TLI_DEFINE_STRING_INTERNAL("pcre_exec")
+
+TLI_DEFINE_ENUM_INTERNAL(pcre_fullinfo)
+TLI_DEFINE_STRING_INTERNAL("pcre_fullinfo")
+
 /// void perror(const char *s);
 TLI_DEFINE_ENUM_INTERNAL(perror)
 TLI_DEFINE_STRING_INTERNAL("perror")
