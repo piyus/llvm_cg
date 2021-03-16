@@ -1135,6 +1135,10 @@ TLI_DEFINE_STRING_INTERNAL("memset_pattern16")
 /// int mkdir(const char *path, mode_t mode);
 TLI_DEFINE_ENUM_INTERNAL(mkdir)
 TLI_DEFINE_STRING_INTERNAL("mkdir")
+
+TLI_DEFINE_ENUM_INTERNAL(mkstemp)
+TLI_DEFINE_STRING_INTERNAL("mkstemp")
+
 /// time_t mktime(struct tm *timeptr);
 TLI_DEFINE_ENUM_INTERNAL(mktime)
 TLI_DEFINE_STRING_INTERNAL("mktime")
