@@ -783,6 +783,120 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 		return true;
 	case LibFunc_mkstemp:
 		return true;
+	case LibFunc_getrandom:
+		return true;
+
+	case LibFunc_accept:
+		return true;
+	case LibFunc_accept4:
+		return true;
+	case LibFunc_bind:
+		return true;
+	case LibFunc_chroot:
+		return true;
+	case LibFunc_connect:
+		return true;
+	case LibFunc_crc32:
+		return true;
+	case LibFunc_crypt_r:
+		return true;
+	case LibFunc_deflate:
+		return true;
+	case LibFunc_deflateEnd:
+		return true;
+	case LibFunc_deflateInit2_:
+		return true;
+	case LibFunc_epoll_ctl:
+		return true;
+	case LibFunc_epoll_wait:
+		return true;
+	case LibFunc_getpwnam_r:
+		return true;
+	case LibFunc_getpwuid_r:
+		return true;
+	case LibFunc_getservbyname_r:
+		return true;
+	case LibFunc_getsockopt:
+		return true;
+	case LibFunc_iconv:
+		return true;
+	case LibFunc_iconv_open:
+		return true;
+	case LibFunc_inet_addr:
+		return true;
+	case LibFunc_inflate:
+		return true;
+	case LibFunc_inflateEnd:
+		return true;
+	case LibFunc_inflateInit2_:
+		return true;
+	case LibFunc_initgroups:
+		return true;
+	case LibFunc_listen:
+		return true;
+	case LibFunc_localtime_r:
+		return true;
+	case LibFunc_mkfifo:
+		return true;
+	case LibFunc_poll:
+		return true;
+	case LibFunc_recvfrom:
+		return true;
+	case LibFunc_rewinddir:
+		return true;
+	case LibFunc_sem_close:
+		return true;
+	case LibFunc_sem_open:
+		return true;
+	case LibFunc_sem_timedwait:
+		return true;
+	case LibFunc_sem_trywait:
+		return true;
+	case LibFunc_sem_unlink:
+		return true;
+	case LibFunc_semop:
+		return true;
+	case LibFunc_semtimedop:
+		return true;
+	case LibFunc_sendfile:
+		return true;
+	case LibFunc_sendmsg:
+		return true;
+	case LibFunc_sendto:
+		return true;
+	case LibFunc_setenv:
+		return true;
+	case LibFunc_setsockopt:
+		return true;
+	case LibFunc_shmat:
+		return true;
+	case LibFunc_shmctl:
+		return true;
+	case LibFunc_shmdt:
+		return true;
+	case LibFunc_sigaddset:
+		return true;
+	case LibFunc_sigdelset:
+		return true;
+	case LibFunc_sigemptyset:
+		return true;
+	case LibFunc_sigfillset:
+		return true;
+	case LibFunc_sigwait:
+		return true;
+	case LibFunc_syscall:
+		return true;
+	case LibFunc_syslog:
+		return true;
+	case LibFunc_timegm:
+		return true;
+	case LibFunc_umask:
+		return true;
+	case LibFunc_writev:
+		return true;
+	case LibFunc_getsockname:
+		return true;
+
 	case LibFunc_obstack_begin:
 		return true;
 	case LibFunc_obstack_free:
@@ -795,7 +909,6 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 		return true;
 	case LibFunc_setlocale:
 		return true;
-
 
 	case LibFunc_pthread_attr_init:
 	case LibFunc_pthread_attr_setdetachstate:
