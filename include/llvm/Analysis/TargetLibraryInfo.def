@@ -1016,6 +1016,12 @@ TLI_DEFINE_STRING_INTERNAL("getcwd")
 /// char *getenv(const char *name);
 TLI_DEFINE_ENUM_INTERNAL(getenv)
 TLI_DEFINE_STRING_INTERNAL("getenv")
+
+TLI_DEFINE_ENUM_INTERNAL(getgrnam)
+TLI_DEFINE_STRING_INTERNAL("getgrnam")
+TLI_DEFINE_ENUM_INTERNAL(getgrnam_r)
+TLI_DEFINE_STRING_INTERNAL("getgrnam_r")
+
 /// int getitimer(int which, struct itimerval *value);
 TLI_DEFINE_ENUM_INTERNAL(getitimer)
 TLI_DEFINE_STRING_INTERNAL("getitimer")
@@ -1023,6 +1029,10 @@ TLI_DEFINE_STRING_INTERNAL("getitimer")
 TLI_DEFINE_ENUM_INTERNAL(getlogin_r)
 TLI_DEFINE_STRING_INTERNAL("getlogin_r")
 /// struct passwd *getpwnam(const char *name);
+
+TLI_DEFINE_ENUM_INTERNAL(getnameinfo)
+TLI_DEFINE_STRING_INTERNAL("getnameinfo")
+
 
 TLI_DEFINE_ENUM_INTERNAL(getopt_long)
 TLI_DEFINE_STRING_INTERNAL("getopt_long")
@@ -1500,6 +1510,8 @@ TLI_DEFINE_STRING_INTERNAL("shmctl")
 TLI_DEFINE_ENUM_INTERNAL(shmdt)
 TLI_DEFINE_STRING_INTERNAL("shmdt")
 
+TLI_DEFINE_ENUM_INTERNAL(sigaction)
+TLI_DEFINE_STRING_INTERNAL("sigaction")
 TLI_DEFINE_ENUM_INTERNAL(sigaddset)
 TLI_DEFINE_STRING_INTERNAL("sigaddset")
 TLI_DEFINE_ENUM_INTERNAL(sigdelset)

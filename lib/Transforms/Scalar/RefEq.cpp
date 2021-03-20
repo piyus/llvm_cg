@@ -524,6 +524,21 @@ static void checkAllMemIntrinsics(Function &F, const TargetLibraryInfo *TLI)
 	}
 }
 
+static void replaceLibcalls(Function &F, const TargetLibraryInfo *TLI)
+{
+  for (auto &BB : F) {
+    for (auto &Inst : BB) {
+			auto CS = dyn_cast<CallInst>(&Inst);
+			if (CS && CS->getCalledFunction()) {
+				auto Name = CS->getCalledFunction()->getName();
+				if (Name == "__ctype_b_loc") {
+					CS->getCalledFunction()->setName("___ctype_b_loc");
+				}
+			}
+		}
+	}
+}
+
 /// This is the main transformation entry point for a function.
 bool RefEqLegacyPass::runOnFunction(Function &F) {
   const TargetLibraryInfo *TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F);
@@ -566,6 +581,7 @@ bool RefEqLegacyPass::runOnFunction(Function &F) {
 	if (FirstCall) {
 		setBoundsForArgv(F);
 		checkAllMemIntrinsics(F, TLI);
+		replaceLibcalls(F, TLI);
 	}
 	return true;
 }

@@ -818,6 +818,13 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 		return true;
 	case LibFunc_getsockopt:
 		return true;
+	case LibFunc_getgrnam:
+		return true;
+	case LibFunc_getgrnam_r:
+		return true;
+	case LibFunc_getnameinfo:
+		return true;
+
 	case LibFunc_iconv:
 		return true;
 	case LibFunc_iconv_open:
@@ -873,6 +880,8 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 	case LibFunc_shmctl:
 		return true;
 	case LibFunc_shmdt:
+		return true;
+	case LibFunc_sigaction:
 		return true;
 	case LibFunc_sigaddset:
 		return true;
