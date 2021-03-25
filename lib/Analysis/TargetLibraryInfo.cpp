@@ -645,7 +645,7 @@ bool TargetLibraryInfoImpl::isInteriorSafe(LibFunc F) const {
   	case LibFunc_strtod:
   	case LibFunc_strtol:
   	case LibFunc_strtoul:
-		case LibFunc_pthread_create:
+		//case LibFunc_pthread_create:
 			return true;
 		default:
 			return false;
@@ -785,6 +785,29 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 		return true;
 	case LibFunc_getrandom:
 		return true;
+
+	case LibFunc_pthread_attr_destroy:
+		return true;
+	case LibFunc_pthread_attr_getdetachstate:
+		return true;
+	case LibFunc_pthread_attr_setguardsize:
+		return true;
+	case LibFunc_pthread_attr_setstacksize:
+		return true;
+
+	case LibFunc_pthread_cond_broadcast:
+		return true;
+	case LibFunc_pthread_cond_destroy:
+		return true;
+	case LibFunc_pthread_cond_init:
+		return true;
+	case LibFunc_pthread_cond_signal:
+		return true;
+	case LibFunc_pthread_cond_timedwait:
+		return true;
+	case LibFunc_pthread_cond_wait:
+		return true;
+
 
 	case LibFunc_pthread_sigmask:
 		return true;
