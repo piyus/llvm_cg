@@ -786,9 +786,13 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 	case LibFunc_getrandom:
 		return true;
 
+	case LibFunc_pthread_sigmask:
+		return true;
 	case LibFunc_accept:
 		return true;
 	case LibFunc_accept4:
+		return true;
+	case LibFunc_atexit:
 		return true;
 	case LibFunc_bind:
 		return true;
@@ -882,6 +886,8 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 	case LibFunc_shmdt:
 		return true;
 	case LibFunc_sigaction:
+		return true;
+	case LibFunc_gethostbyname_r:
 		return true;
 	case LibFunc_sigaddset:
 		return true;

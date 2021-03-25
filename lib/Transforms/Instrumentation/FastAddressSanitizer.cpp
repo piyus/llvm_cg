@@ -6578,7 +6578,7 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 
 static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 {
-	//return;
+	return;
 	auto InsertPt = CI->getNextNode();
 	IRBuilder<> IRB(InsertPt);
 	auto Base = CI->getArgOperand(0);

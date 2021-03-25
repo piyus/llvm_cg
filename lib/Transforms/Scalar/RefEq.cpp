@@ -526,8 +526,7 @@ static void checkAllMemIntrinsics(Function &F, const TargetLibraryInfo *TLI)
 
 static void replaceLibcalls(Function &F, const TargetLibraryInfo *TLI)
 {
-	DenseSet<CallInst*> MmapSet;
-	DenseSet<CallInst*> MunmapSet;
+	//DenseSet<CallInst*> ShmSet;
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -538,16 +537,23 @@ static void replaceLibcalls(Function &F, const TargetLibraryInfo *TLI)
 					CS->getCalledFunction()->setName("___ctype_b_loc");
 				}
 				else if (Name == "mmap") {
-					MmapSet.insert(CS);
+					CS->getCalledFunction()->setName("san_mmap");
 				}
 				else if (Name == "unmap") {
-					MunmapSet.insert(CS);
+					CS->getCalledFunction()->setName("san_unmmap");
 				}
+				/*else if (Name == "shm_open") {
+					ShmSet.insert(CS);
+				}
+				else if (Name == "shmget") {
+					ShmSet.insert(CS);
+				}*/
 			}
 		}
 	}
 	//auto M = F.getParent();
 
+#if 0
 	for (auto MM : MmapSet) {
 		IRBuilder<> IRB(MM);
 		auto CI = IRB.CreateIntToPtr(ConstantInt::get(IRB.getInt64Ty(), -1), IRB.getInt8PtrTy());
@@ -559,10 +565,16 @@ static void replaceLibcalls(Function &F, const TargetLibraryInfo *TLI)
 		MM->eraseFromParent();
 	}
 
+	for (auto MM : ShmSet) {
+		MM->replaceAllUsesWith(ConstantInt::get(MM->getType(), -1));
+		MM->eraseFromParent();
+	}
+
 	/*for (auto MM : MunmapSet) {
 		CallInst::CreateFree(MM->getArgOperand(0), MM);
 		MM->eraseFromParent();
 	}*/
+#endif
 }
 
 /// This is the main transformation entry point for a function.

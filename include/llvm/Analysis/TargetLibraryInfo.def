@@ -595,6 +595,11 @@ TLI_DEFINE_STRING_INTERNAL("atanhl")
 /// long double atanl(long double x);
 TLI_DEFINE_ENUM_INTERNAL(atanl)
 TLI_DEFINE_STRING_INTERNAL("atanl")
+
+TLI_DEFINE_ENUM_INTERNAL(atexit)
+TLI_DEFINE_STRING_INTERNAL("atexit")
+
+
 /// double atof(const char *str);
 TLI_DEFINE_ENUM_INTERNAL(atof)
 TLI_DEFINE_STRING_INTERNAL("atof")
@@ -1021,6 +1026,8 @@ TLI_DEFINE_ENUM_INTERNAL(getgrnam)
 TLI_DEFINE_STRING_INTERNAL("getgrnam")
 TLI_DEFINE_ENUM_INTERNAL(getgrnam_r)
 TLI_DEFINE_STRING_INTERNAL("getgrnam_r")
+TLI_DEFINE_ENUM_INTERNAL(gethostbyname_r)
+TLI_DEFINE_STRING_INTERNAL("gethostbyname_r")
 
 /// int getitimer(int which, struct itimerval *value);
 TLI_DEFINE_ENUM_INTERNAL(getitimer)
@@ -1341,6 +1348,8 @@ TLI_DEFINE_STRING_INTERNAL("pthread_self")
 TLI_DEFINE_ENUM_INTERNAL(pthread_setspecific)
 TLI_DEFINE_STRING_INTERNAL("pthread_setspecific")
 
+TLI_DEFINE_ENUM_INTERNAL(pthread_sigmask)
+TLI_DEFINE_STRING_INTERNAL("pthread_sigmask")
 
 /// int putc(int c, FILE *stream);
 TLI_DEFINE_ENUM_INTERNAL(putc)
