@@ -632,6 +632,16 @@ bool TargetLibraryInfoImpl::getLibFunc(StringRef funcName, LibFunc &F) const {
   return false;
 }
 
+bool TargetLibraryInfoImpl::mayCapturePtr(LibFunc F) const {
+  switch (F) {
+		case LibFunc_gethostbyname_r:
+			return true;
+		default:
+			return false;
+	}
+	return false;
+}
+
 bool TargetLibraryInfoImpl::isInteriorSafe(LibFunc F) const {
   switch (F) {
 		case LibFunc_strstr:

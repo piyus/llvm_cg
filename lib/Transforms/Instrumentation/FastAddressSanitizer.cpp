@@ -3120,7 +3120,9 @@ bool FastAddressSanitizer::isSafeAlloca(const AllocaInst *AllocaPtr, const Targe
         }
 				LibFunc Func;
     		if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
-					continue;
+					if (!TLI->mayCapturePtr(Func)) {
+						continue;
+					}
 				}
 
         ImmutableCallSite::arg_iterator B = CS.arg_begin(), E = CS.arg_end();
@@ -6578,7 +6580,6 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 
 static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 {
-	return;
 	auto InsertPt = CI->getNextNode();
 	IRBuilder<> IRB(InsertPt);
 	auto Base = CI->getArgOperand(0);

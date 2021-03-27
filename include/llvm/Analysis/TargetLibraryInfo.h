@@ -79,6 +79,7 @@ class TargetLibraryInfoImpl {
 
 public:
 	bool isInteriorSafe(LibFunc F) const;
+	bool mayCapturePtr(LibFunc F) const;
 	int getLengthArgument(LibFunc F) const;
 	bool mustAccessMemory(LibFunc F) const;
   /// List of known vector-functions libraries.
@@ -273,6 +274,10 @@ public:
 
 	bool isInteriorSafe(LibFunc F) const {
 		return Impl->isInteriorSafe(F);
+	}
+
+	bool mayCapturePtr(LibFunc F) const {
+		return Impl->mayCapturePtr(F);
 	}
   /// Searches for a particular function name.
   ///
