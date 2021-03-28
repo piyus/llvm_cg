@@ -79,6 +79,7 @@ class TargetLibraryInfoImpl {
 
 public:
 	bool isInteriorSafe(LibFunc F) const;
+	bool isUserArgument(LibFunc F, unsigned ArgNo) const;
 	bool mayCapturePtr(LibFunc F) const;
 	int getLengthArgument(LibFunc F) const;
 	bool mustAccessMemory(LibFunc F) const;
@@ -270,6 +271,10 @@ public:
 
 	bool mustAccessMemory(LibFunc F) const {
 		return Impl->mustAccessMemory(F);
+	}
+
+	bool isUserArgument(LibFunc F, unsigned ArgNo) const {
+		return Impl->isUserArgument(F, ArgNo);
 	}
 
 	bool isInteriorSafe(LibFunc F) const {

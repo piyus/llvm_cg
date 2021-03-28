@@ -5635,6 +5635,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 
 	DenseSet<Value*> LibCalls;
 	DenseSet<Value*> NewCalls;
+	DenseMap<Value*, LibFunc> LibFuncMap;
 
 	for (auto CS : CallSites) {
 		LibFunc Func;
@@ -5648,6 +5649,7 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
 			if (!TLI->isInteriorSafe(Func)) {
 				LibCall = true;
 			}
+			LibFuncMap[CS] = Func;
 		}
 		if (LibCall) {
 			LibCalls.insert(CS);
@@ -5673,8 +5675,10 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
     		Value *A = *ArgIt;
       	if (A->getType()->isPointerTy()) {
 					if (LibCall || PAL.hasParamAttribute(ArgIt - Start, Attribute::ByVal)) {
-						auto Interior = getNoInterior(F, CS, A);
-						CS->setArgOperand(ArgIt - Start, Interior);
+						if (!LibFuncMap.count(CS) || !TLI->isUserArgument(LibFuncMap[CS], ArgIt - Start)) {
+							auto Interior = getNoInterior(F, CS, A);
+							CS->setArgOperand(ArgIt - Start, Interior);
+						}
 					}
 					else {
 						if (InteriorPointersSet.count(A) || (isa<Constant>(A) && !isa<GlobalVariable>(A))) {
@@ -6580,6 +6584,7 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 
 static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 {
+	return;
 	auto InsertPt = CI->getNextNode();
 	IRBuilder<> IRB(InsertPt);
 	auto Base = CI->getArgOperand(0);

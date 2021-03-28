@@ -642,6 +642,13 @@ bool TargetLibraryInfoImpl::mayCapturePtr(LibFunc F) const {
 	return false;
 }
 
+bool TargetLibraryInfoImpl::isUserArgument(LibFunc F, unsigned ArgNo) const {
+	if (F == LibFunc_pthread_create && ArgNo == 3) {
+		return true;
+	}
+	return false;
+}
+
 bool TargetLibraryInfoImpl::isInteriorSafe(LibFunc F) const {
   switch (F) {
 		case LibFunc_strstr:
