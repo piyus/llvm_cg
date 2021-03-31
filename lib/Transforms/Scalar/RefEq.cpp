@@ -542,6 +542,9 @@ static void replaceLibcalls(Function &F, const TargetLibraryInfo *TLI)
 				else if (Name == "unmap") {
 					CS->getCalledFunction()->setName("san_unmmap");
 				}
+				else if (Name == "sigaction") {
+					CS->getCalledFunction()->setName("san_sigaction");
+				}
 				/*else if (Name == "shm_open") {
 					ShmSet.insert(CS);
 				}
