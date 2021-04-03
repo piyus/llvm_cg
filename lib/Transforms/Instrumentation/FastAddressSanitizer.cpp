@@ -6648,6 +6648,20 @@ static void optimizeAbortLoop(Function &F, CallInst *CI, DominatorTree *DT, Loop
 	callOnceInLoopAfterDef(F, CI, InsertPt, DT, LI);
 }
 
+static bool checkLowerBound(Function &F, Value *Base, Value *Ptr)
+{
+	Base = Base->stripPointerCasts();
+	Ptr = Ptr->stripPointerCasts();
+
+  const DataLayout &DL = F.getParent()->getDataLayout();
+	int64_t Offset;
+	Value *PBase = GetPointerBaseWithConstantOffset(Ptr, Offset, DL);
+	if (PBase == Base && Offset >= 0 && Offset < (4LL<<20)) {
+		return false;
+	}
+	return true;
+}
+
 static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 {
 	//return;
@@ -6659,6 +6673,8 @@ static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 	auto Limit = CI->getArgOperand(3);
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 
+	bool checkLower = checkLowerBound(F, Base, Ptr);
+
 	if (Base->getType() != Int8PtrTy) {
 		Base = IRB.CreateBitCast(Base, Int8PtrTy);
 	}
@@ -6668,14 +6684,26 @@ static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 	}
 	assert(PtrLimit->getType() == Int8PtrTy);
 	assert(Limit->getType() == Int8PtrTy);
+	Value *Cmp;
 
-	auto Cmp1 = IRB.CreateICmpULT(Ptr, Base);
-	auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
-	auto Cmp = IRB.CreateOr(Cmp1, Cmp2);
+	if (checkLower) {
+		auto Cmp1 = IRB.CreateICmpULT(Ptr, Base);
+		auto Cmp2 = IRB.CreateICmpULT(Limit, PtrLimit);
+		Cmp = IRB.CreateOr(Cmp1, Cmp2);
 
-	if (CI->hasMetadata("san_loopind")) {
-		auto Cmp3 = IRB.CreateICmpULT(PtrLimit, Base);
-		Cmp = IRB.CreateOr(Cmp, Cmp3);
+		if (CI->hasMetadata("san_loopind")) {
+			auto Cmp3 = IRB.CreateICmpULT(PtrLimit, Base);
+			Cmp = IRB.CreateOr(Cmp, Cmp3);
+		}
+	}
+	else {
+		errs() << "Saving Lower\n";
+		Cmp = IRB.CreateICmpULT(Limit, PtrLimit);
+
+		if (CI->hasMetadata("san_loopind")) {
+			auto Cmp3 = IRB.CreateICmpULT(PtrLimit, Base);
+			Cmp = IRB.CreateOr(Cmp, Cmp3);
+		}
 	}
 
 
