@@ -3146,6 +3146,74 @@ bool FastAddressSanitizer::isSafeAlloca(const AllocaInst *AllocaPtr, const Targe
   return true;
 }
 
+bool static isAllocaCallSafe(const AllocaInst *AllocaPtr, const TargetLibraryInfo *TLI)
+{
+  SmallPtrSet<const Value *, 16> Visited;
+  SmallVector<const Value *, 8> WorkList;
+  WorkList.push_back(AllocaPtr);
+
+  // A DFS search through all uses of the alloca in bitcasts/PHI/GEPs/etc.
+  while (!WorkList.empty()) {
+    const Value *V = WorkList.pop_back_val();
+    for (const Use &UI : V->uses()) {
+      auto I = cast<const Instruction>(UI.getUser());
+      assert(V == UI.get());
+
+      switch (I->getOpcode()) {
+			case Instruction::Load:
+				break;
+			case Instruction::VAArg:
+				break;
+
+      case Instruction::Store:
+        if (V == I->getOperand(0)) {
+					return false;
+        }
+        break;
+
+      case Instruction::Ret:
+        return false;
+
+      case Instruction::Call:
+      case Instruction::Invoke: {
+        ImmutableCallSite CS(I);
+
+        if (I->isLifetimeStartOrEnd())
+          continue;
+        if (dyn_cast<MemIntrinsic>(I)) {
+        	continue;
+        }
+
+				if (isPtrMask(I)) {
+          continue;
+        }
+				LibFunc Func;
+    		if (TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
+					if (!TLI->mayCapturePtr(Func)) {
+						continue;
+					}
+				}
+
+        ImmutableCallSite::arg_iterator B = CS.arg_begin(), E = CS.arg_end();
+        for (ImmutableCallSite::arg_iterator A = B; A != E; ++A)
+          if (A->get() == V)
+            if (!(CS.doesNotCapture(A - B))) {
+              return false;
+            }
+        continue;
+      }
+
+      default:
+        if (Visited.insert(I).second)
+          WorkList.push_back(cast<const Instruction>(I));
+      }
+    }
+  }
+
+  // All uses of the alloca are safe, we can place it on the safe stack.
+  return true;
+}
+
 static void addUnsafePointer(DenseMap<Value*, uint64_t> &Map, Value *V, uint64_t Size)
 {
 	if (Map.count(V)) {
@@ -4321,10 +4389,6 @@ void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI, Value 
 	uint64_t Size = getAllocaSizeInBytes(*AI);
 	uint64_t HeaderVal = 0xfaceULL | (Size << 32);
 	auto AllocaSize = ConstantInt::get(Int64Ty, HeaderVal);
-	bool NeedRegisteration = 1; //(Size > 8);
-	if (!NeedRegisteration && Alignment < 8) {
-		Alignment = 8;
-	}
   uint64_t Padding = alignTo(8, Alignment);
 
 	assert(Padding >= 8);
@@ -4356,7 +4420,7 @@ void FastAddressSanitizer::patchStaticAlloca(Function &F, AllocaInst *AI, Value 
 	Builder.CreateStore(AllocaSize, SizeField);
   AI->replaceAllUsesWith(Field);
 	AI->eraseFromParent();
-	if (NeedRegisteration) {
+	if (StackBase) {
 		recordStackPointer(&F, cast<Instruction>(Field), StackBase, RecordIndex);
 	}
 }
@@ -4382,7 +4446,9 @@ void FastAddressSanitizer::patchDynamicAlloca(Function &F, AllocaInst *AI, Value
 	IRB.CreateStore(Header, SizeField);
   AI->replaceAllUsesWith(Field);
 	AI->eraseFromParent();
-	recordStackPointer(&F, cast<Instruction>(Field), StackBase, RecordIndex);
+	if (StackBase) {
+		recordStackPointer(&F, cast<Instruction>(Field), StackBase, RecordIndex);
+	}
 }
 
 #if 0
@@ -8262,6 +8328,17 @@ static void initializeAllocasAndMalloc(Function &F, const TargetLibraryInfo *TLI
 
 }
 
+static bool checkIfRegisterationIsRequired(DenseSet<AllocaInst*> &UnsafeAllocas, const TargetLibraryInfo *TLI)
+{
+	for (auto AI : UnsafeAllocas) {
+		if (!isAllocaCallSafe(AI, TLI)) {
+			return true;
+		}
+	}
+	errs() << "Save Enter\n";
+	return false;
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA,
@@ -8300,6 +8377,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<Value*> InteriorPointersSet;
 	DenseSet<Value*> LargerThanBase;
 	DenseSet<CallInst*> MemCalls;
+	bool HasIndefiniteBase = false;
 
 	createReplacementMap(&F, ReplacementMap);
 
@@ -8432,6 +8510,10 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		if (postDominatesAnyPtrDef(F, BaseI, PDT, ValSet, LI, LoopUsages, CondLoop, Recurrance)) {
 			SafeBases.insert(Base);
 		}
+
+		if (!HasIndefiniteBase && indefiniteBase(Base, DL)) {
+			HasIndefiniteBase = true;
+		}
 	}
 
 
@@ -8503,6 +8585,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		/*else if (Recurrance) {
 			ISafeBases.insert(Base);
 		}*/
+		if (!HasIndefiniteBase && indefiniteBase(Base, DL)) {
+			HasIndefiniteBase = true;
+		}
 	}
 
 
@@ -8686,8 +8771,18 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	Value *StackBase = NULL;
 	int MaxRecordIndex = (int)UnsafeAllocas.size();
+	bool NeedRegisteration = !RestorePoints.empty();
 
-	if (!UnsafeAllocas.empty() || !RestorePoints.empty()) {
+	if (!NeedRegisteration && !UnsafeAllocas.empty()) {
+		if (HasIndefiniteBase) {
+			NeedRegisteration = true;
+		}
+		else {
+			NeedRegisteration = checkIfRegisterationIsRequired(UnsafeAllocas, TLI);
+		}
+	}
+
+	if (NeedRegisteration) {
 		StackBase = enterScope(&F, MaxRecordIndex);
 	}
 
@@ -8704,9 +8799,9 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
-	//assert(RecordIndex == MaxRecordIndex);
 
 	if (StackBase) {
+		assert(RecordIndex == MaxRecordIndex);
 		if (RestorePoints.empty() && !RecordIndex) {
 			errs() << "Removing Stack Base\n";
 			cast<CallInst>(StackBase)->eraseFromParent();
