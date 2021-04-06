@@ -673,6 +673,7 @@ struct FastAddressSanitizer {
 		DenseSet<Instruction*> &GEPs,
 		DenseSet<Value*> &LargerThanBase,
 		DenseSet<CallInst*> &MemCalls,
+		DenseSet<Instruction*> &FnPtrs,
 		const TargetLibraryInfo *TLI
 		);
 	void patchDynamicAlloca(Function &F, AllocaInst *AI, Value *StackBase, int &RecordIndex);
@@ -4111,6 +4112,16 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	return V;
 }
 
+static Value* buildInvalid(Function &F, Value *Ptr, Instruction *I)
+{
+	IRBuilder<> IRB(I);
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrunmask, {Ptr->getType(), Ptr->getType(), IRB.getInt64Ty()});
+	Ptr = IRB.CreateCall(TheFn, {Ptr, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48))});
+	return Ptr;
+}
+
+
 static Value* buildNoInterior(Function &F, IRBuilder<> &IRB, Value *Ptr)
 {
 	if (isa<AllocaInst>(Ptr) || isa<GlobalVariable>(Ptr)) {
@@ -4508,6 +4519,7 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 	DenseSet<Instruction*> &GEPs,
 	DenseSet<Value*> &LargerThanBase,
 	DenseSet<CallInst*> &MemCalls,
+	DenseSet<Instruction*> &FnPtrs,
 	const TargetLibraryInfo *TLI)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
@@ -4552,7 +4564,12 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 												InteriorPointersSet.insert(A);
 											}
 											else {
+												A = A->stripPointerCasts();
 												errs() << "NO-SIZED1: " << *A << "\n";
+												if (!isa<Function>(A)) {
+													assert(0);
+												}
+												FnPtrs.insert(CI);
 											}
 										}
 										else {
@@ -4579,7 +4596,12 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 								RetSites.insert(Ret);
 							}
 							else {
+								RetVal = RetVal->stripPointerCasts();
 								errs() << "NO-SIZED: " << *RetVal << "\n";
+								if (!isa<Function>(RetVal)) {
+									assert(0);
+								}
+								FnPtrs.insert(Ret);
 							}
             }
 						else {
@@ -4624,7 +4646,12 @@ void FastAddressSanitizer::recordAllUnsafeAccesses(Function &F, DenseSet<Value*>
 							Stores.insert(SI);
 						}
 						else {
+							V = V->stripPointerCasts();
 							errs() << "NO-SIZED2: " << *V << "\n";
+							if (!isa<Function>(V)) {
+								assert(0);
+							}
+							FnPtrs.insert(SI);
 						}
           }
 					else {
@@ -8387,6 +8414,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DenseSet<CallBase*> CallSites;
 	DenseSet<ReturnInst*> RetSites;
 	DenseSet<StoreInst*> Stores;
+	DenseSet<Instruction*> FnPtrs;
 	DenseSet<AllocaInst*> UnsafeAllocas;
 	DenseSet<Value*> InteriorPointers;
 	int callsites = 0;
@@ -8418,7 +8446,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	recordAllUnsafeAccesses(F, UnsafeUses, UnsafePointers, CallSites,
 		RetSites, Stores, UnsafeAllocas, ICmpOrSub, IntToPtr, PtrToInt, RestorePoints, 
-		InteriorPointersSet, GEPs, LargerThanBase, MemCalls, TLI);
+		InteriorPointersSet, GEPs, LargerThanBase, MemCalls, FnPtrs, TLI);
 
 	//if (UnsafePointers.empty()) {
 	//	return true;
@@ -8851,6 +8879,35 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	if (!RestorePoints.empty()) {
 		restoreStack(F, RestorePoints, StackBase);
+	}
+
+	for (auto Ptr : FnPtrs) {
+		auto SI = dyn_cast<StoreInst>(Ptr);
+		if (SI) {
+			auto V = SI->getValueOperand();
+			V = buildInvalid(F, V, SI);
+			SI->setOperand(0, V);
+		}
+		else if (auto CS = dyn_cast<CallInst>(Ptr)) {
+			LibFunc Func;
+			if (!TLI->getLibFunc(ImmutableCallSite(CS), Func)) {
+				for (auto ArgIt = CS->arg_begin(), End = CS->arg_end(), Start = CS->arg_begin(); ArgIt != End; ++ArgIt) {
+        	Value *A = *ArgIt;
+        	if (A->getType()->isPointerTy()) {
+						auto ElemTy = A->getType()->getPointerElementType();
+						if (!ElemTy->isSized()) {
+							A = buildInvalid(F, A, CS);
+							CS->setArgOperand(ArgIt - Start, A);
+						}
+					}
+				}
+			}
+		}
+		else if (auto RI = dyn_cast<ReturnInst>(Ptr)) {
+			auto *V = RI->getReturnValue();
+			V = buildInvalid(F, V, RI);
+			RI->setOperand(0, V);
+		}
 	}
 
 
