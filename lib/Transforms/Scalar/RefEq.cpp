@@ -536,6 +536,12 @@ static void replaceLibcalls(Function &F, const TargetLibraryInfo *TLI)
 				if (Name == "__ctype_b_loc") {
 					CS->getCalledFunction()->setName("___ctype_b_loc");
 				}
+				if (Name == "__ctype_tolower_loc") {
+					CS->getCalledFunction()->setName("___ctype_tolower_loc");
+				}
+				if (Name == "__ctype_toupper_loc") {
+					CS->getCalledFunction()->setName("___ctype_toupper_loc");
+				}
 				else if (Name == "mmap") {
 					CS->getCalledFunction()->setName("san_mmap");
 				}
