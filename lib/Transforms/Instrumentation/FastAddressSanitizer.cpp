@@ -5767,11 +5767,13 @@ static void handleInteriors(Function &F, DenseMap<Value*, Value*> &ReplacementMa
                                        CS->doesNotAccessMemory()))) {
     		Value *A = *ArgIt;
       	if (A->getType()->isPointerTy()) {
-					if (LibCall || PAL.hasParamAttribute(ArgIt - Start, Attribute::ByVal)) {
-						if (!LibFuncMap.count(CS) || !TLI->isUserArgument(LibFuncMap[CS], ArgIt - Start)) {
-							auto Interior = getNoInterior(F, CS, A);
-							CS->setArgOperand(ArgIt - Start, Interior);
-						}
+					auto ArgId = ArgIt - Start;
+					bool UserArg = LibCall && LibFuncMap.count(CS) && 
+						TLI->isUserArgument(LibFuncMap[CS], ArgIt - Start);
+
+					if (PAL.hasParamAttribute(ArgId, Attribute::ByVal) || (LibCall && !UserArg)) {
+						auto Interior = getNoInterior(F, CS, A);
+						CS->setArgOperand(ArgIt - Start, Interior);
 					}
 					else {
 						if (InteriorPointersSet.count(A) || (isa<Constant>(A) && !isa<GlobalVariable>(A))) {
@@ -6360,6 +6362,10 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
 
 	if (!L->isLoopSimplifyForm()) {
 		//errs() << "Not In Simplyfy Form\n";
+		return false;
+	}
+
+	if (!L->getUniqueExitBlock()) {
 		return false;
 	}
 
