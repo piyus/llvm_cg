@@ -6410,6 +6410,12 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
 	bool StepInst;
 	auto Pred = Bounds->getPredicate1(StepInst);
 	bool Equals = CmpInst::isTrueWhenEqual(Pred);
+
+	auto StepValue = Bounds->getStepValue();
+	if (!StepValue || !isa<ConstantInt>(StepValue)) {
+		return false;
+	}
+
 	//assert(Equals == 0);
 	//errs() << "Equals:: " << Equals << "\n";
 	//errs() << "Pred:: " << Pred << "\n";
@@ -6457,16 +6463,26 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
 		}
 	}
 
+
 	//auto StepI = &Bounds->getStepInst();
 	//errs() << "StepI:: " << *StepI << "\n";
+
+	Value *LoVal = (Dir == Loop::LoopBounds::Direction::Increasing) ? Initial : Final;
+	Value *HiVal = (Dir == Loop::LoopBounds::Direction::Increasing) ? Final : Initial;
+
+	int64_t StepVal = abs(cast<ConstantInt>(StepValue)->getSExtValue());
+	if (StepVal != 1) {
+		assert(StepVal != 0);
+		IRBuilder<> IRB(InsertPt);
+		auto Diff = IRB.CreateSub(HiVal, LoVal);
+		auto Rem = IRB.CreateURem(Diff, ConstantInt::get(IRB.getInt64Ty(), StepVal));
+		HiVal = IRB.CreateSub(HiVal, Rem);
+	}
 
 	Lo = GEP->clone();
 	Lo->insertBefore(InsertPt);
 	Hi = GEP->clone();
 	Hi->insertBefore(InsertPt);
-
-	Value *LoVal = (Dir == Loop::LoopBounds::Direction::Increasing) ? Initial : Final;
-	Value *HiVal = (Dir == Loop::LoopBounds::Direction::Increasing) ? Final : Initial;
 
 	//errs() << "LoVal:: " << *LoVal << "\n";
 	//errs() << "HiVal:: " << *HiVal << "\n";
