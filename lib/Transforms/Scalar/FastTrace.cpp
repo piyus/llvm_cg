@@ -173,7 +173,7 @@ static void traceFunction(Function &F) {
 				insertTraceCall(F, ICmp, ICmp, NULL, ICMP_TY, true);
 			}
 			else if (auto LI = dyn_cast<LoadInst>(&Inst)) {
-				insertTraceCall(F, LI, LI, LI->getPointerOperand(), LOAD_TY, true);
+				insertTraceCall(F, LI, LI->getPointerOperand(), NULL, LOAD_TY, false);
 			}
 			else if (auto SI = dyn_cast<StoreInst>(&Inst)) {
 				auto V = SI->getValueOperand();
