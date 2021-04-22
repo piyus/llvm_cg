@@ -4112,6 +4112,25 @@ static Value* getNoInterior(Function &F, Instruction *I, Value *V)
 	return V;
 }
 
+static Value* getNoInterior1(Function &F, Instruction *I, Value *V)
+{
+	if (V->getType()->isPointerTy()) {
+  	const DataLayout &DL = F.getParent()->getDataLayout();
+		auto Ret = GetUnderlyingObject(V, DL);
+		if (isa<AllocaInst>(Ret) || isa<GlobalVariable>(Ret)) {
+			return V;
+		}
+	}
+	IRBuilder<> IRB(I->getParent());
+	IRB.SetInsertPoint(I);
+	auto Intrin = (isa<PtrToIntInst>(V)) ? Intrinsic::ptrmask1 : Intrinsic::ptrmask;
+
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrin, {V->getType(), V->getType(), IRB.getInt64Ty()});
+	V = IRB.CreateCall(TheFn, {V, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48)-1)});
+	return V;
+}
+
 static Value* buildInvalid(Function &F, Value *Ptr, Instruction *I)
 {
 	IRBuilder<> IRB(I);
@@ -4122,7 +4141,7 @@ static Value* buildInvalid(Function &F, Value *Ptr, Instruction *I)
 }
 
 
-static Value* buildNoInterior(Function &F, IRBuilder<> &IRB, Value *Ptr)
+static Value* buildNoInterior1(Function &F, IRBuilder<> &IRB, Value *Ptr)
 {
 	if (isa<AllocaInst>(Ptr) || isa<GlobalVariable>(Ptr)) {
 		assert(0);
@@ -4130,7 +4149,7 @@ static Value* buildNoInterior(Function &F, IRBuilder<> &IRB, Value *Ptr)
 
 	Function *TheFn =
       Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrmask, {Ptr->getType(), Ptr->getType(), IRB.getInt64Ty()});
-	Ptr = IRB.CreateCall(TheFn, {Ptr, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<49)-1)});
+	Ptr = IRB.CreateCall(TheFn, {Ptr, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48)-1)});
 	return Ptr;
 }
 
@@ -4171,9 +4190,35 @@ static Value* getNoInteriorMap(Function &F, Instruction *Unused, Value *Oper, De
 	return Ret;
 }
 
+static Value* getNoInteriorMap1(Function &F, Instruction *Unused, Value *Oper, DenseMap<Value*, Value*> &RepMap)
+{
+	Value *Ret;
+	if (RepMap.count(Oper)) {
+		Ret = RepMap[Oper];
+	}
+	else {
+		Instruction *I = dyn_cast<Instruction>(Oper);
+		if (!I) {
+			I = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
+			assert(I);
+		}
+		else if (isa<PHINode>(I)) {
+			I = I->getParent()->getFirstNonPHI();
+		}
+		else {
+			I = I->getNextNode();
+		}
+		Ret = getNoInterior1(F, I, Oper);
+		RepMap[Oper] = Ret;
+	}
+	return Ret;
+}
+
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths,
 	DenseSet<Value*> &GetLengthsCond,
-	DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites)
+	DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites,
+	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap
+	)
 {
 	int id = 0;
 	Instruction *Entry = dyn_cast<Instruction>(F.begin()->getFirstInsertionPt());
@@ -4182,6 +4227,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	auto Name = IRB.CreateGlobalStringPtr(F.getName());
 	DenseSet<AllocaInst*> AllocaInsts;
 	DenseMap<Value*, Value*> RepMap;
+	DenseMap<Value*, Value*> RepMap1;
 	//DenseMap<Value*, Value*> LoadMap;
 	DenseSet<LoadInst*> LoadSet;
 
@@ -4206,7 +4252,12 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 			}
 			else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
 				Oper = LI->getPointerOperand();
-				Ret = getNoInteriorMap(F, LI, Oper, RepMap);
+				if (UnsafeMap.count(Oper)) {
+					Ret = getNoInteriorMap1(F, LI, Oper, RepMap1);
+				}
+				else {
+					Ret = getNoInteriorMap(F, LI, Oper, RepMap);
+				}
 				//Ret = addHandler(F, I, Oper, NULL, GetLengths, false, id++, Name);
 				LI->setOperand(0, Ret);
 			}
@@ -4214,20 +4265,35 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				//Value *Val = (Stores.count(SI)) ? SI->getValueOperand() : NULL;
 				//Value *Val = SI->getValueOperand();
 				Oper = SI->getPointerOperand();
-				Ret = getNoInteriorMap(F, SI, Oper, RepMap);
+				if (UnsafeMap.count(Oper)) {
+					Ret = getNoInteriorMap1(F, SI, Oper, RepMap1);
+				}
+				else {
+					Ret = getNoInteriorMap(F, SI, Oper, RepMap);
+				}
 				//Ret = addHandler(F, I, Oper, Val, GetLengths, false, id++, Name);
 				SI->setOperand(1, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
 				//Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
 				Oper = AI->getPointerOperand();
-				Ret = getNoInteriorMap(F, AI, Oper, RepMap);
+				if (UnsafeMap.count(Oper)) {
+					Ret = getNoInteriorMap1(F, AI, Oper, RepMap1);
+				}
+				else {
+					Ret = getNoInteriorMap(F, AI, Oper, RepMap);
+				}
 				AI->setOperand(0, Ret);
 			}
 			else if (auto *AI = dyn_cast<AtomicCmpXchgInst>(I)) {
 				//Ret = addHandler(F, I, AI->getPointerOperand(), NULL, GetLengths, false, id++, Name);
 				Oper = AI->getPointerOperand();
-				Ret = getNoInteriorMap(F, AI, Oper, RepMap);
+				if (UnsafeMap.count(Oper)) {
+					Ret = getNoInteriorMap1(F, AI, Oper, RepMap1);
+				}
+				else {
+					Ret = getNoInteriorMap(F, AI, Oper, RepMap);
+				}
 				AI->setOperand(0, Ret);
 			}
 			else if (auto *CI = dyn_cast<CallBase>(I)) {
@@ -6221,7 +6287,7 @@ static CallInst* optimizeInterior(Function &F, CallInst *CI, DenseMap<Value*, Va
 
 	FunctionCallee Fn;
 	if (!Static) {
-		Ptr = buildNoInterior(F, IRB, Ptr);
+		Ptr = buildNoInterior1(F, IRB, Ptr);
 		Fn = M->getOrInsertFunction("fasan_interior", CI->getType(), Base->getType(), Ptr->getType());
 	}
 	else {
@@ -6856,7 +6922,7 @@ static void optimizeFCheckSize(Function &F, CallInst *CI)
 	auto PtrBase = Ptr->stripPointerCasts();
 
 	if (!isa<AllocaInst>(PtrBase) && !isa<GlobalVariable>(PtrBase)) {
-		PtrLimit = buildNoInterior(F, IRB, PtrLimit);
+		PtrLimit = buildNoInterior1(F, IRB, PtrLimit);
 	}
 	auto Invalid = IRB.CreateICmpULT(Limit, PtrLimit);
 	Invalid = IRB.CreateShl(IRB.CreateZExt(Invalid, Int64Ty), 48);
@@ -6902,7 +6968,7 @@ static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBloc
 		assert(LimitToRealBase.count(Limit));
 		RealBase = LimitToRealBase[Limit];
 		assert(RealBase);
-		Ptr = buildNoInterior(F, IRB, Ptr);
+		Ptr = buildNoInterior1(F, IRB, Ptr);
 	}
 
 	assert(Limit->getType() == Int8PtrTy);
@@ -6916,7 +6982,7 @@ static CallInst* optimizeAbort(Function &F, CallInst *CI, bool Abort2, BasicBloc
 	}
 	else {
 		if (!Static) {
-			PtrLimit = buildNoInterior(F, IRB, PtrLimit);
+			PtrLimit = buildNoInterior1(F, IRB, PtrLimit);
 		}
 	}
 
@@ -7052,7 +7118,7 @@ static CallInst* optimizeCheckSizeOffset(Function &F, CallInst *CI, DenseMap<Val
 	FunctionCallee Fn;
 
 	if (!Static) {
-		Ptr = buildNoInterior(F, IRB, Ptr);
+		Ptr = buildNoInterior1(F, IRB, Ptr);
 		Fn = M->getOrInsertFunction("fasan_check_interior",
 			CI->getType(), RealBase->getType(), Ptr->getType(), PtrSz->getType(), Limit->getType());
 	}
@@ -8808,7 +8874,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 
 	//removeRedundentLengths(F, GetLengths, LenToBaseMap);
-	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites);
+	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites, UnsafeMap);
 
 	for (auto Limit : GetLengths) {
 		auto Call = dyn_cast<CallBase>(Limit);

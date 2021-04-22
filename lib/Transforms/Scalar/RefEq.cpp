@@ -224,6 +224,9 @@ static bool isPtrMask(Value *V) {
 
 static Value* getNoInterior1(Function &F, Instruction *I, Value *V)
 {
+	if (isPtrMask(V)) {
+		return NULL;
+	}
 	IRBuilder<> IRB(I->getParent());
 	IRB.SetInsertPoint(I);
 	Function *TheFn =
