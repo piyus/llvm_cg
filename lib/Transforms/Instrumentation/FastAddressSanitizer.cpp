@@ -4136,7 +4136,7 @@ static Value* buildInvalid(Function &F, Value *Ptr, Instruction *I)
 	IRBuilder<> IRB(I);
 	Function *TheFn =
       Intrinsic::getDeclaration(F.getParent(), Intrinsic::ptrunmask, {Ptr->getType(), Ptr->getType(), IRB.getInt64Ty()});
-	Ptr = IRB.CreateCall(TheFn, {Ptr, ConstantInt::get(IRB.getInt64Ty(), (1ULL<<48))});
+	Ptr = IRB.CreateCall(TheFn, {Ptr, ConstantInt::get(IRB.getInt64Ty(), (0xFFFFULL<<48))});
 	return Ptr;
 }
 
@@ -5364,7 +5364,7 @@ getInteriorValue(Function &F, Instruction *I, Value *V,
 			}
 		}
 		auto Fn = Intrinsic::getDeclaration(M, Intrinsic::ptrunmask, {V->getType(), V->getType(), IRB.getInt64Ty()});
-		Ret = IRB.CreateCall(Fn, {V, ConstantInt::get(IRB.getInt64Ty(), (0x1ULL<<48))});
+		Ret = IRB.CreateCall(Fn, {V, ConstantInt::get(IRB.getInt64Ty(), (0xFFFFULL<<48))});
 	}
 	return Ret;
 }
