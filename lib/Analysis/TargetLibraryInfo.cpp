@@ -970,6 +970,7 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 	case LibFunc_pthread_attr_setscope:
 	case LibFunc_pthread_cancel:
 	case LibFunc_pthread_create:
+	case LibFunc_pthread_join:
 	case LibFunc_pthread_getspecific:
 	case LibFunc_pthread_key_create:
 	case LibFunc_pthread_mutex_destroy:
