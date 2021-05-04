@@ -1623,6 +1623,22 @@ bool LiveDebugValues::ExtendRanges(MachineFunction &MF) {
 }
 
 bool LiveDebugValues::runOnMachineFunction(MachineFunction &MF) {
+	DenseSet<MachineInstr*> ToDelete;
+	for (auto &MBB : MF) {
+		for (auto &MI : MBB) {
+			if (MI.mayStore()) {
+				for (auto &MO : MI.operands()) {
+					if (MO.isGlobal() && MO.getGlobal()->getName() == "__lifevar") {
+						ToDelete.insert(&MI);
+						break;
+					}
+				}
+			}
+		}
+	}
+	for (auto MI : ToDelete) {
+		MI->eraseFromParent();
+	}
   if (!MF.getFunction().getSubprogram())
     // LiveDebugValues will already have removed all DBG_VALUEs.
     return false;

@@ -4217,7 +4217,8 @@ static Value* getNoInteriorMap1(Function &F, Instruction *Unused, Value *Oper, D
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths,
 	DenseSet<Value*> &GetLengthsCond,
 	DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites,
-	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap
+	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap,
+	Value *LifeVar
 	)
 {
 	int id = 0;
@@ -4257,6 +4258,10 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				}
 				else {
 					Ret = getNoInteriorMap(F, LI, Oper, RepMap);
+					if (Oper != Ret) {
+						IRBuilder<> IRB(LI->getNextNode());
+						IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
+					}
 				}
 				//Ret = addHandler(F, I, Oper, NULL, GetLengths, false, id++, Name);
 				LI->setOperand(0, Ret);
@@ -4270,6 +4275,10 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				}
 				else {
 					Ret = getNoInteriorMap(F, SI, Oper, RepMap);
+					if (Oper != Ret) {
+						IRBuilder<> IRB(SI->getNextNode());
+						IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
+					}
 				}
 				//Ret = addHandler(F, I, Oper, Val, GetLengths, false, id++, Name);
 				SI->setOperand(1, Ret);
@@ -4282,6 +4291,10 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				}
 				else {
 					Ret = getNoInteriorMap(F, AI, Oper, RepMap);
+					if (Oper != Ret) {
+						IRBuilder<> IRB(AI->getNextNode());
+						IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
+					}
 				}
 				AI->setOperand(0, Ret);
 			}
@@ -4293,6 +4306,10 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				}
 				else {
 					Ret = getNoInteriorMap(F, AI, Oper, RepMap);
+					if (Oper != Ret) {
+						IRBuilder<> IRB(AI->getNextNode());
+						IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
+					}
 				}
 				AI->setOperand(0, Ret);
 			}
@@ -8491,7 +8508,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	//copyArgsByValToAllocas1(F);
 	//errs() << "Printing function\n" << F << "\n";
 	//createInteriorFn(&F);
-
+	auto LifeTimeVar = F.getParent()->getOrInsertGlobal("__lifevar", Int8PtrTy);
 	DenseSet<Value*> UnsafeUses;
 	DenseMap<Value*, uint64_t> UnsafePointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
@@ -8874,7 +8891,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 
 	//removeRedundentLengths(F, GetLengths, LenToBaseMap);
-	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites, UnsafeMap);
+	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites, UnsafeMap, LifeTimeVar);
 
 	for (auto Limit : GetLengths) {
 		auto Call = dyn_cast<CallBase>(Limit);
