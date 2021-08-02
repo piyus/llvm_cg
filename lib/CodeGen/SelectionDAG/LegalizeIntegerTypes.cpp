@@ -2818,6 +2818,7 @@ void DAGTypeLegalizer::ExpandIntRes_LOAD(LoadSDNode *N,
 
     Lo = DAG.getExtLoad(ExtType, dl, NVT, Ch, Ptr, N->getPointerInfo(), MemVT,
                         Alignment, MMOFlags, AAInfo);
+		DAG.copyBaseOffset(Lo, N->getMemOperand());
 
     // Remember the chain.
     Ch = Lo.getValue(1);
@@ -2841,6 +2842,7 @@ void DAGTypeLegalizer::ExpandIntRes_LOAD(LoadSDNode *N,
     // Little-endian - low bits are at low addresses.
     Lo = DAG.getLoad(NVT, dl, Ch, Ptr, N->getPointerInfo(), Alignment, MMOFlags,
                      AAInfo);
+		DAG.copyBaseOffset(Lo, N->getMemOperand());
 
     unsigned ExcessBits =
       N->getMemoryVT().getSizeInBits() - NVT.getSizeInBits();
@@ -2852,6 +2854,7 @@ void DAGTypeLegalizer::ExpandIntRes_LOAD(LoadSDNode *N,
     Hi = DAG.getExtLoad(ExtType, dl, NVT, Ch, Ptr,
                         N->getPointerInfo().getWithOffset(IncrementSize), NEVT,
                         MinAlign(Alignment, IncrementSize), MMOFlags, AAInfo);
+		DAG.copyBaseOffset(Hi, N->getMemOperand());
 
     // Build a factor node to remember that this load is independent of the
     // other one.
@@ -2870,6 +2873,7 @@ void DAGTypeLegalizer::ExpandIntRes_LOAD(LoadSDNode *N,
                         EVT::getIntegerVT(*DAG.getContext(),
                                           MemVT.getSizeInBits() - ExcessBits),
                         Alignment, MMOFlags, AAInfo);
+		DAG.copyBaseOffset(Hi, N->getMemOperand());
 
     // Increment the pointer to the other half.
     Ptr = DAG.getMemBasePlusOffset(Ptr, IncrementSize, dl);
@@ -2878,6 +2882,7 @@ void DAGTypeLegalizer::ExpandIntRes_LOAD(LoadSDNode *N,
                         N->getPointerInfo().getWithOffset(IncrementSize),
                         EVT::getIntegerVT(*DAG.getContext(), ExcessBits),
                         MinAlign(Alignment, IncrementSize), MMOFlags, AAInfo);
+		DAG.copyBaseOffset(Lo, N->getMemOperand());
 
     // Build a factor node to remember that this load is independent of the
     // other one.
@@ -4087,8 +4092,10 @@ SDValue DAGTypeLegalizer::ExpandIntOp_STORE(StoreSDNode *N, unsigned OpNo) {
 
   if (N->getMemoryVT().bitsLE(NVT)) {
     GetExpandedInteger(N->getValue(), Lo, Hi);
-    return DAG.getTruncStore(Ch, dl, Lo, Ptr, N->getPointerInfo(),
+    auto Ret = DAG.getTruncStore(Ch, dl, Lo, Ptr, N->getPointerInfo(),
                              N->getMemoryVT(), Alignment, MMOFlags, AAInfo);
+		DAG.copyBaseOffset(Ret, N->getMemOperand());
+		return Ret;
   }
 
   if (DAG.getDataLayout().isLittleEndian()) {
@@ -4097,6 +4104,7 @@ SDValue DAGTypeLegalizer::ExpandIntOp_STORE(StoreSDNode *N, unsigned OpNo) {
 
     Lo = DAG.getStore(Ch, dl, Lo, Ptr, N->getPointerInfo(), Alignment, MMOFlags,
                       AAInfo);
+		DAG.copyBaseOffset(Lo, N->getMemOperand());
 
     unsigned ExcessBits =
       N->getMemoryVT().getSizeInBits() - NVT.getSizeInBits();
@@ -4108,6 +4116,7 @@ SDValue DAGTypeLegalizer::ExpandIntOp_STORE(StoreSDNode *N, unsigned OpNo) {
     Hi = DAG.getTruncStore(
         Ch, dl, Hi, Ptr, N->getPointerInfo().getWithOffset(IncrementSize), NEVT,
         MinAlign(Alignment, IncrementSize), MMOFlags, AAInfo);
+		DAG.copyBaseOffset(Hi, N->getMemOperand());
     return DAG.getNode(ISD::TokenFactor, dl, MVT::Other, Lo, Hi);
   }
 
@@ -4137,6 +4146,7 @@ SDValue DAGTypeLegalizer::ExpandIntOp_STORE(StoreSDNode *N, unsigned OpNo) {
   // Store both the high bits and maybe some of the low bits.
   Hi = DAG.getTruncStore(Ch, dl, Hi, Ptr, N->getPointerInfo(), HiVT, Alignment,
                          MMOFlags, AAInfo);
+	DAG.copyBaseOffset(Hi, N->getMemOperand());
 
   // Increment the pointer to the other half.
   Ptr = DAG.getObjectPtrOffset(dl, Ptr, IncrementSize);
@@ -4145,6 +4155,7 @@ SDValue DAGTypeLegalizer::ExpandIntOp_STORE(StoreSDNode *N, unsigned OpNo) {
                          N->getPointerInfo().getWithOffset(IncrementSize),
                          EVT::getIntegerVT(*DAG.getContext(), ExcessBits),
                          MinAlign(Alignment, IncrementSize), MMOFlags, AAInfo);
+	DAG.copyBaseOffset(Lo, N->getMemOperand());
   return DAG.getNode(ISD::TokenFactor, dl, MVT::Other, Lo, Hi);
 }
 

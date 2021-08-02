@@ -433,10 +433,14 @@ MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
                        ? MinAlign(MMO->getBaseAlignment(), Offset)
                        : MMO->getBaseAlignment();
 
-  return new (Allocator)
+  auto Ret = new (Allocator)
       MachineMemOperand(PtrInfo.getWithOffset(Offset), MMO->getFlags(), Size,
                         Align, AAMDNodes(), nullptr, MMO->getSyncScopeID(),
                         MMO->getOrdering(), MMO->getFailureOrdering());
+	if (MMO->hasBaseOffset()) {
+		Ret->setBaseOffset(MMO->getBaseOffset());
+	}
+	return Ret;
 }
 
 MachineMemOperand *
@@ -446,20 +450,29 @@ MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
              MachinePointerInfo(MMO->getValue(), MMO->getOffset()) :
              MachinePointerInfo(MMO->getPseudoValue(), MMO->getOffset());
 
-  return new (Allocator)
+  auto Ret = new (Allocator)
              MachineMemOperand(MPI, MMO->getFlags(), MMO->getSize(),
                                MMO->getBaseAlignment(), AAInfo,
                                MMO->getRanges(), MMO->getSyncScopeID(),
                                MMO->getOrdering(), MMO->getFailureOrdering());
+	if (MMO->hasBaseOffset()) {
+		Ret->setBaseOffset(MMO->getBaseOffset());
+	}
+	return Ret;
 }
 
 MachineMemOperand *
 MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
                                       MachineMemOperand::Flags Flags) {
-  return new (Allocator) MachineMemOperand(
+  auto Ret = new (Allocator) MachineMemOperand(
       MMO->getPointerInfo(), Flags, MMO->getSize(), MMO->getBaseAlignment(),
       MMO->getAAInfo(), MMO->getRanges(), MMO->getSyncScopeID(),
       MMO->getOrdering(), MMO->getFailureOrdering());
+
+	if (MMO->hasBaseOffset()) {
+		Ret->setBaseOffset(MMO->getBaseOffset());
+	}
+	return Ret;
 }
 
 MachineInstr::ExtraInfo *MachineFunction::createMIExtraInfo(

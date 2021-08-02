@@ -1104,6 +1104,12 @@ public:
   ///
   /// This function will set the MOLoad flag on MMOFlags, but you can set it if
   /// you want.  The MOStore flag must not be set.
+  SDValue getLoad(MachineMemOperand *Src, EVT VT, const SDLoc &dl, SDValue Chain, SDValue Ptr,
+                  MachinePointerInfo PtrInfo, unsigned Alignment = 0,
+                  MachineMemOperand::Flags MMOFlags = MachineMemOperand::MONone,
+                  const AAMDNodes &AAInfo = AAMDNodes(),
+                  const MDNode *Ranges = nullptr);
+
   SDValue getLoad(EVT VT, const SDLoc &dl, SDValue Chain, SDValue Ptr,
                   MachinePointerInfo PtrInfo, unsigned Alignment = 0,
                   MachineMemOperand::Flags MMOFlags = MachineMemOperand::MONone,
@@ -1111,6 +1117,12 @@ public:
                   const MDNode *Ranges = nullptr);
   SDValue getLoad(EVT VT, const SDLoc &dl, SDValue Chain, SDValue Ptr,
                   MachineMemOperand *MMO);
+  SDValue
+  getExtLoad(MachineMemOperand *Src, ISD::LoadExtType ExtType, const SDLoc &dl, EVT VT, SDValue Chain,
+             SDValue Ptr, MachinePointerInfo PtrInfo, EVT MemVT,
+             unsigned Alignment = 0,
+             MachineMemOperand::Flags MMOFlags = MachineMemOperand::MONone,
+             const AAMDNodes &AAInfo = AAMDNodes());
   SDValue
   getExtLoad(ISD::LoadExtType ExtType, const SDLoc &dl, EVT VT, SDValue Chain,
              SDValue Ptr, MachinePointerInfo PtrInfo, EVT MemVT,
@@ -1122,6 +1134,14 @@ public:
                      MachineMemOperand *MMO);
   SDValue getIndexedLoad(SDValue OrigLoad, const SDLoc &dl, SDValue Base,
                          SDValue Offset, ISD::MemIndexedMode AM);
+
+  SDValue getLoad(MachineMemOperand *Src, ISD::MemIndexedMode AM, ISD::LoadExtType ExtType, EVT VT,
+                  const SDLoc &dl, SDValue Chain, SDValue Ptr, SDValue Offset,
+                  MachinePointerInfo PtrInfo, EVT MemVT, unsigned Alignment = 0,
+                  MachineMemOperand::Flags MMOFlags = MachineMemOperand::MONone,
+                  const AAMDNodes &AAInfo = AAMDNodes(),
+                  const MDNode *Ranges = nullptr);
+
   SDValue getLoad(ISD::MemIndexedMode AM, ISD::LoadExtType ExtType, EVT VT,
                   const SDLoc &dl, SDValue Chain, SDValue Ptr, SDValue Offset,
                   MachinePointerInfo PtrInfo, EVT MemVT, unsigned Alignment = 0,
@@ -1137,12 +1157,24 @@ public:
   /// This function will set the MOStore flag on MMOFlags, but you can set it if
   /// you want.  The MOLoad and MOInvariant flags must not be set.
   SDValue
+  getStore(MachineMemOperand *Src, SDValue Chain, const SDLoc &dl, SDValue Val, SDValue Ptr,
+           MachinePointerInfo PtrInfo, unsigned Alignment = 0,
+           MachineMemOperand::Flags MMOFlags = MachineMemOperand::MONone,
+           const AAMDNodes &AAInfo = AAMDNodes());
+
+  SDValue
   getStore(SDValue Chain, const SDLoc &dl, SDValue Val, SDValue Ptr,
            MachinePointerInfo PtrInfo, unsigned Alignment = 0,
            MachineMemOperand::Flags MMOFlags = MachineMemOperand::MONone,
            const AAMDNodes &AAInfo = AAMDNodes());
   SDValue getStore(SDValue Chain, const SDLoc &dl, SDValue Val, SDValue Ptr,
                    MachineMemOperand *MMO);
+
+  SDValue
+  getTruncStore(MachineMemOperand *Src, SDValue Chain, const SDLoc &dl, SDValue Val, SDValue Ptr,
+                MachinePointerInfo PtrInfo, EVT SVT, unsigned Alignment = 0,
+                MachineMemOperand::Flags MMOFlags = MachineMemOperand::MONone,
+                const AAMDNodes &AAInfo = AAMDNodes());
   SDValue
   getTruncStore(SDValue Chain, const SDLoc &dl, SDValue Val, SDValue Ptr,
                 MachinePointerInfo PtrInfo, EVT SVT, unsigned Alignment = 0,
@@ -1172,6 +1204,7 @@ public:
   SDValue getMaskedScatter(SDVTList VTs, EVT VT, const SDLoc &dl,
                            ArrayRef<SDValue> Ops, MachineMemOperand *MMO,
                            ISD::MemIndexType IndexType);
+	void copyBaseOffset(SDValue SD, MachineMemOperand *MMO);
 
   /// Return (create a new or find existing) a target-specific node.
   /// TargetMemSDNode should be derived class from MemSDNode.

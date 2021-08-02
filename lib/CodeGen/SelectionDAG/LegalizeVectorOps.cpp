@@ -745,7 +745,7 @@ std::pair<SDValue, SDValue> VectorLegalizer::ExpandLoad(SDNode *N) {
 
       if (RemainingBytes >= LoadBytes) {
         ScalarLoad =
-            DAG.getLoad(WideVT, dl, Chain, BasePTR,
+            DAG.getLoad(LD->getMemOperand(), WideVT, dl, Chain, BasePTR,
                         LD->getPointerInfo().getWithOffset(Offset),
                         MinAlign(LD->getAlignment(), Offset),
                         LD->getMemOperand()->getFlags(), LD->getAAInfo());
@@ -756,7 +756,7 @@ std::pair<SDValue, SDValue> VectorLegalizer::ExpandLoad(SDNode *N) {
           LoadVT = EVT::getIntegerVT(*DAG.getContext(), LoadBytes << 3);
         }
         ScalarLoad =
-            DAG.getExtLoad(ISD::EXTLOAD, dl, WideVT, Chain, BasePTR,
+            DAG.getExtLoad(LD->getMemOperand(), ISD::EXTLOAD, dl, WideVT, Chain, BasePTR,
                            LD->getPointerInfo().getWithOffset(Offset), LoadVT,
                            MinAlign(LD->getAlignment(), Offset),
                            LD->getMemOperand()->getFlags(), LD->getAAInfo());

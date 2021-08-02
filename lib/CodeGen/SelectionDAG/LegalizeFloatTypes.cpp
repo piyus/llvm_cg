@@ -660,6 +660,7 @@ SDValue DAGTypeLegalizer::SoftenFloatRes_LOAD(SDNode *N) {
                        L->getChain(), L->getBasePtr(), L->getOffset(),
                        L->getPointerInfo(), NVT, L->getAlignment(), MMOFlags,
                        L->getAAInfo());
+		DAG.copyBaseOffset(NewL, L->getMemOperand());
     // Legalized the chain result - switch anything that used the old chain to
     // use the new one.
     ReplaceValueWith(SDValue(N, 1), NewL.getValue(1));
@@ -671,6 +672,7 @@ SDValue DAGTypeLegalizer::SoftenFloatRes_LOAD(SDNode *N) {
                      dl, L->getChain(), L->getBasePtr(), L->getOffset(),
                      L->getPointerInfo(), L->getMemoryVT(), L->getAlignment(),
                      MMOFlags, L->getAAInfo());
+	DAG.copyBaseOffset(NewL, L->getMemOperand());
   // Legalized the chain result - switch anything that used the old chain to
   // use the new one.
   ReplaceValueWith(SDValue(N, 1), NewL.getValue(1));
@@ -990,8 +992,10 @@ SDValue DAGTypeLegalizer::SoftenFloatOp_STORE(SDNode *N, unsigned OpNo) {
   else
     Val = GetSoftenedFloat(Val);
 
-  return DAG.getStore(ST->getChain(), dl, Val, ST->getBasePtr(),
+  auto Ret = DAG.getStore(ST->getChain(), dl, Val, ST->getBasePtr(),
                       ST->getMemOperand());
+	DAG.copyBaseOffset(Ret, ST->getMemOperand());
+	return Ret;
 }
 
 SDValue DAGTypeLegalizer::SoftenFloatOp_FCOPYSIGN(SDNode *N) {
@@ -1538,6 +1542,7 @@ void DAGTypeLegalizer::ExpandFloatRes_LOAD(SDNode *N, SDValue &Lo,
 
   Hi = DAG.getExtLoad(LD->getExtensionType(), dl, NVT, Chain, Ptr,
                       LD->getMemoryVT(), LD->getMemOperand());
+	DAG.copyBaseOffset(Hi, LD->getMemOperand());
 
   // Remember the chain.
   Chain = Hi.getValue(1);
@@ -1873,8 +1878,10 @@ SDValue DAGTypeLegalizer::ExpandFloatOp_STORE(SDNode *N, unsigned OpNo) {
   SDValue Lo, Hi;
   GetExpandedOp(ST->getValue(), Lo, Hi);
 
-  return DAG.getTruncStore(Chain, SDLoc(N), Hi, Ptr,
+  auto Ret = DAG.getTruncStore(Chain, SDLoc(N), Hi, Ptr,
                            ST->getMemoryVT(), ST->getMemOperand());
+	DAG.copyBaseOffset(Ret, ST->getMemOperand());
+	return Ret;
 }
 
 SDValue DAGTypeLegalizer::ExpandFloatOp_LROUND(SDNode *N) {
@@ -2065,8 +2072,10 @@ SDValue DAGTypeLegalizer::PromoteFloatOp_STORE(SDNode *N, unsigned OpNo) {
   NewVal = DAG.getNode(GetPromotionOpcode(Promoted.getValueType(), VT), DL,
                        IVT, Promoted);
 
-  return DAG.getStore(ST->getChain(), DL, NewVal, ST->getBasePtr(),
+  auto Ret = DAG.getStore(ST->getChain(), DL, NewVal, ST->getBasePtr(),
                       ST->getMemOperand());
+	DAG.copyBaseOffset(Ret, ST->getMemOperand());
+	return Ret;
 }
 
 //===----------------------------------------------------------------------===//
@@ -2334,6 +2343,7 @@ SDValue DAGTypeLegalizer::PromoteFloatRes_LOAD(SDNode *N) {
                              L->getAlignment(),
                              L->getMemOperand()->getFlags(),
                              L->getAAInfo());
+	DAG.copyBaseOffset(newL, L->getMemOperand());
   // Legalize the chain result by replacing uses of the old value chain with the
   // new one
   ReplaceValueWith(SDValue(N, 1), newL.getValue(1));
@@ -2395,6 +2405,8 @@ SDValue DAGTypeLegalizer::BitcastToInt_ATOMIC_SWAP(SDNode *N) {
                     DAG.getVTList(CastVT, MVT::Other),
                     { AM->getChain(), AM->getBasePtr(), CastVal },
                     AM->getMemOperand());
+
+	DAG.copyBaseOffset(NewAtomic, AM->getMemOperand());
 
   SDValue Result = NewAtomic;
 

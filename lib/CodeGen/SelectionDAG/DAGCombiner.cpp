@@ -1114,9 +1114,11 @@ SDValue DAGCombiner::PromoteOperand(SDValue Op, EVT PVT, bool &Replace) {
     ISD::LoadExtType ExtType = ISD::isNON_EXTLoad(LD) ? ISD::EXTLOAD
                                                       : LD->getExtensionType();
     Replace = true;
-    return DAG.getExtLoad(ExtType, DL, PVT,
+    auto Ret = DAG.getExtLoad(ExtType, DL, PVT,
                           LD->getChain(), LD->getBasePtr(),
                           MemVT, LD->getMemOperand());
+		DAG.copyBaseOffset(Ret, LD->getMemOperand());
+		return Ret;
   }
 
   unsigned Opc = Op.getOpcode();
@@ -1350,6 +1352,7 @@ bool DAGCombiner::PromoteLoad(SDValue Op) {
     SDValue NewLD = DAG.getExtLoad(ExtType, DL, PVT,
                                    LD->getChain(), LD->getBasePtr(),
                                    MemVT, LD->getMemOperand());
+		DAG.copyBaseOffset(NewLD, LD->getMemOperand());
     SDValue Result = DAG.getNode(ISD::TRUNCATE, DL, VT, NewLD);
 
     LLVM_DEBUG(dbgs() << "\nPromoting "; N->dump(&DAG); dbgs() << "\nTo: ";
@@ -5322,6 +5325,7 @@ SDValue DAGCombiner::visitAND(SDNode *N) {
                               Load->getChain(), Load->getBasePtr(),
                               Load->getOffset(), Load->getMemoryVT(),
                               Load->getMemOperand());
+				DAG.copyBaseOffset(NewLoad, Load->getMemOperand());
         // Replace uses of the EXTLOAD with the new ZEXTLOAD.
         if (Load->getNumValues() == 3) {
           // PRE/POST_INC loads have 3 values.
@@ -5411,6 +5415,7 @@ SDValue DAGCombiner::visitAND(SDNode *N) {
       SDValue ExtLoad =
           DAG.getExtLoad(ISD::ZEXTLOAD, SDLoc(N0), VT, LN0->getChain(),
                          LN0->getBasePtr(), MemVT, LN0->getMemOperand());
+			DAG.copyBaseOffset(ExtLoad, LN0->getMemOperand());
       AddToWorklist(N);
       CombineTo(N0.getNode(), ExtLoad, ExtLoad.getValue(1));
       return SDValue(N, 0); // Return N so it doesn't get rechecked!
@@ -9316,6 +9321,8 @@ SDValue DAGCombiner::CombineExtLoad(SDNode *N) {
         LN0->getPointerInfo().getWithOffset(Offset), SplitSrcVT, Align,
         LN0->getMemOperand()->getFlags(), LN0->getAAInfo());
 
+		DAG.copyBaseOffset(SplitLoad, LN0->getMemOperand());
+
     BasePtr = DAG.getMemBasePlusOffset(BasePtr, Stride, DL);
 
     Loads.push_back(SplitLoad.getValue(0));
@@ -9390,6 +9397,7 @@ SDValue DAGCombiner::CombineZExtLogicopShiftLoad(SDNode *N) {
   SDValue ExtLoad = DAG.getExtLoad(ISD::ZEXTLOAD, SDLoc(Load), VT,
                                    Load->getChain(), Load->getBasePtr(),
                                    Load->getMemoryVT(), Load->getMemOperand());
+	DAG.copyBaseOffset(ExtLoad, Load->getMemOperand());
 
   SDLoc DL1(N1);
   SDValue Shift = DAG.getNode(N1.getOpcode(), DL1, VT, ExtLoad,
@@ -9485,6 +9493,7 @@ static SDValue tryToFoldExtOfExtload(SelectionDAG &DAG, DAGCombiner &Combiner,
   SDValue ExtLoad =
       DAG.getExtLoad(ExtLoadType, SDLoc(LN0), VT, LN0->getChain(),
                      LN0->getBasePtr(), MemVT, LN0->getMemOperand());
+	DAG.copyBaseOffset(ExtLoad, LN0->getMemOperand());
   Combiner.CombineTo(N, ExtLoad);
   DAG.ReplaceAllUsesOfValueWith(SDValue(LN0, 1), ExtLoad.getValue(1));
   if (LN0->use_empty())
@@ -9520,6 +9529,7 @@ static SDValue tryToFoldExtOfLoad(SelectionDAG &DAG, DAGCombiner &Combiner,
   SDValue ExtLoad = DAG.getExtLoad(ExtLoadType, SDLoc(LN0), VT, LN0->getChain(),
                                    LN0->getBasePtr(), N0.getValueType(),
                                    LN0->getMemOperand());
+	DAG.copyBaseOffset(ExtLoad, LN0->getMemOperand());
   Combiner.ExtendSetCCUses(SetCCs, N0, ExtLoad, ExtOpc);
   // If the load value is used only by N, replace it via CombineTo N.
   bool NoReplaceTrunc = SDValue(LN0, 0).hasOneUse();
@@ -9559,6 +9569,7 @@ static SDValue tryToFoldExtOfMaskedLoad(SelectionDAG &DAG,
       VT, dl, Ld->getChain(), Ld->getBasePtr(), Ld->getOffset(), Ld->getMask(),
       PassThru, Ld->getMemoryVT(), Ld->getMemOperand(), Ld->getAddressingMode(),
       ExtLoadType, Ld->isExpandingLoad());
+	DAG.copyBaseOffset(NewLoad, Ld->getMemOperand());
   DAG.ReplaceAllUsesOfValueWith(SDValue(Ld, 1), SDValue(NewLoad.getNode(), 1));
   return NewLoad;
 }
@@ -9702,6 +9713,7 @@ SDValue DAGCombiner::visitSIGN_EXTEND(SDNode *N) {
                                          LN00->getChain(), LN00->getBasePtr(),
                                          LN00->getMemoryVT(),
                                          LN00->getMemOperand());
+				DAG.copyBaseOffset(ExtLoad, LN00->getMemOperand());
         APInt Mask = cast<ConstantSDNode>(N0.getOperand(1))->getAPIntValue();
         Mask = Mask.sext(VT.getSizeInBits());
         SDValue And = DAG.getNode(N0.getOpcode(), DL, VT,
@@ -10026,6 +10038,7 @@ SDValue DAGCombiner::visitZERO_EXTEND(SDNode *N) {
                                          LN00->getChain(), LN00->getBasePtr(),
                                          LN00->getMemoryVT(),
                                          LN00->getMemOperand());
+				DAG.copyBaseOffset(ExtLoad, LN00->getMemOperand());
         APInt Mask = cast<ConstantSDNode>(N0.getOperand(1))->getAPIntValue();
         Mask = Mask.zext(VT.getSizeInBits());
         SDLoc DL(N);
@@ -10211,6 +10224,7 @@ SDValue DAGCombiner::visitANY_EXTEND(SDNode *N) {
                                        LN0->getChain(),
                                        LN0->getBasePtr(), N0.getValueType(),
                                        LN0->getMemOperand());
+			DAG.copyBaseOffset(ExtLoad, LN0->getMemOperand());
       ExtendSetCCUses(SetCCs, N0, ExtLoad, ISD::ANY_EXTEND);
       // If the load value is used only by N, replace it via CombineTo N.
       bool NoReplaceTrunc = N0.hasOneUse();
@@ -10239,6 +10253,7 @@ SDValue DAGCombiner::visitANY_EXTEND(SDNode *N) {
       SDValue ExtLoad = DAG.getExtLoad(ExtType, SDLoc(N),
                                        VT, LN0->getChain(), LN0->getBasePtr(),
                                        MemVT, LN0->getMemOperand());
+			DAG.copyBaseOffset(ExtLoad, LN0->getMemOperand());
       CombineTo(N, ExtLoad);
       DAG.ReplaceAllUsesOfValueWith(SDValue(LN0, 1), ExtLoad.getValue(1));
       recursivelyDeleteUnusedNodes(LN0);
@@ -10517,6 +10532,8 @@ SDValue DAGCombiner::ReduceLoadWidth(SDNode *N) {
                           NewAlign, LN0->getMemOperand()->getFlags(),
                           LN0->getAAInfo());
 
+	DAG.copyBaseOffset(Load, LN0->getMemOperand());
+
   // Replace the old load's chain with the new load's chain.
   WorklistRemover DeadNodes(*this);
   DAG.ReplaceAllUsesOfValueWith(N0.getValue(1), Load.getValue(1));
@@ -10659,6 +10676,7 @@ SDValue DAGCombiner::visitSIGN_EXTEND_INREG(SDNode *N) {
                                      LN0->getChain(),
                                      LN0->getBasePtr(), EVT,
                                      LN0->getMemOperand());
+		DAG.copyBaseOffset(ExtLoad, LN0->getMemOperand());
     CombineTo(N, ExtLoad);
     CombineTo(N0.getNode(), ExtLoad, ExtLoad.getValue(1));
     AddToWorklist(ExtLoad.getNode());
@@ -10675,6 +10693,7 @@ SDValue DAGCombiner::visitSIGN_EXTEND_INREG(SDNode *N) {
                                      LN0->getChain(),
                                      LN0->getBasePtr(), EVT,
                                      LN0->getMemOperand());
+		DAG.copyBaseOffset(ExtLoad, LN0->getMemOperand());
     CombineTo(N, ExtLoad);
     CombineTo(N0.getNode(), ExtLoad, ExtLoad.getValue(1));
     return SDValue(N, 0);   // Return N so it doesn't get rechecked!
@@ -10901,6 +10920,7 @@ SDValue DAGCombiner::visitTRUNCATE(SDNode *N) {
                                          VT, LN0->getChain(), LN0->getBasePtr(),
                                          LN0->getMemoryVT(),
                                          LN0->getMemOperand());
+				DAG.copyBaseOffset(NewLoad, LN0->getMemOperand());
         DAG.ReplaceAllUsesOfValueWith(N0.getValue(1), NewLoad.getValue(1));
         return NewLoad;
       }
@@ -11199,6 +11219,7 @@ SDValue DAGCombiner::visitBITCAST(SDNode *N) {
           DAG.getLoad(VT, SDLoc(N), LN0->getChain(), LN0->getBasePtr(),
                       LN0->getPointerInfo(), LN0->getAlignment(),
                       LN0->getMemOperand()->getFlags(), LN0->getAAInfo());
+			DAG.copyBaseOffset(Load, LN0->getMemOperand());
       DAG.ReplaceAllUsesOfValueWith(N0.getValue(1), Load.getValue(1));
       return Load;
     }
@@ -13308,6 +13329,7 @@ SDValue DAGCombiner::visitFP_EXTEND(SDNode *N) {
                                      LN0->getChain(),
                                      LN0->getBasePtr(), N0.getValueType(),
                                      LN0->getMemOperand());
+		DAG.copyBaseOffset(ExtLoad, LN0->getMemOperand());
     CombineTo(N, ExtLoad);
     CombineTo(N0.getNode(),
               DAG.getNode(ISD::FP_ROUND, SDLoc(N0),
@@ -14362,6 +14384,7 @@ SDValue DAGCombiner::visitLOAD(SDNode *N) {
             LD->getExtensionType(), SDLoc(N), LD->getValueType(0), Chain, Ptr,
             LD->getPointerInfo(), LD->getMemoryVT(), Align,
             LD->getMemOperand()->getFlags(), LD->getAAInfo());
+				DAG.copyBaseOffset(NewLoad, LD->getMemOperand());
         // NewLoad will always be N as we are only refining the alignment
         assert(NewLoad.getNode() == N);
         (void)NewLoad;
@@ -14387,6 +14410,7 @@ SDValue DAGCombiner::visitLOAD(SDNode *N) {
                                   BetterChain, Ptr, LD->getMemoryVT(),
                                   LD->getMemOperand());
       }
+			DAG.copyBaseOffset(ReplLoad, LD->getMemOperand());
 
       // Create token factor to keep old chain connected.
       SDValue Token = DAG.getNode(ISD::TokenFactor, SDLoc(N),
@@ -14653,12 +14677,16 @@ struct LoadedSlice {
 
     // Create the type of the loaded slice according to its size.
     EVT SliceType = getLoadedType();
+		auto MMO = Origin->getMemOperand();
 
     // Create the load for the slice.
     SDValue LastInst =
         DAG->getLoad(SliceType, SDLoc(Origin), Origin->getChain(), BaseAddr,
                      Origin->getPointerInfo().getWithOffset(Offset),
                      getAlignment(), Origin->getMemOperand()->getFlags());
+		if (MMO->hasBaseOffset()) {
+			cast<MemSDNode>(LastInst)->setBaseOffset(MMO->getBaseOffset());
+		}
     // If the final type is not the same as the loaded type, this means that
     // we have to pad with zero. Create a zero extend for that.
     EVT FinalType = Inst->getValueType(0);
@@ -15191,6 +15219,7 @@ SDValue DAGCombiner::ReduceLoadOpStoreWidth(SDNode *N) {
           DAG.getLoad(NewVT, SDLoc(N0), LD->getChain(), NewPtr,
                       LD->getPointerInfo().getWithOffset(PtrOff), NewAlign,
                       LD->getMemOperand()->getFlags(), LD->getAAInfo());
+			DAG.copyBaseOffset(NewLD, LD->getMemOperand());
       SDValue NewVal = DAG.getNode(Opc, SDLoc(Value), NewVT, NewLD,
                                    DAG.getConstant(NewImm, SDLoc(Value),
                                                    NewVT));
@@ -15498,11 +15527,16 @@ bool DAGCombiner::MergeStoresOfConstantsOrVecElts(
     SDValue ExtendedStoreVal =
         DAG.getConstant(C->getAPIntValue().zextOrTrunc(LegalizedStoreSize), DL,
                         LegalizedStoredValTy);
+		auto MMO = FirstInChain->getMemOperand();
     NewStore = DAG.getTruncStore(
         NewChain, DL, ExtendedStoreVal, FirstInChain->getBasePtr(),
         FirstInChain->getPointerInfo(), StoredVal.getValueType() /*TVT*/,
         FirstInChain->getAlignment(),
         FirstInChain->getMemOperand()->getFlags());
+
+		if (MMO->hasBaseOffset()) {
+			cast<MemSDNode>(NewStore)->setBaseOffset(MMO->getBaseOffset());
+		}
   }
 
   // Replace all merged stores with the new store.
@@ -16228,9 +16262,11 @@ bool DAGCombiner::MergeConsecutiveStores(StoreSDNode *St) {
             DAG.getLoad(JointMemOpVT, LoadDL, FirstLoad->getChain(),
                         FirstLoad->getBasePtr(), FirstLoad->getPointerInfo(),
                         FirstLoadAlign, LdMMOFlags);
+				DAG.copyBaseOffset(NewLoad, FirstLoad->getMemOperand());
         NewStore = DAG.getStore(
             NewStoreChain, StoreDL, NewLoad, FirstInChain->getBasePtr(),
             FirstInChain->getPointerInfo(), FirstStoreAlign, StMMOFlags);
+				DAG.copyBaseOffset(NewStore, FirstInChain->getMemOperand());
       } else { // This must be the truncstore/extload case
         EVT ExtendedTy =
             TLI.getTypeToTransformTo(*DAG.getContext(), JointMemOpVT);
@@ -16238,11 +16274,13 @@ bool DAGCombiner::MergeConsecutiveStores(StoreSDNode *St) {
                                  FirstLoad->getChain(), FirstLoad->getBasePtr(),
                                  FirstLoad->getPointerInfo(), JointMemOpVT,
                                  FirstLoadAlign, LdMMOFlags);
+				DAG.copyBaseOffset(NewLoad, FirstLoad->getMemOperand());
         NewStore = DAG.getTruncStore(NewStoreChain, StoreDL, NewLoad,
                                      FirstInChain->getBasePtr(),
                                      FirstInChain->getPointerInfo(),
                                      JointMemOpVT, FirstInChain->getAlignment(),
                                      FirstInChain->getMemOperand()->getFlags());
+				DAG.copyBaseOffset(NewStore, FirstInChain->getMemOperand());
       }
 
       // Transfer chain users from old loads to the new load.
@@ -16283,6 +16321,7 @@ SDValue DAGCombiner::replaceStoreChain(StoreSDNode *ST, SDValue BetterChain) {
     ReplStore = DAG.getStore(BetterChain, SL, ST->getValue(), ST->getBasePtr(),
                              ST->getMemOperand());
   }
+	DAG.copyBaseOffset(ReplStore, ST->getMemOperand());
 
   // Create token to keep both nodes around.
   SDValue Token = DAG.getNode(ISD::TokenFactor, SL,
@@ -16331,7 +16370,9 @@ SDValue DAGCombiner::replaceStoreOfFPConstant(StoreSDNode *ST) {
       Tmp = DAG.getConstant((uint32_t)CFP->getValueAPF().
                             bitcastToAPInt().getZExtValue(), SDLoc(CFP),
                             MVT::i32);
-      return DAG.getStore(Chain, DL, Tmp, Ptr, ST->getMemOperand());
+      auto Ret = DAG.getStore(Chain, DL, Tmp, Ptr, ST->getMemOperand());
+			DAG.copyBaseOffset(Ret, ST->getMemOperand());
+			return Ret;
     }
 
     return SDValue();
@@ -16342,8 +16383,10 @@ SDValue DAGCombiner::replaceStoreOfFPConstant(StoreSDNode *ST) {
       ;
       Tmp = DAG.getConstant(CFP->getValueAPF().bitcastToAPInt().
                             getZExtValue(), SDLoc(CFP), MVT::i64);
-      return DAG.getStore(Chain, DL, Tmp,
+      auto Ret = DAG.getStore(Chain, DL, Tmp,
                           Ptr, ST->getMemOperand());
+			DAG.copyBaseOffset(Ret, ST->getMemOperand());
+			return Ret;
     }
 
     if (ST->isSimple() &&
@@ -16363,11 +16406,13 @@ SDValue DAGCombiner::replaceStoreOfFPConstant(StoreSDNode *ST) {
 
       SDValue St0 = DAG.getStore(Chain, DL, Lo, Ptr, ST->getPointerInfo(),
                                  ST->getAlignment(), MMOFlags, AAInfo);
+			DAG.copyBaseOffset(St0, ST->getMemOperand());
       Ptr = DAG.getMemBasePlusOffset(Ptr, 4, DL);
       Alignment = MinAlign(Alignment, 4U);
       SDValue St1 = DAG.getStore(Chain, DL, Hi, Ptr,
                                  ST->getPointerInfo().getWithOffset(4),
                                  Alignment, MMOFlags, AAInfo);
+			DAG.copyBaseOffset(St1, ST->getMemOperand());
       return DAG.getNode(ISD::TokenFactor, DL, MVT::Other,
                          St0, St1);
     }
@@ -16397,8 +16442,10 @@ SDValue DAGCombiner::visitSTORE(SDNode *N) {
          TLI.isOperationLegal(ISD::STORE, SVT)) &&
         TLI.isStoreBitCastBeneficial(Value.getValueType(), SVT,
                                      DAG, *ST->getMemOperand())) {
-      return DAG.getStore(Chain, SDLoc(N), Value.getOperand(0), Ptr,
+      auto Ret = DAG.getStore(Chain, SDLoc(N), Value.getOperand(0), Ptr,
                           ST->getMemOperand());
+			DAG.copyBaseOffset(Ret, ST->getMemOperand());
+			return Ret;
     }
   }
 
@@ -16414,6 +16461,7 @@ SDValue DAGCombiner::visitSTORE(SDNode *N) {
             DAG.getTruncStore(Chain, SDLoc(N), Value, Ptr, ST->getPointerInfo(),
                               ST->getMemoryVT(), Align,
                               ST->getMemOperand()->getFlags(), ST->getAAInfo());
+				DAG.copyBaseOffset(NewStore, ST->getMemOperand());
         // NewStore will always be N as we are only refining the alignment
         assert(NewStore.getNode() == N);
         (void)NewStore;
@@ -16454,9 +16502,12 @@ SDValue DAGCombiner::visitSTORE(SDNode *N) {
     // only the low bits are being used.  For example:
     // "truncstore (or (shl x, 8), y), i8"  -> "truncstore y, i8"
     AddToWorklist(Value.getNode());
-    if (SDValue Shorter = DAG.GetDemandedBits(Value, TruncDemandedBits))
-      return DAG.getTruncStore(Chain, SDLoc(N), Shorter, Ptr, ST->getMemoryVT(),
+    if (SDValue Shorter = DAG.GetDemandedBits(Value, TruncDemandedBits)) {
+      auto Ret = DAG.getTruncStore(Chain, SDLoc(N), Shorter, Ptr, ST->getMemoryVT(),
                                ST->getMemOperand());
+			DAG.copyBaseOffset(Ret, ST->getMemOperand());
+			return Ret;
+		}
 
     // Otherwise, see if we can simplify the operation with
     // SimplifyDemandedBits, which only works if the value has a single use.
@@ -16520,8 +16571,10 @@ SDValue DAGCombiner::visitSTORE(SDNode *N) {
       && Value.getNode()->hasOneUse() && ST->isUnindexed() &&
       TLI.isTruncStoreLegal(Value.getOperand(0).getValueType(),
                             ST->getMemoryVT())) {
-    return DAG.getTruncStore(Chain, SDLoc(N), Value.getOperand(0),
+    auto Ret = DAG.getTruncStore(Chain, SDLoc(N), Value.getOperand(0),
                              Ptr, ST->getMemoryVT(), ST->getMemOperand());
+		DAG.copyBaseOffset(Ret, ST->getMemOperand());
+		return Ret;
   }
 
   // Always perform this optimization before types are legal. If the target
@@ -16710,12 +16763,14 @@ SDValue DAGCombiner::splitMergedValStore(StoreSDNode *ST) {
   // Lower value store.
   SDValue St0 = DAG.getStore(Chain, DL, Lo, Ptr, ST->getPointerInfo(),
                              ST->getAlignment(), MMOFlags, AAInfo);
+	DAG.copyBaseOffset(St0, ST->getMemOperand());
   Ptr = DAG.getMemBasePlusOffset(Ptr, HalfValBitSize / 8, DL);
   // Higher value store.
   SDValue St1 =
       DAG.getStore(St0, DL, Hi, Ptr,
                    ST->getPointerInfo().getWithOffset(HalfValBitSize / 8),
                    Alignment / 2, MMOFlags, AAInfo);
+	DAG.copyBaseOffset(St1, ST->getMemOperand());
   return St1;
 }
 
@@ -16995,11 +17050,13 @@ SDValue DAGCombiner::scalarizeExtractedVectorLoad(SDNode *EVE, EVT InVecVT,
                           OriginalLoad->getChain(), NewPtr, MPI, VecEltVT,
                           Align, OriginalLoad->getMemOperand()->getFlags(),
                           OriginalLoad->getAAInfo());
+		DAG.copyBaseOffset(Load, OriginalLoad->getMemOperand());
     Chain = Load.getValue(1);
   } else {
     Load = DAG.getLoad(VecEltVT, SDLoc(EVE), OriginalLoad->getChain(), NewPtr,
                        MPI, Align, OriginalLoad->getMemOperand()->getFlags(),
                        OriginalLoad->getAAInfo());
+		DAG.copyBaseOffset(Load, OriginalLoad->getMemOperand());
     Chain = Load.getValue(1);
     if (ResultVT.bitsLT(VecEltVT))
       Load = DAG.getNode(ISD::TRUNCATE, SDLoc(EVE), ResultVT, Load);
@@ -18478,6 +18535,7 @@ static SDValue narrowExtractedVectorLoad(SDNode *Extract, SelectionDAG &DAG) {
   MachineMemOperand *MMO = MF.getMachineMemOperand(Ld->getMemOperand(), Offset,
                                                    VT.getStoreSize());
   SDValue NewLd = DAG.getLoad(VT, DL, Ld->getChain(), NewAddr, MMO);
+	DAG.copyBaseOffset(NewLd, MMO);
   DAG.makeEquivalentMemoryOrdering(Ld, NewLd);
   return NewLd;
 }
@@ -20210,6 +20268,7 @@ bool DAGCombiner::SimplifySelectOps(SDNode *TheSelect, SDValue LHS,
           SDLoc(TheSelect), TheSelect->getValueType(0), LLD->getChain(), Addr,
           MachinePointerInfo(), LLD->getMemoryVT(), Alignment, MMOFlags);
     }
+		DAG.copyBaseOffset(Load, LLD->getMemOperand());
 
     // Users of the select now use the result of the load.
     CombineTo(TheSelect, Load);
@@ -21165,6 +21224,7 @@ bool DAGCombiner::parallelizeChainedStores(StoreSDNode *St) {
     NewST = DAG.getStore(BetterChain, SDLoc(St), St->getValue(),
                          St->getBasePtr(), St->getMemOperand());
 
+	DAG.copyBaseOffset(NewST, St->getMemOperand());
   TFOps.push_back(NewST);
 
   // If we improved every element of TFOps, then we've lost the dependence on

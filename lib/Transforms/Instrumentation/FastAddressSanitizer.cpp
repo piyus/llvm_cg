@@ -4214,6 +4214,22 @@ static Value* getNoInteriorMap1(Function &F, Instruction *Unused, Value *Oper, D
 	return Ret;
 }
 
+static void emitMetadataForSizeInv(Value *Oper, const DataLayout &DL,
+	Instruction *I, Value *LifeVar)
+{
+	int64_t Offset;
+	GetPointerBaseWithConstantOffset(Oper, Offset, DL);
+	IRBuilder<> IRB(I->getNextNode());
+
+	MDNode *MD = MDNode::get(I->getContext(),
+		ValueAsMetadata::get(ConstantInt::get(IRB.getInt32Ty(), Offset)));
+	I->setMetadata(LLVMContext::MD_sizeinv_offset, MD);
+	//errs() << "AddingMetadata Offset:: " <<  Offset << " I::" << *I << "\n";
+
+	//auto SI = IRB.CreateStore(ConstantInt::get(IRB.getInt32Ty(), Offset), LifeVar);
+	//SI->setVolatile(true);
+}
+
 static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths,
 	DenseSet<Value*> &GetLengthsCond,
 	DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites,
@@ -4231,6 +4247,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	DenseMap<Value*, Value*> RepMap1;
 	//DenseMap<Value*, Value*> LoadMap;
 	DenseSet<LoadInst*> LoadSet;
+  const DataLayout &DL = F.getParent()->getDataLayout();
 
   for (auto &BB : F) {
     for (auto &Inst : BB) {
@@ -4259,8 +4276,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, LI, Oper, RepMap);
 					if (Oper != Ret) {
-						IRBuilder<> IRB(LI->getNextNode());
-						IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
+						emitMetadataForSizeInv(Oper, DL, LI, LifeVar);
 					}
 				}
 				//Ret = addHandler(F, I, Oper, NULL, GetLengths, false, id++, Name);
@@ -4276,8 +4292,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, SI, Oper, RepMap);
 					if (Oper != Ret) {
-						IRBuilder<> IRB(SI->getNextNode());
-						IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
+						emitMetadataForSizeInv(Oper, DL, SI, LifeVar);
 					}
 				}
 				//Ret = addHandler(F, I, Oper, Val, GetLengths, false, id++, Name);
@@ -4292,8 +4307,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, AI, Oper, RepMap);
 					if (Oper != Ret) {
-						IRBuilder<> IRB(AI->getNextNode());
-						IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
+						emitMetadataForSizeInv(Oper, DL, AI, LifeVar);
 					}
 				}
 				AI->setOperand(0, Ret);
@@ -4307,8 +4321,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, AI, Oper, RepMap);
 					if (Oper != Ret) {
-						IRBuilder<> IRB(AI->getNextNode());
-						IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
+						emitMetadataForSizeInv(Oper, DL, AI, LifeVar);
 					}
 				}
 				AI->setOperand(0, Ret);
@@ -8508,7 +8521,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	//copyArgsByValToAllocas1(F);
 	//errs() << "Printing function\n" << F << "\n";
 	//createInteriorFn(&F);
-	auto LifeTimeVar = F.getParent()->getOrInsertGlobal("__lifevar", Int8PtrTy);
+	//auto LifeTimeVar = F.getParent()->getOrInsertGlobal("__lifevar", Int32Ty);
 	DenseSet<Value*> UnsafeUses;
 	DenseMap<Value*, uint64_t> UnsafePointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
@@ -8891,7 +8904,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 
 	//removeRedundentLengths(F, GetLengths, LenToBaseMap);
-	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites, UnsafeMap, LifeTimeVar);
+	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites, UnsafeMap, NULL);
 
 	for (auto Limit : GetLengths) {
 		auto Call = dyn_cast<CallBase>(Limit);

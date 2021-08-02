@@ -45,6 +45,8 @@ static cl::opt<int> StackMapVersion(
 
 const char *StackMaps::WSMP = "Stack Maps: ";
 
+int StackMaps::GlobalID = 0;
+
 StackMapOpers::StackMapOpers(const MachineInstr *MI)
   : MI(MI) {
   assert(getVarIdx() <= MI->getNumOperands() &&
@@ -343,6 +345,67 @@ void StackMaps::recordStackMapOpers(const MCSymbol &MILabel,
       MCSymbolRefExpr::create(AP.CurrentFnSymForSize, OutContext), OutContext);
 
   CSInfos.emplace_back(CSOffsetExpr, ID, std::move(Locations),
+                       std::move(LiveOuts));
+
+  // Record the stack size of the current function and update callsite count.
+  const MachineFrameInfo &MFI = AP.MF->getFrameInfo();
+  const TargetRegisterInfo *RegInfo = AP.MF->getSubtarget().getRegisterInfo();
+  bool HasDynamicFrameSize =
+      MFI.hasVarSizedObjects() || RegInfo->needsStackRealignment(*(AP.MF));
+  uint64_t FrameSize = HasDynamicFrameSize ? UINT64_MAX : MFI.getStackSize();
+
+  auto CurrentIt = FnInfos.find(AP.CurrentFnSym);
+  if (CurrentIt != FnInfos.end())
+    CurrentIt->second.RecordCount++;
+  else
+    FnInfos.insert(std::make_pair(AP.CurrentFnSym, FunctionInfo(FrameSize)));
+}
+
+
+void StackMaps::recordMetadata(const MCSymbol &MILabel, int args[5]) {
+  MCContext &OutContext = AP.OutStreamer->getContext();
+	int Offset = args[0];
+	int MemBase = args[1];
+	int MemIdx = args[2];
+	int MemScale = args[3];
+	int MemDisp = args[4];
+	int id = GlobalID++;
+
+  
+  LocationVec Locs;
+  LiveOutVec LiveOuts;
+
+  Locs.emplace_back(StackMaps::Location::Direct, 8, 0, Offset);
+  Locs.emplace_back(StackMaps::Location::Direct, 8, MemBase, MemDisp);
+  Locs.emplace_back(StackMaps::Location::Direct, 8, MemIdx, MemScale);
+
+	for (auto &Loc : Locs) {
+    // Constants are encoded as sign-extended integers.
+    // -1 is directly encoded as .long 0xFFFFFFFF with no constant pool.
+    if (Loc.Type == Location::Constant && !isInt<32>(Loc.Offset)) {
+      Loc.Type = Location::ConstantIndex;
+      // ConstPool is intentionally a MapVector of 'uint64_t's (as
+      // opposed to 'int64_t's).  We should never be in a situation
+      // where we have to insert either the tombstone or the empty
+      // keys into a map, and for a DenseMap<uint64_t, T> these are
+      // (uint64_t)0 and (uint64_t)-1.  They can be and are
+      // represented using 32 bit integers.
+      assert((uint64_t)Loc.Offset != DenseMapInfo<uint64_t>::getEmptyKey() &&
+             (uint64_t)Loc.Offset !=
+                 DenseMapInfo<uint64_t>::getTombstoneKey() &&
+             "empty and tombstone keys should fit in 32 bits!");
+      auto Result = ConstPool.insert(std::make_pair(Loc.Offset, Loc.Offset));
+      Loc.Offset = Result.first - ConstPool.begin();
+    }
+  }
+
+  // Create an expression to calculate the offset of the callsite from function
+  // entry.
+  const MCExpr *CSOffsetExpr = MCBinaryExpr::createSub(
+      MCSymbolRefExpr::create(&MILabel, OutContext),
+      MCSymbolRefExpr::create(AP.CurrentFnSymForSize, OutContext), OutContext);
+
+  CSInfos.emplace_back(CSOffsetExpr, id, std::move(Locs),
                        std::move(LiveOuts));
 
   // Record the stack size of the current function and update callsite count.

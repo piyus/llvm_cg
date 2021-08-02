@@ -1008,9 +1008,10 @@ MachineMemOperand::MachineMemOperand(MachinePointerInfo ptrinfo, Flags f,
                                      const AAMDNodes &AAInfo,
                                      const MDNode *Ranges, SyncScope::ID SSID,
                                      AtomicOrdering Ordering,
-                                     AtomicOrdering FailureOrdering)
+                                     AtomicOrdering FailureOrdering,
+																		 int64_t baseOffset)
     : PtrInfo(ptrinfo), Size(s), FlagVals(f), BaseAlignLog2(Log2_32(a) + 1),
-      AAInfo(AAInfo), Ranges(Ranges) {
+      AAInfo(AAInfo), Ranges(Ranges), BaseOffset(baseOffset) {
   assert((PtrInfo.V.isNull() || PtrInfo.V.is<const PseudoSourceValue *>() ||
           isa<PointerType>(PtrInfo.V.get<const Value *>()->getType())) &&
          "invalid pointer value");

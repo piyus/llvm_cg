@@ -1307,6 +1307,10 @@ public:
     return MMO->getAlignment();
   }
 
+	void setBaseOffset(int64_t BaseOffset) {
+		MMO->setBaseOffset(BaseOffset);
+	}
+
   /// Return the SubclassData value, without HasDebugValue. This contains an
   /// encoding of the volatile flag, as well as bits used by subclasses. This
   /// function should only be used to compute a FoldingSetNodeID value.

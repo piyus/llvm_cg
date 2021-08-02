@@ -269,6 +269,8 @@ public:
   void recordStackMap(const MCSymbol &L,
                       const MachineInstr &MI);
 
+  void recordMetadata(const MCSymbol &L, int args[5]);
+
   /// Generate a stackmap record for a patchpoint instruction.
   void recordPatchPoint(const MCSymbol &L,
                         const MachineInstr &MI);
@@ -290,6 +292,7 @@ public:
 
 private:
   static const char *WSMP;
+	static int GlobalID;
 
   AsmPrinter &AP;
   CallsiteInfoList CSInfos;

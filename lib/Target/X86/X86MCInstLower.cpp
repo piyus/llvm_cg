@@ -1961,6 +1961,79 @@ static unsigned getRegisterWidth(const MCOperandInfo &Info) {
   llvm_unreachable("Unknown register class!");
 }
 
+static int RegToId(int Reg) {
+	if (Reg == X86::RIP) {
+		return 0;
+	}
+	if (Reg >= X86::RAX && Reg <= X86::RSP) {
+		return Reg - X86::RAX + 1;
+	}
+	if (Reg >= X86::R8 && Reg <= X86::R15) {
+		return Reg - X86::R8 + 11;
+	}
+	return 0;
+}
+
+void X86AsmPrinter::EmitMetadata(const MachineInstr *MI) {
+	const int64_t InvalidOffset = (1ULL << 32);
+	int64_t BaseOffset = InvalidOffset;
+
+	for (auto &MMO : MI->memoperands()) {
+		if (MMO->hasBaseOffset()) {
+			BaseOffset = MMO->getBaseOffset();
+		}
+	}
+	assert(BaseOffset != InvalidOffset);
+
+	const MCInstrDesc &Desc = MI->getDesc();
+  int MemOpNo = X86II::getMemoryOperandNo(Desc.TSFlags) +
+                X86II::getOperandBias(Desc);
+	int BaseIdx = MemOpNo + X86::AddrBaseReg;
+	int IndexIdx = MemOpNo + X86::AddrIndexReg;
+	int ScaleIdx = MemOpNo + X86::AddrScaleAmt;
+	int DispIdx = MemOpNo + X86::AddrDisp;
+
+	int Base = 0, Index = 0, Scale = 0, Disp = 0;
+	int NumOp = MI->getNumOperands();
+	if (BaseIdx < NumOp) {
+		auto BaseOp = MI->getOperand(BaseIdx);
+		if (BaseOp.isReg()) {
+			Base = getX86SubSuperRegisterOrZero(BaseOp.getReg(), 64);
+			Base = RegToId(Base);
+		}
+	}
+	if (IndexIdx < NumOp) {
+		auto IndexOp = MI->getOperand(IndexIdx);
+		if (IndexOp.isReg()) {
+			Index = getX86SubSuperRegisterOrZero(IndexOp.getReg(), 64);
+			Index = RegToId(Index);
+		}
+	}
+	if (ScaleIdx < NumOp) {
+		auto ScaleOp = MI->getOperand(ScaleIdx);
+		if (ScaleOp.isImm()) {
+			Scale = ScaleOp.getImm();
+		}
+	}
+	if (DispIdx < NumOp) {
+		auto DispOp = MI->getOperand(DispIdx);
+		if (DispOp.isImm()) {
+			Disp = DispOp.getImm();
+		}
+	}
+
+  SMShadowTracker.emitShadowPadding(*OutStreamer, getSubtargetInfo());
+
+  auto &Ctx = OutStreamer->getContext();
+  MCSymbol *MILabel = Ctx.createTempSymbol();
+	int args[5] = {(int)BaseOffset, Base, Index, Scale, Disp};
+  OutStreamer->EmitLabel(MILabel);
+
+  SM.recordMetadata(*MILabel, args);
+  SMShadowTracker.reset(0);
+}
+
+
 void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   X86MCInstLower MCInstLowering(*MF, *this);
   const X86RegisterInfo *RI =
@@ -1972,6 +2045,12 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
     if (MI->getAsmPrinterFlags() & X86::AC_EVEX_2_VEX)
       OutStreamer->AddComment("EVEX TO VEX Compression ", false);
   }
+
+	for (auto &MMO : MI->memoperands()) {
+		if (MMO->hasBaseOffset()) {
+			EmitMetadata(MI);
+		}
+	}
 
   switch (MI->getOpcode()) {
   case TargetOpcode::DBG_VALUE:

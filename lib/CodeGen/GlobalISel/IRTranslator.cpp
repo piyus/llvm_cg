@@ -860,6 +860,16 @@ static bool isSwiftError(const Value *V) {
 bool IRTranslator::translateLoad(const User &U, MachineIRBuilder &MIRBuilder) {
   const LoadInst &LI = cast<LoadInst>(U);
 
+	bool hasBaseOffset = LI.hasMetadata(LLVMContext::MD_sizeinv_offset);
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = LI.getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
+
   auto Flags = LI.isVolatile() ? MachineMemOperand::MOVolatile
                                : MachineMemOperand::MONone;
   Flags |= MachineMemOperand::MOLoad;
@@ -896,6 +906,9 @@ bool IRTranslator::translateLoad(const User &U, MachineIRBuilder &MIRBuilder) {
         Ptr, Flags, (MRI->getType(Regs[i]).getSizeInBits() + 7) / 8,
         MinAlign(BaseAlign, Offsets[i] / 8), AAMetadata, Ranges,
         LI.getSyncScopeID(), LI.getOrdering());
+		if (hasBaseOffset) {
+			MMO->setBaseOffset(BaseOffset);
+		}
     MIRBuilder.buildLoad(Regs[i], Addr, *MMO);
   }
 
@@ -907,6 +920,16 @@ bool IRTranslator::translateStore(const User &U, MachineIRBuilder &MIRBuilder) {
   auto Flags = SI.isVolatile() ? MachineMemOperand::MOVolatile
                                : MachineMemOperand::MONone;
   Flags |= MachineMemOperand::MOStore;
+
+	bool hasBaseOffset = SI.hasMetadata(LLVMContext::MD_sizeinv_offset);
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = SI.getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
 
   if (DL->getTypeStoreSize(SI.getValueOperand()->getType()) == 0)
     return true;
@@ -939,6 +962,9 @@ bool IRTranslator::translateStore(const User &U, MachineIRBuilder &MIRBuilder) {
         Ptr, Flags, (MRI->getType(Vals[i]).getSizeInBits() + 7) / 8,
         MinAlign(BaseAlign, Offsets[i] / 8), AAMetadata, nullptr,
         SI.getSyncScopeID(), SI.getOrdering());
+		if (hasBaseOffset) {
+			MMO->setBaseOffset(BaseOffset);
+		}
     MIRBuilder.buildStore(Vals[i], Addr, *MMO);
   }
   return true;
@@ -1968,6 +1994,16 @@ bool IRTranslator::translateAtomicCmpXchg(const User &U,
                               : MachineMemOperand::MONone;
   Flags |= MachineMemOperand::MOLoad | MachineMemOperand::MOStore;
 
+	bool hasBaseOffset = I.hasMetadata(LLVMContext::MD_sizeinv_offset);
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = I.getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
+
   Type *ResType = I.getType();
   Type *ValType = ResType->Type::getStructElementType(0);
 
@@ -1980,14 +2016,17 @@ bool IRTranslator::translateAtomicCmpXchg(const User &U,
 
   AAMDNodes AAMetadata;
   I.getAAMetadata(AAMetadata);
-
-  MIRBuilder.buildAtomicCmpXchgWithSuccess(
-      OldValRes, SuccessRes, Addr, Cmp, NewVal,
-      *MF->getMachineMemOperand(MachinePointerInfo(I.getPointerOperand()),
+	auto &MMO = *MF->getMachineMemOperand(MachinePointerInfo(I.getPointerOperand()),
                                 Flags, DL->getTypeStoreSize(ValType),
                                 getMemOpAlignment(I), AAMetadata, nullptr,
                                 I.getSyncScopeID(), I.getSuccessOrdering(),
-                                I.getFailureOrdering()));
+                                I.getFailureOrdering());
+	if (hasBaseOffset) {
+		MMO.setBaseOffset(BaseOffset);
+	}
+
+  MIRBuilder.buildAtomicCmpXchgWithSuccess(
+      OldValRes, SuccessRes, Addr, Cmp, NewVal, MMO);
   return true;
 }
 
@@ -1998,6 +2037,17 @@ bool IRTranslator::translateAtomicRMW(const User &U,
   auto Flags = I.isVolatile() ? MachineMemOperand::MOVolatile
                               : MachineMemOperand::MONone;
   Flags |= MachineMemOperand::MOLoad | MachineMemOperand::MOStore;
+
+
+	bool hasBaseOffset = I.hasMetadata(LLVMContext::MD_sizeinv_offset);
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = I.getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
 
   Type *ResType = I.getType();
 
@@ -2052,13 +2102,16 @@ bool IRTranslator::translateAtomicRMW(const User &U,
 
   AAMDNodes AAMetadata;
   I.getAAMetadata(AAMetadata);
-
-  MIRBuilder.buildAtomicRMW(
-      Opcode, Res, Addr, Val,
-      *MF->getMachineMemOperand(MachinePointerInfo(I.getPointerOperand()),
+	auto MMO = MF->getMachineMemOperand(MachinePointerInfo(I.getPointerOperand()),
                                 Flags, DL->getTypeStoreSize(ResType),
                                 getMemOpAlignment(I), AAMetadata,
-                                nullptr, I.getSyncScopeID(), I.getOrdering()));
+                                nullptr, I.getSyncScopeID(), I.getOrdering());
+	if (hasBaseOffset) {
+		MMO->setBaseOffset(BaseOffset);
+	}
+
+  MIRBuilder.buildAtomicRMW(
+      Opcode, Res, Addr, Val, *MMO);
   return true;
 }
 

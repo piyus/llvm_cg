@@ -8168,7 +8168,7 @@ static SDValue EltsFromConsecutiveLoads(EVT VT, ArrayRef<SDValue> Elts,
     assert(LDBase->isSimple() &&
            "Cannot merge volatile or atomic loads.");
     SDValue NewLd =
-        DAG.getLoad(VT, DL, LDBase->getChain(), LDBase->getBasePtr(),
+        DAG.getLoad(LDBase->getMemOperand(), VT, DL, LDBase->getChain(), LDBase->getBasePtr(),
                     LDBase->getPointerInfo(), LDBase->getAlignment(), MMOFlags);
     for (auto *LD : Loads)
       if (LD)
@@ -22632,9 +22632,9 @@ static SDValue splitVectorStore(StoreSDNode *Store, SelectionDAG &DAG) {
   SDValue Ptr1 = DAG.getMemBasePlusOffset(Ptr0, HalfAlign, DL);
   unsigned Alignment = Store->getAlignment();
   SDValue Ch0 =
-      DAG.getStore(Store->getChain(), DL, Value0, Ptr0, Store->getPointerInfo(),
+      DAG.getStore(Store->getMemOperand(), Store->getChain(), DL, Value0, Ptr0, Store->getPointerInfo(),
                    Alignment, Store->getMemOperand()->getFlags());
-  SDValue Ch1 = DAG.getStore(Store->getChain(), DL, Value1, Ptr1,
+  SDValue Ch1 = DAG.getStore(Store->getMemOperand(), Store->getChain(), DL, Value1, Ptr1,
                              Store->getPointerInfo().getWithOffset(HalfAlign),
                              MinAlign(Alignment, HalfAlign),
                              Store->getMemOperand()->getFlags());
@@ -22668,7 +22668,7 @@ static SDValue scalarizeVectorStore(StoreSDNode *Store, MVT StoreVT,
     SDValue Ptr = DAG.getMemBasePlusOffset(Store->getBasePtr(), Offset, DL);
     SDValue Scl = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, DL, StoreSVT, StoredVal,
                               DAG.getIntPtrConstant(i, DL));
-    SDValue Ch = DAG.getStore(Store->getChain(), DL, Scl, Ptr,
+    SDValue Ch = DAG.getStore(Store->getMemOperand(), Store->getChain(), DL, Scl, Ptr,
                               Store->getPointerInfo().getWithOffset(Offset),
                               MinAlign(Alignment, Offset),
                               Store->getMemOperand()->getFlags());
@@ -22698,7 +22698,7 @@ static SDValue LowerStore(SDValue Op, const X86Subtarget &Subtarget,
     StoredVal = DAG.getBitcast(MVT::i16, StoredVal);
     StoredVal = DAG.getNode(ISD::TRUNCATE, dl, MVT::i8, StoredVal);
 
-    return DAG.getStore(St->getChain(), dl, StoredVal, St->getBasePtr(),
+    return DAG.getStore(St->getMemOperand(), St->getChain(), dl, StoredVal, St->getBasePtr(),
                         St->getPointerInfo(), St->getAlignment(),
                         St->getMemOperand()->getFlags());
   }
@@ -22737,7 +22737,7 @@ static SDValue LowerStore(SDValue Op, const X86Subtarget &Subtarget,
     StoredVal = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, StVT, StoredVal,
                             DAG.getIntPtrConstant(0, dl));
 
-    return DAG.getStore(St->getChain(), dl, StoredVal, St->getBasePtr(),
+    return DAG.getStore(St->getMemOperand(), St->getChain(), dl, StoredVal, St->getBasePtr(),
                         St->getPointerInfo(), St->getAlignment(),
                         St->getMemOperand()->getFlags());
   }
@@ -22772,7 +22772,7 @@ static SDValue LowerLoad(SDValue Op, const X86Subtarget &Subtarget,
     assert(Subtarget.hasAVX512() && !Subtarget.hasDQI() &&
            "Expected AVX512F without AVX512DQI");
 
-    SDValue NewLd = DAG.getLoad(MVT::i8, dl, Ld->getChain(), Ld->getBasePtr(),
+    SDValue NewLd = DAG.getLoad(Ld->getMemOperand(), MVT::i8, dl, Ld->getChain(), Ld->getBasePtr(),
                                 Ld->getPointerInfo(), Ld->getAlignment(),
                                 Ld->getMemOperand()->getFlags());
 
@@ -29589,9 +29589,10 @@ void X86TargetLowering::ReplaceNodeResults(SDNode *N,
     auto *Ld = cast<LoadSDNode>(N);
     if (Subtarget.hasSSE2()) {
       MVT LdVT = Subtarget.is64Bit() && VT.isInteger() ? MVT::i64 : MVT::f64;
-      SDValue Res = DAG.getLoad(LdVT, dl, Ld->getChain(), Ld->getBasePtr(),
+      SDValue Res = DAG.getLoad(Ld->getMemOperand(), LdVT, dl, Ld->getChain(), Ld->getBasePtr(),
                                 Ld->getPointerInfo(), Ld->getAlignment(),
                                 Ld->getMemOperand()->getFlags());
+			DAG.copyBaseOffset(Res, Ld->getMemOperand());
       SDValue Chain = Res.getValue(1);
       MVT VecVT = MVT::getVectorVT(LdVT, 2);
       Res = DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, VecVT, Res);
@@ -37111,7 +37112,7 @@ static SDValue combineExtractWithShuffle(SDNode *N, SelectionDAG &DAG,
     unsigned SrcBCWidth = SrcBC.getScalarValueSizeInBits();
     if (MemIntr->getMemoryVT().getSizeInBits() == SrcBCWidth &&
         VT.getSizeInBits() == SrcBCWidth) {
-      SDValue Load = DAG.getLoad(VT, dl, MemIntr->getChain(),
+      SDValue Load = DAG.getLoad(MemIntr->getMemOperand(), VT, dl, MemIntr->getChain(),
                                  MemIntr->getBasePtr(),
                                  MemIntr->getPointerInfo(),
                                  MemIntr->getAlignment(),
@@ -41323,9 +41324,9 @@ static SDValue combineLoad(SDNode *N, SelectionDAG &DAG,
     EVT HalfVT = EVT::getVectorVT(*DAG.getContext(), MemVT.getScalarType(),
                                   NumElems / 2);
     SDValue Load1 =
-        DAG.getLoad(HalfVT, dl, Ld->getChain(), Ptr1, Ld->getPointerInfo(),
+        DAG.getLoad(Ld->getMemOperand(), HalfVT, dl, Ld->getChain(), Ptr1, Ld->getPointerInfo(),
                     Alignment, Ld->getMemOperand()->getFlags());
-    SDValue Load2 = DAG.getLoad(HalfVT, dl, Ld->getChain(), Ptr2,
+    SDValue Load2 = DAG.getLoad(Ld->getMemOperand(), HalfVT, dl, Ld->getChain(), Ptr2,
                                 Ld->getPointerInfo().getWithOffset(HalfAlign),
                                 MinAlign(Alignment, HalfAlign),
                                 Ld->getMemOperand()->getFlags());
@@ -41343,7 +41344,7 @@ static SDValue combineLoad(SDNode *N, SelectionDAG &DAG,
     unsigned NumElts = RegVT.getVectorNumElements();
     EVT IntVT = EVT::getIntegerVT(*DAG.getContext(), NumElts);
     if (TLI.isTypeLegal(IntVT)) {
-      SDValue IntLoad = DAG.getLoad(IntVT, dl, Ld->getChain(), Ld->getBasePtr(),
+      SDValue IntLoad = DAG.getLoad(Ld->getMemOperand(), IntVT, dl, Ld->getChain(), Ld->getBasePtr(),
                                     Ld->getPointerInfo(), Alignment,
                                     Ld->getMemOperand()->getFlags());
       SDValue BoolVec = DAG.getBitcast(RegVT, IntLoad);
@@ -41436,7 +41437,7 @@ reduceMaskedLoadToScalarLoad(MaskedLoadSDNode *ML, SelectionDAG &DAG,
   EVT VT = ML->getValueType(0);
   EVT EltVT = VT.getVectorElementType();
   SDValue Load =
-      DAG.getLoad(EltVT, DL, ML->getChain(), Addr, ML->getPointerInfo(),
+      DAG.getLoad(ML->getMemOperand(), EltVT, DL, ML->getChain(), Addr, ML->getPointerInfo(),
                   Alignment, ML->getMemOperand()->getFlags());
 
   // Insert the loaded element into the appropriate place in the vector.
@@ -41538,7 +41539,7 @@ static SDValue reduceMaskedStoreToScalarStore(MaskedStoreSDNode *MS,
                                 MS->getValue(), VecIndex);
 
   // Store that element at the appropriate offset from the base pointer.
-  return DAG.getStore(MS->getChain(), DL, Extract, Addr, MS->getPointerInfo(),
+  return DAG.getStore(MS->getMemOperand(), MS->getChain(), DL, Extract, Addr, MS->getPointerInfo(),
                       Alignment, MS->getMemOperand()->getFlags());
 }
 
@@ -41599,7 +41600,7 @@ static SDValue combineStore(SDNode *N, SelectionDAG &DAG,
     EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), VT.getVectorNumElements());
     StoredVal = DAG.getBitcast(NewVT, StoredVal);
 
-    return DAG.getStore(St->getChain(), dl, StoredVal, St->getBasePtr(),
+    return DAG.getStore(St->getMemOperand(), St->getChain(), dl, StoredVal, St->getBasePtr(),
                         St->getPointerInfo(), St->getAlignment(),
                         St->getMemOperand()->getFlags());
   }
@@ -41609,7 +41610,7 @@ static SDValue combineStore(SDNode *N, SelectionDAG &DAG,
   if (VT == MVT::v1i1 && VT == StVT && Subtarget.hasAVX512() &&
       StoredVal.getOpcode() == ISD::SCALAR_TO_VECTOR &&
       StoredVal.getOperand(0).getValueType() == MVT::i8) {
-    return DAG.getStore(St->getChain(), dl, StoredVal.getOperand(0),
+    return DAG.getStore(St->getMemOperand(), St->getChain(), dl, StoredVal.getOperand(0),
                         St->getBasePtr(), St->getPointerInfo(),
                         St->getAlignment(), St->getMemOperand()->getFlags());
   }
@@ -41621,7 +41622,7 @@ static SDValue combineStore(SDNode *N, SelectionDAG &DAG,
     SmallVector<SDValue, 4> Ops(NumConcats, DAG.getUNDEF(VT));
     Ops[0] = StoredVal;
     StoredVal = DAG.getNode(ISD::CONCAT_VECTORS, dl, MVT::v8i1, Ops);
-    return DAG.getStore(St->getChain(), dl, StoredVal, St->getBasePtr(),
+    return DAG.getStore(St->getMemOperand(), St->getChain(), dl, StoredVal, St->getBasePtr(),
                         St->getPointerInfo(), St->getAlignment(),
                         St->getMemOperand()->getFlags());
   }
@@ -41643,10 +41644,10 @@ static SDValue combineStore(SDNode *N, SelectionDAG &DAG,
       SDValue Ptr1 = DAG.getMemBasePlusOffset(Ptr0, 4, dl);
 
       SDValue Ch0 =
-          DAG.getStore(St->getChain(), dl, Lo, Ptr0, St->getPointerInfo(),
+          DAG.getStore(St->getMemOperand(), St->getChain(), dl, Lo, Ptr0, St->getPointerInfo(),
                        Alignment, St->getMemOperand()->getFlags());
       SDValue Ch1 =
-          DAG.getStore(St->getChain(), dl, Hi, Ptr1,
+          DAG.getStore(St->getMemOperand(), St->getChain(), dl, Hi, Ptr1,
                        St->getPointerInfo().getWithOffset(4),
                        MinAlign(Alignment, 4U),
                        St->getMemOperand()->getFlags());
@@ -41654,7 +41655,7 @@ static SDValue combineStore(SDNode *N, SelectionDAG &DAG,
     }
 
     StoredVal = combinevXi1ConstantToInteger(StoredVal, DAG);
-    return DAG.getStore(St->getChain(), dl, StoredVal, St->getBasePtr(),
+    return DAG.getStore(St->getMemOperand(), St->getChain(), dl, StoredVal, St->getBasePtr(),
                         St->getPointerInfo(), St->getAlignment(),
                         St->getMemOperand()->getFlags());
   }
@@ -41727,7 +41728,7 @@ static SDValue combineStore(SDNode *N, SelectionDAG &DAG,
     if (DCI.isBeforeLegalize() || TLI.isTypeLegal(St->getMemoryVT()))
       if (SDValue Avg = detectAVGPattern(St->getValue(), St->getMemoryVT(), DAG,
                                          Subtarget, dl))
-        return DAG.getStore(St->getChain(), dl, Avg, St->getBasePtr(),
+        return DAG.getStore(St->getMemOperand(), St->getChain(), dl, Avg, St->getBasePtr(),
                             St->getPointerInfo(), St->getAlignment(),
                             St->getMemOperand()->getFlags());
 
@@ -41799,7 +41800,7 @@ static SDValue combineStore(SDNode *N, SelectionDAG &DAG,
     SDValue BitCast = DAG.getBitcast(VecVT, ExtOp0);
     SDValue NewExtract = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, MVT::f64,
                                      BitCast, OldExtract.getOperand(1));
-    return DAG.getStore(St->getChain(), dl, NewExtract, St->getBasePtr(),
+    return DAG.getStore(St->getMemOperand(), St->getChain(), dl, NewExtract, St->getBasePtr(),
                         St->getPointerInfo(), St->getAlignment(),
                         St->getMemOperand()->getFlags());
   }
@@ -45948,7 +45949,7 @@ static SDValue combineExtInVec(SDNode *N, SelectionDAG &DAG,
                                    VT.getVectorNumElements());
       if (TLI.isLoadExtLegal(Ext, VT, MemVT)) {
         SDValue Load =
-            DAG.getExtLoad(Ext, SDLoc(N), VT, Ld->getChain(), Ld->getBasePtr(),
+            DAG.getExtLoad(Ld->getMemOperand(), Ext, SDLoc(N), VT, Ld->getChain(), Ld->getBasePtr(),
                            Ld->getPointerInfo(), MemVT, Ld->getAlignment(),
                            Ld->getMemOperand()->getFlags());
         DAG.ReplaceAllUsesOfValueWith(SDValue(Ld, 1), Load.getValue(1));

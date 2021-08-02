@@ -86,6 +86,7 @@ class LLVM_LIBRARY_VISIBILITY X86AsmPrinter : public AsmPrinter {
   void LowerFAULTING_OP(const MachineInstr &MI, X86MCInstLower &MCIL);
   void LowerPATCHABLE_OP(const MachineInstr &MI, X86MCInstLower &MCIL);
 
+	void EmitMetadata(const MachineInstr *MI);
   void LowerTlsAddr(X86MCInstLower &MCInstLowering, const MachineInstr &MI);
 
   // XRay-specific lowering for X86.

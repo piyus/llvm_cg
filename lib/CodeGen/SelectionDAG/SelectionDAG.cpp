@@ -6810,6 +6810,33 @@ static MachinePointerInfo InferPointerInfo(const MachinePointerInfo &Info,
   return Info;
 }
 
+SDValue SelectionDAG::getLoad(MachineMemOperand *Src, ISD::MemIndexedMode AM, ISD::LoadExtType ExtType,
+                              EVT VT, const SDLoc &dl, SDValue Chain,
+                              SDValue Ptr, SDValue Offset,
+                              MachinePointerInfo PtrInfo, EVT MemVT,
+                              unsigned Alignment,
+                              MachineMemOperand::Flags MMOFlags,
+                              const AAMDNodes &AAInfo, const MDNode *Ranges) {
+  assert(Chain.getValueType() == MVT::Other &&
+        "Invalid chain type");
+  if (Alignment == 0)  // Ensure that codegen never sees alignment 0
+    Alignment = getEVTAlignment(MemVT);
+
+  MMOFlags |= MachineMemOperand::MOLoad;
+  assert((MMOFlags & MachineMemOperand::MOStore) == 0);
+  // If we don't have a PtrInfo, infer the trivial frame index case to simplify
+  // clients.
+  if (PtrInfo.V.isNull())
+    PtrInfo = InferPointerInfo(PtrInfo, *this, Ptr, Offset);
+
+  MachineFunction &MF = getMachineFunction();
+  MachineMemOperand *MMO = MF.getMachineMemOperand(
+      PtrInfo, MMOFlags, MemVT.getStoreSize(), Alignment, AAInfo, Ranges);
+  auto Ret = getLoad(AM, ExtType, VT, dl, Chain, Ptr, Offset, MemVT, MMO);
+	copyBaseOffset(Ret, Src);
+	return Ret;
+}
+
 SDValue SelectionDAG::getLoad(ISD::MemIndexedMode AM, ISD::LoadExtType ExtType,
                               EVT VT, const SDLoc &dl, SDValue Chain,
                               SDValue Ptr, SDValue Offset,
@@ -6884,6 +6911,26 @@ SDValue SelectionDAG::getLoad(ISD::MemIndexedMode AM, ISD::LoadExtType ExtType,
   return V;
 }
 
+void SelectionDAG::copyBaseOffset(SDValue SD, MachineMemOperand *MMO)
+{
+	if (MMO->hasBaseOffset()) {
+		assert(isa<MemSDNode>(SD));
+		cast<MemSDNode>(SD)->setBaseOffset(MMO->getBaseOffset());
+	}
+}
+
+SDValue SelectionDAG::getLoad(MachineMemOperand *Src, EVT VT, const SDLoc &dl, SDValue Chain,
+                              SDValue Ptr, MachinePointerInfo PtrInfo,
+                              unsigned Alignment,
+                              MachineMemOperand::Flags MMOFlags,
+                              const AAMDNodes &AAInfo, const MDNode *Ranges) {
+  SDValue Undef = getUNDEF(Ptr.getValueType());
+  auto Ret = getLoad(ISD::UNINDEXED, ISD::NON_EXTLOAD, VT, dl, Chain, Ptr, Undef,
+                 PtrInfo, VT, Alignment, MMOFlags, AAInfo, Ranges);
+	copyBaseOffset(Ret, Src);
+	return Ret;
+}
+
 SDValue SelectionDAG::getLoad(EVT VT, const SDLoc &dl, SDValue Chain,
                               SDValue Ptr, MachinePointerInfo PtrInfo,
                               unsigned Alignment,
@@ -6899,6 +6946,19 @@ SDValue SelectionDAG::getLoad(EVT VT, const SDLoc &dl, SDValue Chain,
   SDValue Undef = getUNDEF(Ptr.getValueType());
   return getLoad(ISD::UNINDEXED, ISD::NON_EXTLOAD, VT, dl, Chain, Ptr, Undef,
                  VT, MMO);
+}
+
+SDValue SelectionDAG::getExtLoad(MachineMemOperand *Src, ISD::LoadExtType ExtType, const SDLoc &dl,
+                                 EVT VT, SDValue Chain, SDValue Ptr,
+                                 MachinePointerInfo PtrInfo, EVT MemVT,
+                                 unsigned Alignment,
+                                 MachineMemOperand::Flags MMOFlags,
+                                 const AAMDNodes &AAInfo) {
+  SDValue Undef = getUNDEF(Ptr.getValueType());
+  auto Ret = getLoad(ISD::UNINDEXED, ExtType, VT, dl, Chain, Ptr, Undef, PtrInfo,
+                 MemVT, Alignment, MMOFlags, AAInfo);
+	copyBaseOffset(Ret, Src);
+	return Ret;
 }
 
 SDValue SelectionDAG::getExtLoad(ISD::LoadExtType ExtType, const SDLoc &dl,
@@ -6929,10 +6989,33 @@ SDValue SelectionDAG::getIndexedLoad(SDValue OrigLoad, const SDLoc &dl,
   auto MMOFlags =
       LD->getMemOperand()->getFlags() &
       ~(MachineMemOperand::MOInvariant | MachineMemOperand::MODereferenceable);
-  return getLoad(AM, LD->getExtensionType(), OrigLoad.getValueType(), dl,
+  return getLoad(LD->getMemOperand(), AM, LD->getExtensionType(), OrigLoad.getValueType(), dl,
                  LD->getChain(), Base, Offset, LD->getPointerInfo(),
                  LD->getMemoryVT(), LD->getAlignment(), MMOFlags,
                  LD->getAAInfo());
+}
+
+SDValue SelectionDAG::getStore(MachineMemOperand *Src, SDValue Chain, const SDLoc &dl, SDValue Val,
+                               SDValue Ptr, MachinePointerInfo PtrInfo,
+                               unsigned Alignment,
+                               MachineMemOperand::Flags MMOFlags,
+                               const AAMDNodes &AAInfo) {
+  assert(Chain.getValueType() == MVT::Other && "Invalid chain type");
+  if (Alignment == 0)  // Ensure that codegen never sees alignment 0
+    Alignment = getEVTAlignment(Val.getValueType());
+
+  MMOFlags |= MachineMemOperand::MOStore;
+  assert((MMOFlags & MachineMemOperand::MOLoad) == 0);
+
+  if (PtrInfo.V.isNull())
+    PtrInfo = InferPointerInfo(PtrInfo, *this, Ptr);
+
+  MachineFunction &MF = getMachineFunction();
+  MachineMemOperand *MMO = MF.getMachineMemOperand(
+      PtrInfo, MMOFlags, Val.getValueType().getStoreSize(), Alignment, AAInfo);
+  auto Ret = getStore(Chain, dl, Val, Ptr, MMO);
+	copyBaseOffset(Ret, Src);
+	return Ret;
 }
 
 SDValue SelectionDAG::getStore(SDValue Chain, const SDLoc &dl, SDValue Val,
@@ -6984,6 +7067,30 @@ SDValue SelectionDAG::getStore(SDValue Chain, const SDLoc &dl, SDValue Val,
   SDValue V(N, 0);
   NewSDValueDbgMsg(V, "Creating new node: ", this);
   return V;
+}
+
+SDValue SelectionDAG::getTruncStore(MachineMemOperand *Src, SDValue Chain, const SDLoc &dl, SDValue Val,
+                                    SDValue Ptr, MachinePointerInfo PtrInfo,
+                                    EVT SVT, unsigned Alignment,
+                                    MachineMemOperand::Flags MMOFlags,
+                                    const AAMDNodes &AAInfo) {
+  assert(Chain.getValueType() == MVT::Other &&
+        "Invalid chain type");
+  if (Alignment == 0)  // Ensure that codegen never sees alignment 0
+    Alignment = getEVTAlignment(SVT);
+
+  MMOFlags |= MachineMemOperand::MOStore;
+  assert((MMOFlags & MachineMemOperand::MOLoad) == 0);
+
+  if (PtrInfo.V.isNull())
+    PtrInfo = InferPointerInfo(PtrInfo, *this, Ptr);
+
+  MachineFunction &MF = getMachineFunction();
+  MachineMemOperand *MMO = MF.getMachineMemOperand(
+      PtrInfo, MMOFlags, SVT.getStoreSize(), Alignment, AAInfo);
+  auto Ret = getTruncStore(Chain, dl, Val, Ptr, SVT, MMO);
+	copyBaseOffset(Ret, Src);
+	return Ret;
 }
 
 SDValue SelectionDAG::getTruncStore(SDValue Chain, const SDLoc &dl, SDValue Val,

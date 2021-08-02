@@ -4065,6 +4065,16 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
       isDereferenceablePointer(SV, I.getType(), DAG.getDataLayout());
   unsigned Alignment = I.getAlignment();
 
+	bool hasBaseOffset = I.hasMetadata(LLVMContext::MD_sizeinv_offset);
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = I.getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
+
   AAMDNodes AAInfo;
   I.getAAMetadata(AAInfo);
   const MDNode *Ranges = I.getMetadata(LLVMContext::MD_range);
@@ -4139,9 +4149,13 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
       MMOFlags |= MachineMemOperand::MODereferenceable;
     MMOFlags |= TLI.getMMOFlags(I);
 
+
     SDValue L = DAG.getLoad(MemVTs[i], dl, Root, A,
                             MachinePointerInfo(SV, Offsets[i]), Alignment,
                             MMOFlags, AAInfo, Ranges);
+		if (hasBaseOffset) {
+			cast<MemSDNode>(L)->setBaseOffset(BaseOffset);
+		}
     Chains[ChainI] = L.getValue(1);
 
     if (MemVTs[i] != ValueVTs[i])
@@ -4271,6 +4285,16 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
     MMOFlags |= MachineMemOperand::MONonTemporal;
   MMOFlags |= TLI.getMMOFlags(I);
 
+	bool hasBaseOffset = I.hasMetadata(LLVMContext::MD_sizeinv_offset);
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = I.getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
+
   // An aggregate load cannot wrap around the address space, so offsets to its
   // parts don't wrap either.
   SDNodeFlags Flags;
@@ -4292,6 +4316,9 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
     SDValue St =
         DAG.getStore(Root, dl, Val, Add, MachinePointerInfo(PtrV, Offsets[i]),
                      Alignment, MMOFlags, AAInfo);
+		if (hasBaseOffset) {
+			cast<MemSDNode>(St)->setBaseOffset(BaseOffset);
+		}
     Chains[ChainI] = St;
   }
 
@@ -4640,12 +4667,25 @@ void SelectionDAGBuilder::visitAtomicCmpXchg(const AtomicCmpXchgInst &I) {
     Flags |= MachineMemOperand::MOVolatile;
   Flags |= DAG.getTargetLoweringInfo().getMMOFlags(I);
 
+	bool hasBaseOffset = I.hasMetadata(LLVMContext::MD_sizeinv_offset);
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = I.getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
+
   MachineFunction &MF = DAG.getMachineFunction();
   MachineMemOperand *MMO =
     MF.getMachineMemOperand(MachinePointerInfo(I.getPointerOperand()),
                             Flags, MemVT.getStoreSize(), Alignment,
                             AAMDNodes(), nullptr, SSID, SuccessOrdering,
                             FailureOrdering);
+	if (hasBaseOffset) {
+		MMO->setBaseOffset(BaseOffset);
+	}
 
   SDValue L = DAG.getAtomicCmpSwap(ISD::ATOMIC_CMP_SWAP_WITH_SUCCESS,
                                    dl, MemVT, VTs, InChain,
@@ -4691,11 +4731,25 @@ void SelectionDAGBuilder::visitAtomicRMW(const AtomicRMWInst &I) {
     Flags |= MachineMemOperand::MOVolatile;
   Flags |= DAG.getTargetLoweringInfo().getMMOFlags(I);
 
+
+	bool hasBaseOffset = I.hasMetadata(LLVMContext::MD_sizeinv_offset);
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = I.getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
+
   MachineFunction &MF = DAG.getMachineFunction();
   MachineMemOperand *MMO =
     MF.getMachineMemOperand(MachinePointerInfo(I.getPointerOperand()), Flags,
                             MemVT.getStoreSize(), Alignment, AAMDNodes(),
                             nullptr, SSID, Ordering);
+	if (hasBaseOffset) {
+		MMO->setBaseOffset(BaseOffset);
+	}
 
   SDValue L =
     DAG.getAtomic(NT, dl, MemVT, InChain,
@@ -4746,6 +4800,16 @@ void SelectionDAGBuilder::visitAtomicLoad(const LoadInst &I) {
 
   Flags |= TLI.getMMOFlags(I);
 
+	bool hasBaseOffset = I.hasMetadata(LLVMContext::MD_sizeinv_offset);
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = I.getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
+
   MachineMemOperand *MMO =
       DAG.getMachineFunction().
       getMachineMemOperand(MachinePointerInfo(I.getPointerOperand()),
@@ -4753,6 +4817,10 @@ void SelectionDAGBuilder::visitAtomicLoad(const LoadInst &I) {
                            I.getAlignment() ? I.getAlignment() :
                                               DAG.getEVTAlignment(MemVT),
                            AAMDNodes(), nullptr, SSID, Order);
+
+	if (hasBaseOffset) {
+		MMO->setBaseOffset(BaseOffset);
+	}
 
   InChain = TLI.prepareVolatileOrAtomicLoad(InChain, dl, DAG);
 
@@ -4805,11 +4873,26 @@ void SelectionDAGBuilder::visitAtomicStore(const StoreInst &I) {
     Flags |= MachineMemOperand::MOVolatile;
   Flags |= TLI.getMMOFlags(I);
 
+	bool hasBaseOffset = I.hasMetadata(LLVMContext::MD_sizeinv_offset);
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = I.getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
+
+
+
   MachineFunction &MF = DAG.getMachineFunction();
   MachineMemOperand *MMO =
     MF.getMachineMemOperand(MachinePointerInfo(I.getPointerOperand()), Flags,
                             MemVT.getStoreSize(), I.getAlignment(), AAMDNodes(),
                             nullptr, SSID, Ordering);
+	if (hasBaseOffset) {
+		MMO->setBaseOffset(BaseOffset);
+	}
 
   SDValue Val = getValue(I.getValueOperand());
   if (Val.getValueType() != MemVT)

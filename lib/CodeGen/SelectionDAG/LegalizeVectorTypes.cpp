@@ -326,7 +326,7 @@ SDValue DAGTypeLegalizer::ScalarizeVecRes_INSERT_VECTOR_ELT(SDNode *N) {
 SDValue DAGTypeLegalizer::ScalarizeVecRes_LOAD(LoadSDNode *N) {
   assert(N->isUnindexed() && "Indexed vector load?");
 
-  SDValue Result = DAG.getLoad(
+  SDValue Result = DAG.getLoad(N->getMemOperand(),
       ISD::UNINDEXED, N->getExtensionType(),
       N->getValueType(0).getVectorElementType(), SDLoc(N), N->getChain(),
       N->getBasePtr(), DAG.getUNDEF(N->getBasePtr().getValueType()),
@@ -1503,6 +1503,7 @@ void DAGTypeLegalizer::SplitVecRes_LOAD(LoadSDNode *LD, SDValue &Lo,
   SDValue Offset = DAG.getUNDEF(Ptr.getValueType());
   EVT MemoryVT = LD->getMemoryVT();
   unsigned Alignment = LD->getOriginalAlignment();
+	auto MMO = LD->getMemOperand();
   MachineMemOperand::Flags MMOFlags = LD->getMemOperand()->getFlags();
   AAMDNodes AAInfo = LD->getAAInfo();
 
@@ -1511,12 +1512,14 @@ void DAGTypeLegalizer::SplitVecRes_LOAD(LoadSDNode *LD, SDValue &Lo,
 
   Lo = DAG.getLoad(ISD::UNINDEXED, ExtType, LoVT, dl, Ch, Ptr, Offset,
                    LD->getPointerInfo(), LoMemVT, Alignment, MMOFlags, AAInfo);
+	DAG.copyBaseOffset(Lo, MMO);
 
   unsigned IncrementSize = LoMemVT.getSizeInBits()/8;
   Ptr = DAG.getObjectPtrOffset(dl, Ptr, IncrementSize);
   Hi = DAG.getLoad(ISD::UNINDEXED, ExtType, HiVT, dl, Ch, Ptr, Offset,
                    LD->getPointerInfo().getWithOffset(IncrementSize), HiMemVT,
                    Alignment, MMOFlags, AAInfo);
+	DAG.copyBaseOffset(Hi, MMO);
 
   // Build a factor node to remember that this load is independent of the
   // other one.
@@ -2438,6 +2441,7 @@ SDValue DAGTypeLegalizer::SplitVecOp_STORE(StoreSDNode *N, unsigned OpNo) {
   SDValue Ptr = N->getBasePtr();
   EVT MemoryVT = N->getMemoryVT();
   unsigned Alignment = N->getOriginalAlignment();
+	auto MMO = N->getMemOperand();
   MachineMemOperand::Flags MMOFlags = N->getMemOperand()->getFlags();
   AAMDNodes AAInfo = N->getAAInfo();
   SDValue Lo, Hi;
@@ -2458,6 +2462,7 @@ SDValue DAGTypeLegalizer::SplitVecOp_STORE(StoreSDNode *N, unsigned OpNo) {
   else
     Lo = DAG.getStore(Ch, DL, Lo, Ptr, N->getPointerInfo(), Alignment, MMOFlags,
                       AAInfo);
+	DAG.copyBaseOffset(Lo, MMO);
 
   // Increment the pointer to the other half.
   Ptr = DAG.getObjectPtrOffset(DL, Ptr, IncrementSize);
@@ -2470,6 +2475,8 @@ SDValue DAGTypeLegalizer::SplitVecOp_STORE(StoreSDNode *N, unsigned OpNo) {
     Hi = DAG.getStore(Ch, DL, Hi, Ptr,
                       N->getPointerInfo().getWithOffset(IncrementSize),
                       Alignment, MMOFlags, AAInfo);
+
+	DAG.copyBaseOffset(Hi, MMO);
 
   return DAG.getNode(ISD::TokenFactor, DL, MVT::Other, Lo, Hi);
 }
@@ -4880,6 +4887,7 @@ SDValue DAGTypeLegalizer::GenWidenVectorLoads(SmallVectorImpl<SDValue> &LdChain,
   SDValue Chain = LD->getChain();
   SDValue BasePtr = LD->getBasePtr();
   unsigned Align = LD->getAlignment();
+  auto MMO = LD->getMemOperand();
   MachineMemOperand::Flags MMOFlags = LD->getMemOperand()->getFlags();
   AAMDNodes AAInfo = LD->getAAInfo();
 
@@ -4892,6 +4900,7 @@ SDValue DAGTypeLegalizer::GenWidenVectorLoads(SmallVectorImpl<SDValue> &LdChain,
   int NewVTWidth = NewVT.getSizeInBits();
   SDValue LdOp = DAG.getLoad(NewVT, dl, Chain, BasePtr, LD->getPointerInfo(),
                              Align, MMOFlags, AAInfo);
+	DAG.copyBaseOffset(LdOp, MMO);
   LdChain.push_back(LdOp.getValue(1));
 
   // Check if we can load the element with one instruction.
@@ -4935,6 +4944,7 @@ SDValue DAGTypeLegalizer::GenWidenVectorLoads(SmallVectorImpl<SDValue> &LdChain,
       L = DAG.getLoad(NewVT, dl, Chain, BasePtr,
                       LD->getPointerInfo().getWithOffset(Offset),
                       MinAlign(Align, Increment), MMOFlags, AAInfo);
+			DAG.copyBaseOffset(L, MMO);
       LdChain.push_back(L.getValue(1));
       if (L->getValueType(0).isVector() && NewVTWidth >= LdWidth) {
         // Later code assumes the vector loads produced will be mergeable, so we
@@ -4953,6 +4963,7 @@ SDValue DAGTypeLegalizer::GenWidenVectorLoads(SmallVectorImpl<SDValue> &LdChain,
       L = DAG.getLoad(NewVT, dl, Chain, BasePtr,
                       LD->getPointerInfo().getWithOffset(Offset),
                       MinAlign(Align, Increment), MMOFlags, AAInfo);
+			DAG.copyBaseOffset(L, MMO);
       LdChain.push_back(L.getValue(1));
     }
 
@@ -5030,6 +5041,7 @@ DAGTypeLegalizer::GenWidenVectorExtLoads(SmallVectorImpl<SDValue> &LdChain,
   SDValue Chain = LD->getChain();
   SDValue BasePtr = LD->getBasePtr();
   unsigned Align = LD->getAlignment();
+	auto MMO = LD->getMemOperand();
   MachineMemOperand::Flags MMOFlags = LD->getMemOperand()->getFlags();
   AAMDNodes AAInfo = LD->getAAInfo();
 
@@ -5041,16 +5053,20 @@ DAGTypeLegalizer::GenWidenVectorExtLoads(SmallVectorImpl<SDValue> &LdChain,
   unsigned WidenNumElts = WidenVT.getVectorNumElements();
   SmallVector<SDValue, 16> Ops(WidenNumElts);
   unsigned Increment = LdEltVT.getSizeInBits() / 8;
-  Ops[0] =
+ 	auto Val =
       DAG.getExtLoad(ExtType, dl, EltVT, Chain, BasePtr, LD->getPointerInfo(),
                      LdEltVT, Align, MMOFlags, AAInfo);
+	DAG.copyBaseOffset(Val, MMO);
+	Ops[0] = Val;
   LdChain.push_back(Ops[0].getValue(1));
   unsigned i = 0, Offset = Increment;
   for (i=1; i < NumElts; ++i, Offset += Increment) {
     SDValue NewBasePtr = DAG.getObjectPtrOffset(dl, BasePtr, Offset);
-    Ops[i] = DAG.getExtLoad(ExtType, dl, EltVT, Chain, NewBasePtr,
+    auto Val = DAG.getExtLoad(ExtType, dl, EltVT, Chain, NewBasePtr,
                             LD->getPointerInfo().getWithOffset(Offset), LdEltVT,
                             Align, MMOFlags, AAInfo);
+		DAG.copyBaseOffset(Val, MMO);
+		Ops[i] = Val;
     LdChain.push_back(Ops[i].getValue(1));
   }
 
@@ -5070,6 +5086,7 @@ void DAGTypeLegalizer::GenWidenVectorStores(SmallVectorImpl<SDValue> &StChain,
   SDValue  Chain = ST->getChain();
   SDValue  BasePtr = ST->getBasePtr();
   unsigned Align = ST->getAlignment();
+	auto MMO = ST->getMemOperand();
   MachineMemOperand::Flags MMOFlags = ST->getMemOperand()->getFlags();
   AAMDNodes AAInfo = ST->getAAInfo();
   SDValue  ValOp = GetWidenedVector(ST->getValue());
@@ -5096,9 +5113,11 @@ void DAGTypeLegalizer::GenWidenVectorStores(SmallVectorImpl<SDValue> &StChain,
         SDValue EOp = DAG.getNode(
             ISD::EXTRACT_SUBVECTOR, dl, NewVT, ValOp,
             DAG.getConstant(Idx, dl, TLI.getVectorIdxTy(DAG.getDataLayout())));
-        StChain.push_back(DAG.getStore(
+				auto Val = DAG.getStore(
             Chain, dl, EOp, BasePtr, ST->getPointerInfo().getWithOffset(Offset),
-            MinAlign(Align, Offset), MMOFlags, AAInfo));
+            MinAlign(Align, Offset), MMOFlags, AAInfo);
+				DAG.copyBaseOffset(Val, MMO);
+        StChain.push_back(Val);
         StWidth -= NewVTWidth;
         Offset += Increment;
         Idx += NumVTElts;
@@ -5117,9 +5136,11 @@ void DAGTypeLegalizer::GenWidenVectorStores(SmallVectorImpl<SDValue> &StChain,
             ISD::EXTRACT_VECTOR_ELT, dl, NewVT, VecOp,
             DAG.getConstant(Idx++, dl,
                             TLI.getVectorIdxTy(DAG.getDataLayout())));
-        StChain.push_back(DAG.getStore(
+				auto Val = DAG.getStore(
             Chain, dl, EOp, BasePtr, ST->getPointerInfo().getWithOffset(Offset),
-            MinAlign(Align, Offset), MMOFlags, AAInfo));
+            MinAlign(Align, Offset), MMOFlags, AAInfo);
+				DAG.copyBaseOffset(Val, MMO);
+        StChain.push_back(Val);
         StWidth -= NewVTWidth;
         Offset += Increment;
         BasePtr = DAG.getObjectPtrOffset(dl, BasePtr, Increment);
@@ -5138,6 +5159,7 @@ DAGTypeLegalizer::GenWidenVectorTruncStores(SmallVectorImpl<SDValue> &StChain,
   SDValue Chain = ST->getChain();
   SDValue BasePtr = ST->getBasePtr();
   unsigned Align = ST->getAlignment();
+	auto MMO = ST->getMemOperand();
   MachineMemOperand::Flags MMOFlags = ST->getMemOperand()->getFlags();
   AAMDNodes AAInfo = ST->getAAInfo();
   SDValue ValOp = GetWidenedVector(ST->getValue());
@@ -5160,18 +5182,24 @@ DAGTypeLegalizer::GenWidenVectorTruncStores(SmallVectorImpl<SDValue> &StChain,
   SDValue EOp = DAG.getNode(
       ISD::EXTRACT_VECTOR_ELT, dl, ValEltVT, ValOp,
       DAG.getConstant(0, dl, TLI.getVectorIdxTy(DAG.getDataLayout())));
-  StChain.push_back(DAG.getTruncStore(Chain, dl, EOp, BasePtr,
-                                      ST->getPointerInfo(), StEltVT, Align,
-                                      MMOFlags, AAInfo));
+
+	auto Val = DAG.getTruncStore(ST->getMemOperand(), Chain, dl, EOp, BasePtr,
+                               ST->getPointerInfo(), StEltVT, Align,
+                               MMOFlags, AAInfo);
+	DAG.copyBaseOffset(Val, MMO);
+  StChain.push_back(Val);
   unsigned Offset = Increment;
   for (unsigned i=1; i < NumElts; ++i, Offset += Increment) {
     SDValue NewBasePtr = DAG.getObjectPtrOffset(dl, BasePtr, Offset);
     SDValue EOp = DAG.getNode(
         ISD::EXTRACT_VECTOR_ELT, dl, ValEltVT, ValOp,
         DAG.getConstant(0, dl, TLI.getVectorIdxTy(DAG.getDataLayout())));
-    StChain.push_back(DAG.getTruncStore(
+
+		auto Val = DAG.getTruncStore(ST->getMemOperand(),
         Chain, dl, EOp, NewBasePtr, ST->getPointerInfo().getWithOffset(Offset),
-        StEltVT, MinAlign(Align, Offset), MMOFlags, AAInfo));
+        StEltVT, MinAlign(Align, Offset), MMOFlags, AAInfo);
+		DAG.copyBaseOffset(Val, MMO);
+    StChain.push_back(Val);
   }
 }
 

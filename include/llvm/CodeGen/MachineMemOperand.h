@@ -173,6 +173,7 @@ private:
   MachineAtomicInfo AtomicInfo;
   AAMDNodes AAInfo;
   const MDNode *Ranges;
+	int64_t BaseOffset;
 
 public:
   /// Construct a MachineMemOperand object with the specified PtrInfo, flags,
@@ -186,7 +187,8 @@ public:
                     const MDNode *Ranges = nullptr,
                     SyncScope::ID SSID = SyncScope::System,
                     AtomicOrdering Ordering = AtomicOrdering::NotAtomic,
-                    AtomicOrdering FailureOrdering = AtomicOrdering::NotAtomic);
+                    AtomicOrdering FailureOrdering = AtomicOrdering::NotAtomic,
+										int64_t BaseOffset = 1234);
 
   const MachinePointerInfo &getPointerInfo() const { return PtrInfo; }
 
@@ -210,6 +212,10 @@ public:
 
   /// Bitwise OR the current flags with the given flags.
   void setFlags(Flags f) { FlagVals |= f; }
+
+	int64_t getBaseOffset() const { assert(FlagVals & MOTargetFlag3); return BaseOffset; }
+	void setBaseOffset(int64_t Offset) { FlagVals |= MOTargetFlag3; BaseOffset = Offset;  }
+	bool hasBaseOffset() const { return (FlagVals & MOTargetFlag3) != 0; }
 
   /// For normal values, this is a byte offset added to the base address.
   /// For PseudoSourceValue::FPRel values, this is the FrameIndex number.

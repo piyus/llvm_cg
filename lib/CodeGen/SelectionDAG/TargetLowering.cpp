@@ -6579,7 +6579,7 @@ TargetLowering::scalarizeVectorLoad(LoadSDNode *LD,
 
   for (unsigned Idx = 0; Idx < NumElem; ++Idx) {
     SDValue ScalarLoad =
-        DAG.getExtLoad(ExtType, SL, DstEltVT, Chain, BasePTR,
+        DAG.getExtLoad(LD->getMemOperand(), ExtType, SL, DstEltVT, Chain, BasePTR,
                        LD->getPointerInfo().getWithOffset(Idx * Stride),
                        SrcEltVT, MinAlign(LD->getAlignment(), Idx * Stride),
                        LD->getMemOperand()->getFlags(), LD->getAAInfo());
@@ -6641,7 +6641,7 @@ SDValue TargetLowering::scalarizeVectorStore(StoreSDNode *ST,
       CurrVal = DAG.getNode(ISD::OR, SL, IntVT, CurrVal, ShiftedElt);
     }
 
-    return DAG.getStore(Chain, SL, CurrVal, BasePtr, ST->getPointerInfo(),
+    return DAG.getStore(ST->getMemOperand(), Chain, SL, CurrVal, BasePtr, ST->getPointerInfo(),
                         ST->getAlignment(), ST->getMemOperand()->getFlags(),
                         ST->getAAInfo());
   }
@@ -6659,7 +6659,7 @@ SDValue TargetLowering::scalarizeVectorStore(StoreSDNode *ST,
     SDValue Ptr = DAG.getObjectPtrOffset(SL, BasePtr, Idx * Stride);
 
     // This scalar TruncStore may be illegal, but we legalize it later.
-    SDValue Store = DAG.getTruncStore(
+    SDValue Store = DAG.getTruncStore(ST->getMemOperand(),
         Chain, SL, Elt, Ptr, ST->getPointerInfo().getWithOffset(Idx * Stride),
         MemSclVT, MinAlign(ST->getAlignment(), Idx * Stride),
         ST->getMemOperand()->getFlags(), ST->getAAInfo());
@@ -6725,7 +6725,7 @@ TargetLowering::expandUnalignedLoad(LoadSDNode *LD, SelectionDAG &DAG) const {
     // Do all but one copies using the full register width.
     for (unsigned i = 1; i < NumRegs; i++) {
       // Load one integer register's worth from the original location.
-      SDValue Load = DAG.getLoad(
+      SDValue Load = DAG.getLoad(LD->getMemOperand(),
           RegVT, dl, Chain, Ptr, LD->getPointerInfo().getWithOffset(Offset),
           MinAlign(LD->getAlignment(), Offset), LD->getMemOperand()->getFlags(),
           LD->getAAInfo());
@@ -6744,7 +6744,7 @@ TargetLowering::expandUnalignedLoad(LoadSDNode *LD, SelectionDAG &DAG) const {
     EVT MemVT = EVT::getIntegerVT(*DAG.getContext(),
                                   8 * (LoadedBytes - Offset));
     SDValue Load =
-        DAG.getExtLoad(ISD::EXTLOAD, dl, RegVT, Chain, Ptr,
+        DAG.getExtLoad(LD->getMemOperand(), ISD::EXTLOAD, dl, RegVT, Chain, Ptr,
                        LD->getPointerInfo().getWithOffset(Offset), MemVT,
                        MinAlign(LD->getAlignment(), Offset),
                        LD->getMemOperand()->getFlags(), LD->getAAInfo());
@@ -6788,22 +6788,22 @@ TargetLowering::expandUnalignedLoad(LoadSDNode *LD, SelectionDAG &DAG) const {
   // Load the value in two parts
   SDValue Lo, Hi;
   if (DAG.getDataLayout().isLittleEndian()) {
-    Lo = DAG.getExtLoad(ISD::ZEXTLOAD, dl, VT, Chain, Ptr, LD->getPointerInfo(),
+    Lo = DAG.getExtLoad(LD->getMemOperand(), ISD::ZEXTLOAD, dl, VT, Chain, Ptr, LD->getPointerInfo(),
                         NewLoadedVT, Alignment, LD->getMemOperand()->getFlags(),
                         LD->getAAInfo());
 
     Ptr = DAG.getObjectPtrOffset(dl, Ptr, IncrementSize);
-    Hi = DAG.getExtLoad(HiExtType, dl, VT, Chain, Ptr,
+    Hi = DAG.getExtLoad(LD->getMemOperand(), HiExtType, dl, VT, Chain, Ptr,
                         LD->getPointerInfo().getWithOffset(IncrementSize),
                         NewLoadedVT, MinAlign(Alignment, IncrementSize),
                         LD->getMemOperand()->getFlags(), LD->getAAInfo());
   } else {
-    Hi = DAG.getExtLoad(HiExtType, dl, VT, Chain, Ptr, LD->getPointerInfo(),
+    Hi = DAG.getExtLoad(LD->getMemOperand(), HiExtType, dl, VT, Chain, Ptr, LD->getPointerInfo(),
                         NewLoadedVT, Alignment, LD->getMemOperand()->getFlags(),
                         LD->getAAInfo());
 
     Ptr = DAG.getObjectPtrOffset(dl, Ptr, IncrementSize);
-    Lo = DAG.getExtLoad(ISD::ZEXTLOAD, dl, VT, Chain, Ptr,
+    Lo = DAG.getExtLoad(LD->getMemOperand(), ISD::ZEXTLOAD, dl, VT, Chain, Ptr,
                         LD->getPointerInfo().getWithOffset(IncrementSize),
                         NewLoadedVT, MinAlign(Alignment, IncrementSize),
                         LD->getMemOperand()->getFlags(), LD->getAAInfo());
@@ -6848,7 +6848,7 @@ SDValue TargetLowering::expandUnalignedStore(StoreSDNode *ST,
       // same size, then a (misaligned) int store.
       // FIXME: Does not handle truncating floating point stores!
       SDValue Result = DAG.getNode(ISD::BITCAST, dl, intVT, Val);
-      Result = DAG.getStore(Chain, dl, Result, Ptr, ST->getPointerInfo(),
+      Result = DAG.getStore(ST->getMemOperand(), Chain, dl, Result, Ptr, ST->getPointerInfo(),
                             Alignment, ST->getMemOperand()->getFlags());
       return Result;
     }
@@ -6885,7 +6885,7 @@ SDValue TargetLowering::expandUnalignedStore(StoreSDNode *ST,
           RegVT, dl, Store, StackPtr,
           MachinePointerInfo::getFixedStack(MF, FrameIndex, Offset));
       // Store it to the final location.  Remember the store.
-      Stores.push_back(DAG.getStore(Load.getValue(1), dl, Load, Ptr,
+      Stores.push_back(DAG.getStore(ST->getMemOperand(), Load.getValue(1), dl, Load, Ptr,
                                     ST->getPointerInfo().getWithOffset(Offset),
                                     MinAlign(ST->getAlignment(), Offset),
                                     ST->getMemOperand()->getFlags()));
@@ -6907,7 +6907,7 @@ SDValue TargetLowering::expandUnalignedStore(StoreSDNode *ST,
         MachinePointerInfo::getFixedStack(MF, FrameIndex, Offset), LoadMemVT);
 
     Stores.push_back(
-        DAG.getTruncStore(Load.getValue(1), dl, Load, Ptr,
+        DAG.getTruncStore(ST->getMemOperand(), Load.getValue(1), dl, Load, Ptr,
                           ST->getPointerInfo().getWithOffset(Offset), LoadMemVT,
                           MinAlign(ST->getAlignment(), Offset),
                           ST->getMemOperand()->getFlags(), ST->getAAInfo()));
@@ -6931,14 +6931,14 @@ SDValue TargetLowering::expandUnalignedStore(StoreSDNode *ST,
 
   // Store the two parts
   SDValue Store1, Store2;
-  Store1 = DAG.getTruncStore(Chain, dl,
+  Store1 = DAG.getTruncStore(ST->getMemOperand(), Chain, dl,
                              DAG.getDataLayout().isLittleEndian() ? Lo : Hi,
                              Ptr, ST->getPointerInfo(), NewStoredVT, Alignment,
                              ST->getMemOperand()->getFlags());
 
   Ptr = DAG.getObjectPtrOffset(dl, Ptr, IncrementSize);
   Alignment = MinAlign(Alignment, IncrementSize);
-  Store2 = DAG.getTruncStore(
+  Store2 = DAG.getTruncStore(ST->getMemOperand(),
       Chain, dl, DAG.getDataLayout().isLittleEndian() ? Hi : Lo, Ptr,
       ST->getPointerInfo().getWithOffset(IncrementSize), NewStoredVT, Alignment,
       ST->getMemOperand()->getFlags(), ST->getAAInfo());

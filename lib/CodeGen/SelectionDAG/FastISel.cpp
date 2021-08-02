@@ -2395,6 +2395,7 @@ FastISel::createMachineMemOperandFor(const Instruction *I) const {
   unsigned Alignment;
   MachineMemOperand::Flags Flags;
   bool IsVolatile;
+	bool hasBaseOffset = false;
 
   if (const auto *LI = dyn_cast<LoadInst>(I)) {
     Alignment = LI->getAlignment();
@@ -2402,12 +2403,14 @@ FastISel::createMachineMemOperandFor(const Instruction *I) const {
     Flags = MachineMemOperand::MOLoad;
     Ptr = LI->getPointerOperand();
     ValTy = LI->getType();
+		hasBaseOffset = LI->hasMetadata(LLVMContext::MD_sizeinv_offset);
   } else if (const auto *SI = dyn_cast<StoreInst>(I)) {
     Alignment = SI->getAlignment();
     IsVolatile = SI->isVolatile();
     Flags = MachineMemOperand::MOStore;
     Ptr = SI->getPointerOperand();
     ValTy = SI->getValueOperand()->getType();
+		hasBaseOffset = SI->hasMetadata(LLVMContext::MD_sizeinv_offset);
   } else
     return nullptr;
 
@@ -2433,8 +2436,22 @@ FastISel::createMachineMemOperandFor(const Instruction *I) const {
   if (IsInvariant)
     Flags |= MachineMemOperand::MOInvariant;
 
-  return FuncInfo.MF->getMachineMemOperand(MachinePointerInfo(Ptr), Flags, Size,
+	int64_t BaseOffset = 0;
+
+	if (hasBaseOffset) {
+		auto MD = I->getMetadata(LLVMContext::MD_sizeinv_offset);
+		auto Val = cast<ValueAsMetadata>(MD->getOperand(0))->getValue();
+		assert(isa<ConstantInt>(Val));
+		BaseOffset = cast<ConstantInt>(Val)->getZExtValue();
+	}
+
+
+  auto MMO = FuncInfo.MF->getMachineMemOperand(MachinePointerInfo(Ptr), Flags, Size,
                                            Alignment, AAInfo, Ranges);
+	if (hasBaseOffset) {
+		MMO->setBaseOffset(BaseOffset);
+	}
+	return MMO;
 }
 
 CmpInst::Predicate FastISel::optimizeCmpPredicate(const CmpInst *CI) const {

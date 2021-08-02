@@ -258,6 +258,7 @@ void DAGTypeLegalizer::ExpandRes_NormalLoad(SDNode *N, SDValue &Lo,
 
   Lo = DAG.getLoad(NVT, dl, Chain, Ptr, LD->getPointerInfo(), Alignment,
                    LD->getMemOperand()->getFlags(), AAInfo);
+	DAG.copyBaseOffset(Lo, LD->getMemOperand());
 
   // Increment the pointer to the other half.
   unsigned IncrementSize = NVT.getSizeInBits() / 8;
@@ -266,6 +267,7 @@ void DAGTypeLegalizer::ExpandRes_NormalLoad(SDNode *N, SDValue &Lo,
                    LD->getPointerInfo().getWithOffset(IncrementSize),
                    MinAlign(Alignment, IncrementSize),
                    LD->getMemOperand()->getFlags(), AAInfo);
+	DAG.copyBaseOffset(Hi, LD->getMemOperand());
 
   // Build a factor node to remember that this load is independent of the
   // other one.
@@ -476,12 +478,14 @@ SDValue DAGTypeLegalizer::ExpandOp_NormalStore(SDNode *N, unsigned OpNo) {
 
   Lo = DAG.getStore(Chain, dl, Lo, Ptr, St->getPointerInfo(), Alignment,
                     St->getMemOperand()->getFlags(), AAInfo);
+	DAG.copyBaseOffset(Lo, St->getMemOperand());
 
   Ptr = DAG.getObjectPtrOffset(dl, Ptr, IncrementSize);
   Hi = DAG.getStore(Chain, dl, Hi, Ptr,
                     St->getPointerInfo().getWithOffset(IncrementSize),
                     MinAlign(Alignment, IncrementSize),
                     St->getMemOperand()->getFlags(), AAInfo);
+	DAG.copyBaseOffset(Hi, St->getMemOperand());
 
   return DAG.getNode(ISD::TokenFactor, dl, MVT::Other, Lo, Hi);
 }
