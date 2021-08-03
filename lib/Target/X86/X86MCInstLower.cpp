@@ -2022,6 +2022,12 @@ void X86AsmPrinter::EmitMetadata(const MachineInstr *MI) {
 		}
 	}
 
+	assert(Index == 0);
+	if (Base == 0) {
+		return;
+	}
+
+
   SMShadowTracker.emitShadowPadding(*OutStreamer, getSubtargetInfo());
 
   auto &Ctx = OutStreamer->getContext();

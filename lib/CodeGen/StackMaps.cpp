@@ -366,8 +366,8 @@ void StackMaps::recordMetadata(const MCSymbol &MILabel, int args[5]) {
   MCContext &OutContext = AP.OutStreamer->getContext();
 	int Offset = args[0];
 	int MemBase = args[1];
-	int MemIdx = args[2];
-	int MemScale = args[3];
+	//int MemIdx = args[2];
+	//int MemScale = args[3];
 	int MemDisp = args[4];
 	int id = GlobalID++;
 
@@ -377,7 +377,7 @@ void StackMaps::recordMetadata(const MCSymbol &MILabel, int args[5]) {
 
   Locs.emplace_back(StackMaps::Location::Direct, 8, 0, Offset);
   Locs.emplace_back(StackMaps::Location::Direct, 8, MemBase, MemDisp);
-  Locs.emplace_back(StackMaps::Location::Direct, 8, MemIdx, MemScale);
+  //Locs.emplace_back(StackMaps::Location::Direct, 8, MemIdx, MemScale);
 
 	for (auto &Loc : Locs) {
     // Constants are encoded as sign-extended integers.
