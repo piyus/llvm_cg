@@ -479,8 +479,16 @@ void MCObjectFileInfo::initELFMCObjectFileInfo(const Triple &T, bool Large) {
   DwarfTUIndexSection =
       Ctx->getELFSection(".debug_tu_index", DebugSecType, 0);
 
+	unsigned lo, hi;
+	asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+	srand(lo+hi);
+	long int rval = rand();
+
+	char buf[128];
+	snprintf(buf, 128, ".llvm_stackmaps%ld", rval);
+
   StackMapSection =
-      Ctx->getELFSection(".llvm_stackmaps", ELF::SHT_PROGBITS, ELF::SHF_ALLOC);
+      Ctx->getELFSection(buf, ELF::SHT_PROGBITS, ELF::SHF_ALLOC);
 
   FaultMapSection =
       Ctx->getELFSection(".llvm_faultmaps", ELF::SHT_PROGBITS, ELF::SHF_ALLOC);
