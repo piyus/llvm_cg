@@ -216,6 +216,7 @@ public:
 	int64_t getBaseOffset() const { assert(FlagVals & MOTargetFlag3); return BaseOffset; }
 	void setBaseOffset(int64_t Offset) { FlagVals |= MOTargetFlag3; BaseOffset = Offset;  }
 	bool hasBaseOffset() const { return (FlagVals & MOTargetFlag3) != 0; }
+	void resetBaseOffset() { FlagVals = FlagVals & (~MOTargetFlag3); }
 
   /// For normal values, this is a byte offset added to the base address.
   /// For PseudoSourceValue::FPRel values, this is the FrameIndex number.

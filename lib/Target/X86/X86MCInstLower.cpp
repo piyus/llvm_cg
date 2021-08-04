@@ -2043,6 +2043,11 @@ void X86AsmPrinter::EmitMetadata(const MachineInstr *MI) {
 
 	assert(Index == 0);
 	if (Base == 0) {
+		for (auto &MMO : MI->memoperands()) {
+			if (MMO->hasBaseOffset()) {
+				MMO->resetBaseOffset();
+			}
+		}
 		return;
 	}
 
