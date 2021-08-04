@@ -344,7 +344,7 @@ void StackMaps::recordStackMapOpers(const MCSymbol &MILabel,
       MCSymbolRefExpr::create(&MILabel, OutContext),
       MCSymbolRefExpr::create(AP.CurrentFnSymForSize, OutContext), OutContext);
 
-  CSInfos.emplace_back(CSOffsetExpr, ID, std::move(Locations),
+  CSInfos.emplace_back(CSOffsetExpr, CSOffsetExpr, ID, std::move(Locations),
                        std::move(LiveOuts));
 
   // Record the stack size of the current function and update callsite count.
@@ -361,13 +361,23 @@ void StackMaps::recordStackMapOpers(const MCSymbol &MILabel,
     FnInfos.insert(std::make_pair(AP.CurrentFnSym, FunctionInfo(FrameSize)));
 }
 
+void StackMaps::updateLastMetadata(const MCSymbol &MILabel) {
+  MCContext &OutContext = AP.OutStreamer->getContext();
+  const MCExpr *CSOffsetExpr = MCBinaryExpr::createSub(
+      MCSymbolRefExpr::create(&MILabel, OutContext),
+      MCSymbolRefExpr::create(AP.CurrentFnSymForSize, OutContext), OutContext);
+	assert(!CSInfos.empty());
+	int size = CSInfos.size();
+	assert(size > 0);
+	CSInfos[size-1].CSOffsetEnd = CSOffsetExpr;
+}
 
 void StackMaps::recordMetadata(const MCSymbol &MILabel, int args[5]) {
   MCContext &OutContext = AP.OutStreamer->getContext();
 	int Offset = args[0];
 	int MemBase = args[1];
 	//int MemIdx = args[2];
-	//int MemScale = args[3];
+	int MemSize = args[3];
 	int MemDisp = args[4];
 	int id = GlobalID++;
 
@@ -376,7 +386,7 @@ void StackMaps::recordMetadata(const MCSymbol &MILabel, int args[5]) {
   LiveOutVec LiveOuts;
 
   Locs.emplace_back(StackMaps::Location::Direct, 8, 0, Offset);
-  Locs.emplace_back(StackMaps::Location::Direct, 8, MemBase, MemDisp);
+  Locs.emplace_back(StackMaps::Location::Direct, MemSize, MemBase, MemDisp);
   //Locs.emplace_back(StackMaps::Location::Direct, 8, MemIdx, MemScale);
 
 	for (auto &Loc : Locs) {
@@ -405,7 +415,7 @@ void StackMaps::recordMetadata(const MCSymbol &MILabel, int args[5]) {
       MCSymbolRefExpr::create(&MILabel, OutContext),
       MCSymbolRefExpr::create(AP.CurrentFnSymForSize, OutContext), OutContext);
 
-  CSInfos.emplace_back(CSOffsetExpr, id, std::move(Locs),
+  CSInfos.emplace_back(CSOffsetExpr, CSOffsetExpr, id, std::move(Locs),
                        std::move(LiveOuts));
 
   // Record the stack size of the current function and update callsite count.
@@ -576,6 +586,8 @@ void StackMaps::emitCallsiteEntries(MCStreamer &OS) {
 
     OS.EmitIntValue(CSI.ID, 8);
     OS.EmitValue(CSI.CSOffsetExpr, 4);
+
+    OS.EmitValue(CSI.CSOffsetEnd, 4);
 
     // Reserved for flags.
     OS.EmitIntValue(0, 2);

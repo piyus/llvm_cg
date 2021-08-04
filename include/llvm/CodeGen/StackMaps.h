@@ -249,14 +249,15 @@ public:
 
   struct CallsiteInfo {
     const MCExpr *CSOffsetExpr = nullptr;
+    const MCExpr *CSOffsetEnd = nullptr;
     uint64_t ID = 0;
     LocationVec Locations;
     LiveOutVec LiveOuts;
 
     CallsiteInfo() = default;
-    CallsiteInfo(const MCExpr *CSOffsetExpr, uint64_t ID,
+    CallsiteInfo(const MCExpr *CSOffsetExpr, const MCExpr *CSOffsetEnd, uint64_t ID,
                  LocationVec &&Locations, LiveOutVec &&LiveOuts)
-        : CSOffsetExpr(CSOffsetExpr), ID(ID), Locations(std::move(Locations)),
+        : CSOffsetExpr(CSOffsetExpr), CSOffsetEnd(CSOffsetEnd), ID(ID), Locations(std::move(Locations)),
           LiveOuts(std::move(LiveOuts)) {}
   };
 
@@ -270,6 +271,7 @@ public:
                       const MachineInstr &MI);
 
   void recordMetadata(const MCSymbol &L, int args[5]);
+	void updateLastMetadata(const MCSymbol &MILabel);
 
   /// Generate a stackmap record for a patchpoint instruction.
   void recordPatchPoint(const MCSymbol &L,

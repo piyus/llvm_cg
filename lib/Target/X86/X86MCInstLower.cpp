@@ -1976,14 +1976,33 @@ static int RegToId(int Reg) {
 
 void X86AsmPrinter::EmitMetadata(const MachineInstr *MI) {
 	const int64_t InvalidOffset = (1ULL << 32);
+	int Size = 0;
+	auto PrevMI = MI->getPrevNode();
+	
+	if (PrevMI && isa<MachineInstr>(PrevMI)) {
+		for (auto &MMO : PrevMI->memoperands()) {
+			if (MMO->hasBaseOffset()) {
+  			auto &Ctx = OutStreamer->getContext();
+  			MCSymbol *MILabel = Ctx.createTempSymbol();
+  			OutStreamer->EmitLabel(MILabel);
+  			SM.updateLastMetadata(*MILabel);
+				break;
+			}
+		}
+	}
+
 	int64_t BaseOffset = InvalidOffset;
 
 	for (auto &MMO : MI->memoperands()) {
 		if (MMO->hasBaseOffset()) {
 			BaseOffset = MMO->getBaseOffset();
+			Size = MMO->getSize();
 		}
 	}
-	assert(BaseOffset != InvalidOffset);
+
+	if (BaseOffset == InvalidOffset) {
+		return;
+	}
 
 	const MCInstrDesc &Desc = MI->getDesc();
   int MemOpNo = X86II::getMemoryOperandNo(Desc.TSFlags) +
@@ -2032,13 +2051,12 @@ void X86AsmPrinter::EmitMetadata(const MachineInstr *MI) {
 
   auto &Ctx = OutStreamer->getContext();
   MCSymbol *MILabel = Ctx.createTempSymbol();
-	int args[5] = {(int)BaseOffset, Base, Index, Scale, Disp};
+	int args[5] = {(int)BaseOffset, Base, Index, Size, Disp};
   OutStreamer->EmitLabel(MILabel);
 
   SM.recordMetadata(*MILabel, args);
   SMShadowTracker.reset(0);
 }
-
 
 void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   X86MCInstLower MCInstLowering(*MF, *this);
@@ -2052,11 +2070,7 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
       OutStreamer->AddComment("EVEX TO VEX Compression ", false);
   }
 
-	for (auto &MMO : MI->memoperands()) {
-		if (MMO->hasBaseOffset()) {
-			EmitMetadata(MI);
-		}
-	}
+	EmitMetadata(MI);
 
   switch (MI->getOpcode()) {
   case TargetOpcode::DBG_VALUE:
