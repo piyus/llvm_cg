@@ -2063,6 +2063,22 @@ void X86AsmPrinter::EmitMetadata(const MachineInstr *MI) {
   SMShadowTracker.reset(0);
 }
 
+static int
+findBaseReg(const MachineInstr *MI)
+{
+	int Ret = 0;
+	for (auto &MO : MI->operands()) {
+		if (!MO.isReg() || !Register::isPhysicalRegister(MO.getReg()) || MO.isImplicit()) {
+			continue;
+		}
+		Ret = RegToId(MO.getReg());
+		if (Ret) {
+			break;
+		}
+	}
+	return Ret;
+}
+
 void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   X86MCInstLower MCInstLowering(*MF, *this);
   const X86RegisterInfo *RI =
@@ -2076,6 +2092,16 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   }
 
 	EmitMetadata(MI);
+
+	if (MI->mayStore()) {
+		for (auto &MO : MI->operands()) {
+			if (MO.isGlobal() && MO.getGlobal()->getName() == "__lifevar") {
+				int Reg = findBaseReg(MI);
+  			SM.updateLastRegMetadata(Reg);
+				return;
+			}
+		}
+	}
 
   switch (MI->getOpcode()) {
   case TargetOpcode::DBG_VALUE:

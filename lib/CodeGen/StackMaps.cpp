@@ -372,6 +372,13 @@ void StackMaps::updateLastMetadata(const MCSymbol &MILabel) {
 	CSInfos[size-1].CSOffsetEnd = CSOffsetExpr;
 }
 
+void StackMaps::updateLastRegMetadata(int Reg) {
+	assert(!CSInfos.empty());
+	int size = CSInfos.size();
+	assert(size > 0);
+	CSInfos[size-1].Locations[0].Reg = Reg;
+}
+
 void StackMaps::recordMetadata(const MCSymbol &MILabel, int args[5]) {
   MCContext &OutContext = AP.OutStreamer->getContext();
 	int Offset = args[0];

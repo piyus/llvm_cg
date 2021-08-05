@@ -272,6 +272,7 @@ public:
 
   void recordMetadata(const MCSymbol &L, int args[5]);
 	void updateLastMetadata(const MCSymbol &MILabel);
+	void updateLastRegMetadata(int Reg);
 
   /// Generate a stackmap record for a patchpoint instruction.
   void recordPatchPoint(const MCSymbol &L,

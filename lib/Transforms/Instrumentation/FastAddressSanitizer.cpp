@@ -4226,7 +4226,7 @@ static void emitMetadataForSizeInv(Value *Oper, const DataLayout &DL,
 	I->setMetadata(LLVMContext::MD_sizeinv_offset, MD);
 	//errs() << "AddingMetadata Offset:: " <<  Offset << " I::" << *I << "\n";
 
-	//auto SI = IRB.CreateStore(ConstantInt::get(IRB.getInt32Ty(), Offset), LifeVar);
+	IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
 	//SI->setVolatile(true);
 }
 
@@ -8521,7 +8521,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	//copyArgsByValToAllocas1(F);
 	//errs() << "Printing function\n" << F << "\n";
 	//createInteriorFn(&F);
-	//auto LifeTimeVar = F.getParent()->getOrInsertGlobal("__lifevar", Int32Ty);
+	auto LifeTimeVar = F.getParent()->getOrInsertGlobal("__lifevar", Int8PtrTy);
 	DenseSet<Value*> UnsafeUses;
 	DenseMap<Value*, uint64_t> UnsafePointers;
   const DataLayout &DL = F.getParent()->getDataLayout();
@@ -8904,7 +8904,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 
 	//removeRedundentLengths(F, GetLengths, LenToBaseMap);
-	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites, UnsafeMap, NULL);
+	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites, UnsafeMap, LifeTimeVar);
 
 	for (auto Limit : GetLengths) {
 		auto Call = dyn_cast<CallBase>(Limit);
