@@ -4394,25 +4394,76 @@ static void recordStackPointer(Function *F, Instruction *I, Value *StackBase, in
 #endif
 }
 
-static Value* enterScope(Function *F, int NumSlots)
+static Value* getStackPtrs(Module *M)
 {
-	auto M = F->getParent();
-	auto RetTy = Type::getInt8PtrTy(M->getContext());
-	auto Int32Ty = Type::getInt32Ty(M->getContext());
-  Instruction *Entry = dyn_cast<Instruction>(F->begin()->getFirstInsertionPt());
-	auto Fn = M->getOrInsertFunction("san_enter_scope", RetTy, Int32Ty);
-	return CallInst::Create(Fn, {ConstantInt::get(Int32Ty, NumSlots)}, "", Entry);
+  const char *UnsafeStackPtrVar = "je_fasan_stack_ptrs";
+  auto UnsafeStackPtr =
+      dyn_cast_or_null<GlobalVariable>(M->getNamedValue(UnsafeStackPtrVar));
+
+  Type *StackPtrTy = Type::getInt8PtrTy(M->getContext());
+
+  if (!UnsafeStackPtr) {
+    UnsafeStackPtr = new GlobalVariable(
+        *M, StackPtrTy, false, GlobalValue::ExternalLinkage, nullptr,
+        UnsafeStackPtrVar, nullptr, GlobalValue::InitialExecTLSModel);
+  } 
+  return UnsafeStackPtr;
 }
 
-static void exitScope(Function *F, Value *V)
+static Value* getNumStackPtrs(Module *M)
+{
+  const char *UnsafeStackPtrVar = "je_num_fasan_stack_ptrs";
+  auto UnsafeStackPtr =
+      dyn_cast_or_null<GlobalVariable>(M->getNamedValue(UnsafeStackPtrVar));
+
+  Type *StackPtrTy = Type::getInt32Ty(M->getContext());
+
+  if (!UnsafeStackPtr) {
+    UnsafeStackPtr = new GlobalVariable(
+        *M, StackPtrTy, false, GlobalValue::ExternalLinkage, nullptr,
+        UnsafeStackPtrVar, nullptr, GlobalValue::InitialExecTLSModel);
+  } 
+  return UnsafeStackPtr;
+}
+
+static Value* enterScope(Function *F, int NumSlots, Value* &NumEntries)
 {
 	auto M = F->getParent();
-	auto RetTy = Type::getVoidTy(M->getContext());
-	auto Fn = M->getOrInsertFunction("san_exit_scope", RetTy, V->getType());
+	//auto RetTy = Type::getInt8PtrTy(M->getContext());
+	//auto Int32Ty = Type::getInt32Ty(M->getContext());
+  Instruction *Entry = dyn_cast<Instruction>(F->begin()->getFirstInsertionPt());
+	IRBuilder<> IRB(Entry);
+	auto StackPtr = getStackPtrs(M);
+	auto NumStackPtr = getNumStackPtrs(M);
+	auto Val = IRB.CreateLoad(NumStackPtr);
+
+	auto Int8PtrTy = IRB.getInt8PtrTy();
+	auto Int8PtrPtrTy = Int8PtrTy->getPointerTo();
+	StackPtr = IRB.CreateBitCast(StackPtr, Int8PtrPtrTy);
+	StackPtr = IRB.CreateGEP(Int8PtrTy, StackPtr, Val);
+	StackPtr = IRB.CreateBitCast(StackPtr, Int8PtrTy);
+	NumEntries = Val;
+
+	auto NewVal = IRB.CreateAdd(Val, ConstantInt::get(IRB.getInt32Ty(), NumSlots));
+	IRB.CreateStore(NewVal, NumStackPtr);
+	return StackPtr;
+
+	//auto Fn = M->getOrInsertFunction("san_enter_scope", RetTy, Int32Ty);
+	//return CallInst::Create(Fn, {ConstantInt::get(Int32Ty, NumSlots)}, "", Entry);
+}
+
+static void exitScope(Function *F, Value *NumEntries)
+{
+	auto M = F->getParent();
+	//auto RetTy = Type::getVoidTy(M->getContext());
+	//auto Fn = M->getOrInsertFunction("san_exit_scope", RetTy, V->getType());
+	auto NumStackPtr = getNumStackPtrs(M);
   for (auto &BB : *F) {
     for (auto &Inst : BB) {
 			if (auto Ret = dyn_cast<ReturnInst>(&Inst)) {
-				CallInst::Create(Fn, {V}, "", Ret);
+				IRBuilder<> IRB(Ret);
+				IRB.CreateStore(NumEntries, NumStackPtr);
+				//CallInst::Create(Fn, {V}, "", Ret);
 			}
 		}
 	}
@@ -8944,6 +8995,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	Value *StackBase = NULL;
+	Value *NumRecords = NULL;
 	int MaxRecordIndex = (int)UnsafeAllocas.size();
 	bool NeedRegisteration = !RestorePoints.empty();
 
@@ -8957,7 +9009,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	}
 
 	if (NeedRegisteration) {
-		StackBase = enterScope(&F, MaxRecordIndex);
+		StackBase = enterScope(&F, MaxRecordIndex, NumRecords);
 	}
 
 	int RecordIndex = 0;
@@ -8986,7 +9038,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 				auto Int32Ty = Call->getArgOperand(0)->getType();
 				Call->setArgOperand(0, ConstantInt::get(Int32Ty, RecordIndex));
 			}
-			exitScope(&F, StackBase);
+			exitScope(&F, NumRecords);
 		}
 	}
 
