@@ -373,10 +373,11 @@ void StackMaps::updateLastMetadata(const MCSymbol &MILabel) {
 }
 
 void StackMaps::updateLastRegMetadata(int Reg) {
-	assert(!CSInfos.empty());
-	int size = CSInfos.size();
-	assert(size > 0);
-	CSInfos[size-1].Locations[0].Reg = Reg;
+	if (!CSInfos.empty()) {
+		int size = CSInfos.size();
+		assert(size > 0);
+		CSInfos[size-1].Locations[0].Reg = Reg;
+	}
 }
 
 void StackMaps::recordMetadata(const MCSymbol &MILabel, int args[5]) {
