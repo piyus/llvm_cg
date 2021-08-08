@@ -306,6 +306,8 @@ void IntrinsicLowering::LowerIntrinsicCall(CallInst *CI) {
 
   case Intrinsic::prefetch:
     break;    // Simply strip out prefetches on unsupported architectures
+  case Intrinsic::sizeinvbase:
+    break;    // Simply strip out prefetches on unsupported architectures
 
   case Intrinsic::pcmarker:
     break;    // Simply strip out pcmarker on unsupported architectures

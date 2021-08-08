@@ -6774,6 +6774,25 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     setValue(&I, DAG.getNode(Op, sdl, VTs, Op1, Op2));
     return;
   }
+  case Intrinsic::sizeinvbase: {
+    SDValue Ops[5];
+    unsigned rw = cast<ConstantInt>(I.getArgOperand(1))->getZExtValue();
+    auto Flags = rw == 0 ? MachineMemOperand::MOLoad :MachineMemOperand::MOStore;
+    Ops[0] = DAG.getRoot();
+    Ops[1] = getValue(I.getArgOperand(0));
+    Ops[2] = getValue(I.getArgOperand(1));
+    Ops[3] = getValue(I.getArgOperand(2));
+    Ops[4] = getValue(I.getArgOperand(3));
+    SDValue Result = DAG.getMemIntrinsicNode(ISD::INSBASE, sdl,
+                                             DAG.getVTList(MVT::Other), Ops,
+                                             EVT::getIntegerVT(*Context, 8),
+                                             MachinePointerInfo(I.getArgOperand(0)),
+                                             0, /* align */
+                                             Flags);
+    Result = getRoot();
+    DAG.setRoot(Result);
+    return;
+	}
   case Intrinsic::prefetch: {
     SDValue Ops[5];
     unsigned rw = cast<ConstantInt>(I.getArgOperand(1))->getZExtValue();
@@ -6789,6 +6808,9 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
                                              MachinePointerInfo(I.getArgOperand(0)),
                                              0, /* align */
                                              Flags);
+		if (I.hasMetadata(LLVMContext::MD_sizeinv_offset)) {
+			cast<MemSDNode>(Result)->setBaseOffset(0x200000000ULL);
+		}
 
     // Chain the prefetch in parallell with any pending loads, to stay out of
     // the way of later optimizations.

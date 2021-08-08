@@ -4175,6 +4175,24 @@ static Value* getNoInteriorCall(Function &F, Instruction *I, Value *V)
 	return V;
 }
 
+static void getSizeInvCall(Function &F, Instruction *I, Value *V)
+{
+	return;
+	IRBuilder<> IRB(I->getNextNode());
+
+	Function *TheFn =
+      Intrinsic::getDeclaration(F.getParent(), Intrinsic::prefetch, IRB.getInt8PtrTy());
+	auto CI = IRB.CreateCall(TheFn, {IRB.CreateBitCast(V, IRB.getInt8PtrTy()), 
+				ConstantInt::get(IRB.getInt32Ty(), 0),
+				ConstantInt::get(IRB.getInt32Ty(), 3),
+				ConstantInt::get(IRB.getInt32Ty(), 1),
+				});
+	errs() << "Gen Size INV Call\n";
+	MDNode *MD = MDNode::get(CI->getContext(),
+		ValueAsMetadata::get(ConstantInt::get(IRB.getInt32Ty(), 0x200000000ULL)));
+	CI->setMetadata(LLVMContext::MD_sizeinv_offset, MD);
+}
+
 
 static Value* getNoInteriorMap(Function &F, Instruction *Unused, Value *Oper, DenseMap<Value*, Value*> &RepMap)
 {
@@ -4224,9 +4242,12 @@ static Value* getNoInteriorMap1(Function &F, Instruction *Unused, Value *Oper, D
 	return Ret;
 }
 
-static void emitMetadataForSizeInv(Value *Oper, const DataLayout &DL,
+static void emitMetadataForSizeInv(Function &F, Value *Oper, const DataLayout &DL,
 	Instruction *I, Value *LifeVar, const TargetLibraryInfo *TLI)
 {
+	if (NoSizeInv) {
+		return;
+	}
 	int64_t Offset;
 	auto Base = GetPointerBaseWithConstantOffset(Oper, Offset, DL);
 	IRBuilder<> IRB(I->getNextNode());
@@ -4239,9 +4260,10 @@ static void emitMetadataForSizeInv(Value *Oper, const DataLayout &DL,
 	MDNode *MD = MDNode::get(I->getContext(),
 		ValueAsMetadata::get(ConstantInt::get(IRB.getInt32Ty(), Offset)));
 	I->setMetadata(LLVMContext::MD_sizeinv_offset, MD);
+	getSizeInvCall(F, I, Oper);
 	//errs() << "AddingMetadata Offset:: " <<  Offset << " I::" << *I << "\n";
 
-	IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
+	//auto SI = IRB.CreateStore(IRB.CreateBitCast(Oper, IRB.getInt8PtrTy()), LifeVar);
 	//SI->setVolatile(true);
 }
 
@@ -4291,7 +4313,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, LI, Oper, RepMap);
 					if (Oper != Ret) {
-						emitMetadataForSizeInv(Oper, DL, LI, LifeVar, TLI);
+						emitMetadataForSizeInv(F, Oper, DL, LI, LifeVar, TLI);
 					}
 				}
 				//Ret = addHandler(F, I, Oper, NULL, GetLengths, false, id++, Name);
@@ -4307,7 +4329,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, SI, Oper, RepMap);
 					if (Oper != Ret) {
-						emitMetadataForSizeInv(Oper, DL, SI, LifeVar, TLI);
+						emitMetadataForSizeInv(F, Oper, DL, SI, LifeVar, TLI);
 					}
 				}
 				//Ret = addHandler(F, I, Oper, Val, GetLengths, false, id++, Name);
@@ -4322,7 +4344,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, AI, Oper, RepMap);
 					if (Oper != Ret) {
-						emitMetadataForSizeInv(Oper, DL, AI, LifeVar, TLI);
+						emitMetadataForSizeInv(F, Oper, DL, AI, LifeVar, TLI);
 					}
 				}
 				AI->setOperand(0, Ret);
@@ -4336,7 +4358,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, AI, Oper, RepMap);
 					if (Oper != Ret) {
-						emitMetadataForSizeInv(Oper, DL, AI, LifeVar, TLI);
+						emitMetadataForSizeInv(F, Oper, DL, AI, LifeVar, TLI);
 					}
 				}
 				AI->setOperand(0, Ret);

@@ -941,6 +941,7 @@ namespace ISD {
 		GET_OBJ_LEN,
 		BOUNDS_CHECK,
 		MAKE_INTERIOR,
+		INSBASE,
 
     /// BUILTIN_OP_END - This must be the last enum value in this list.
     /// The target-specific pre-isel opcode values start here.

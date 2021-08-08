@@ -3175,6 +3175,10 @@ def CLFLUSH : I<0xAE, MRM7m, (outs), (ins i8mem:$src),
                "clflush\t$src", [(int_x86_sse2_clflush addr:$src)]>,
                PS, Requires<[HasSSE2]>;
 }
+let SchedRW = [WriteLoad] in {
+def INSBASE : I<0xFF, MRM7m, (outs), (ins i8mem:$src), "insbase\t$src", 
+	[(int_sizeinvbase addr:$src, imm, imm, imm)]>, PS;
+}
 
 let SchedRW = [WriteNop] in {
 // Pause. This "instruction" is encoded as "rep; nop", so even though it

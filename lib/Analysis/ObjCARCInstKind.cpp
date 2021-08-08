@@ -168,6 +168,7 @@ static bool isInertIntrinsic(unsigned ID) {
   case Intrinsic::vaend:
   case Intrinsic::objectsize:
   case Intrinsic::prefetch:
+  case Intrinsic::sizeinvbase:
   case Intrinsic::stackprotector:
   case Intrinsic::eh_return_i32:
   case Intrinsic::eh_return_i64:
