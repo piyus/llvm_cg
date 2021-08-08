@@ -398,6 +398,9 @@ static cl::opt<bool>
 
 // Debug flags.
 
+static cl::opt<bool> NoSizeInv("fasan-no-sizeinv", cl::desc("debug"), cl::Hidden,
+                              cl::init(false));
+
 static cl::opt<int> ClDebug("fasan-debug", cl::desc("debug"), cl::Hidden,
                             cl::init(0));
 
@@ -2873,6 +2876,9 @@ fetchMallocSize(Value *V, const TargetLibraryInfo *TLI)
 				return 128 * sizeof(int);
 			}*/
 		}
+		if (CI->getCalledFunction() && CI->getCalledFunction()->getName() == "__errno_location") {
+			return 4;
+		}
 	}
 	return 0;
 }
@@ -3537,6 +3543,10 @@ addBoundsCheck(Function &F, Value *Base, Value *Ptr, Value *Limit,
 {
 	auto InstPtr = dyn_cast<Instruction>(Ptr);
 	assert(InstPtr && "Invalid Ptr");
+
+	if (Ptr == Base && isa<Instruction>(Limit)) {
+		InstPtr = cast<Instruction>(Limit)->getNextNode();
+	}
 
 	InstPtr = getUseInBasicBlock(InstPtr);
 
@@ -4215,11 +4225,16 @@ static Value* getNoInteriorMap1(Function &F, Instruction *Unused, Value *Oper, D
 }
 
 static void emitMetadataForSizeInv(Value *Oper, const DataLayout &DL,
-	Instruction *I, Value *LifeVar)
+	Instruction *I, Value *LifeVar, const TargetLibraryInfo *TLI)
 {
 	int64_t Offset;
-	GetPointerBaseWithConstantOffset(Oper, Offset, DL);
+	auto Base = GetPointerBaseWithConstantOffset(Oper, Offset, DL);
 	IRBuilder<> IRB(I->getNextNode());
+	bool Static = false;
+	uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
+	if (Static) {
+		return;
+	}
 
 	MDNode *MD = MDNode::get(I->getContext(),
 		ValueAsMetadata::get(ConstantInt::get(IRB.getInt32Ty(), Offset)));
@@ -4234,7 +4249,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 	DenseSet<Value*> &GetLengthsCond,
 	DenseSet<StoreInst*> &Stores, DenseSet<CallBase*> &CallSites,
 	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap,
-	Value *LifeVar
+	Value *LifeVar, const TargetLibraryInfo *TLI
 	)
 {
 	int id = 0;
@@ -4276,7 +4291,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, LI, Oper, RepMap);
 					if (Oper != Ret) {
-						emitMetadataForSizeInv(Oper, DL, LI, LifeVar);
+						emitMetadataForSizeInv(Oper, DL, LI, LifeVar, TLI);
 					}
 				}
 				//Ret = addHandler(F, I, Oper, NULL, GetLengths, false, id++, Name);
@@ -4292,7 +4307,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, SI, Oper, RepMap);
 					if (Oper != Ret) {
-						emitMetadataForSizeInv(Oper, DL, SI, LifeVar);
+						emitMetadataForSizeInv(Oper, DL, SI, LifeVar, TLI);
 					}
 				}
 				//Ret = addHandler(F, I, Oper, Val, GetLengths, false, id++, Name);
@@ -4307,7 +4322,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, AI, Oper, RepMap);
 					if (Oper != Ret) {
-						emitMetadataForSizeInv(Oper, DL, AI, LifeVar);
+						emitMetadataForSizeInv(Oper, DL, AI, LifeVar, TLI);
 					}
 				}
 				AI->setOperand(0, Ret);
@@ -4321,7 +4336,7 @@ static void instrumentPageFaultHandler(Function &F, DenseSet<Value*> &GetLengths
 				else {
 					Ret = getNoInteriorMap(F, AI, Oper, RepMap);
 					if (Oper != Ret) {
-						emitMetadataForSizeInv(Oper, DL, AI, LifeVar);
+						emitMetadataForSizeInv(Oper, DL, AI, LifeVar, TLI);
 					}
 				}
 				AI->setOperand(0, Ret);
@@ -5009,6 +5024,24 @@ findPhiAndSelectBases(Function &F, DenseSet<Value*> &PhiAndSelectNodes,
 	}
 }
 
+// FIXME: unreolved cases after disabling size inv
+static bool
+needFixup(Function &F)
+{
+	auto Name = F.getName();
+	if (Name == "tree_int_cst_lt" ||
+		  Name == "Perl_re_op_compile" ||
+		  Name == "Perl_regexec_flags" ||
+			Name == "S_find_byclass" ||
+			Name == "linear_regression_map" ||
+			//Name == "linear_regression_combiner" ||
+			Name == "linear_regression_reduce" ||
+			Name == "Perl_re_intuit_start") {
+		return true;
+	}
+	return false;
+}
+
 static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &UnsafePointers,
 	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap,
 	DenseMap<Value*, Value*> &PtrToBaseMap,
@@ -5039,7 +5072,6 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 
 		PtrToBaseMap[V] = Base;
 
-
 		if (Offset >= 0) {
 			bool Static = false;
 			uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
@@ -5054,6 +5086,13 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 				}
 				UnsafeMap[V] = std::make_pair(Base, Offset);
 				TmpSet.insert(V);
+			}
+			else if (NoSizeInv && !Static && isa<Instruction>(V)) {
+				if (!needFixup(F)) {
+					//errs() << "ExternalLibGlobal:: " << *V << " Base:: " << *Base << " Size:: " << BaseSize << " Offset:: " << Offset << "\n";
+					UnsafeMap[V] = std::make_pair(Base, Offset);
+					TmpSet.insert(V);
+				}
 			}
 		}
 		else {
@@ -6860,7 +6899,6 @@ static bool checkLowerBound(Function &F, Value *Base, Value *Ptr)
 
 static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 {
-	//return;
 	auto InsertPt = CI->getNextNode();
 	IRBuilder<> IRB(InsertPt);
 	auto Base = CI->getArgOperand(0);
@@ -7402,14 +7440,18 @@ removeCall2(CallInst *Call1, CallInst *Call2, int64_t Diff, PostDominatorTree &P
 	if (DiffLo > 0) {
 		auto SizeTy = Call1->getArgOperand(4)->getType();
 		int64_t NewPadding = Call1Padding - DiffLo;
-		assert(NewPadding < (4<<20) && -NewPadding < (4<<20));
+		if (!(NewPadding < (4<<20) && -NewPadding < (4<<20))) {
+			return false;
+		}
 		Call1->setArgOperand(4, ConstantInt::get(SizeTy, NewPadding));
 	}
 
 	if (DiffHi < 0) {
 		auto SizeTy = Call1->getArgOperand(3)->getType();
 		int64_t NewSize = Call1TySz - DiffHi;
-		assert(NewSize < (4<<20) && -NewSize < (4<<20));
+		if (!(NewSize < (4<<20) && -NewSize < (4<<20))) {
+			return false;
+		}
 		Call1->setArgOperand(3, ConstantInt::get(SizeTy, NewSize));
 	}
 	//errs() << "Call1: " << *Call1 << "\n";
@@ -8307,6 +8349,11 @@ static void optimizeHandlers(Function &F,
 
 	optimizePtrMask(F, AA);
 
+	
+  if (!ClDebugFunc.empty() && ClDebugFunc == "all") {
+		errs() << "After SAN:: " << F << "\n";
+	}
+
 	if (!FBounds.empty()) {
 		BasicBlock *TrapBB = getTrapBB(&F);
 		for (auto FBound : FBounds) {
@@ -8882,6 +8929,11 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 		}
 	}
 
+	/*if (verifyFunction(F, &errs())) {
+    F.dump();
+    report_fatal_error("verification of newFunction2 failed!");
+  }*/
+
 	for (auto MC : MemCalls) {
 		if (isa<MemIntrinsic>(MC)) {
 			auto Ptr1 = MC->getArgOperand(0);
@@ -8922,7 +8974,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	/*if (verifyFunction(F, &errs())) {
     F.dump();
-    report_fatal_error("verification of newFunction failed!");
+    report_fatal_error("verification of newFunction1 failed!");
   }*/
 
 
@@ -8955,7 +9007,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 
 	//removeRedundentLengths(F, GetLengths, LenToBaseMap);
-	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites, UnsafeMap, LifeTimeVar);
+	instrumentPageFaultHandler(F, GetLengths, GetLengthsCond, Stores, CallSites, UnsafeMap, LifeTimeVar, TLI);
 
 	for (auto Limit : GetLengths) {
 		auto Call = dyn_cast<CallBase>(Limit);
