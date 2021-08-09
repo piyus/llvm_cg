@@ -398,6 +398,9 @@ static cl::opt<bool>
 
 // Debug flags.
 
+static cl::opt<bool> FasanHack("fasan-hack", cl::desc("debug"), cl::Hidden,
+                              cl::init(false));
+
 static cl::opt<bool> NoSizeInv("fasan-no-sizeinv", cl::desc("debug"), cl::Hidden,
                               cl::init(false));
 
@@ -3153,7 +3156,7 @@ bool FastAddressSanitizer::isSafeAlloca(const AllocaInst *AllocaPtr, const Targe
   return true;
 }
 
-bool static isAllocaCallSafe(const AllocaInst *AllocaPtr, const TargetLibraryInfo *TLI)
+bool static isAllocaCallSafe(const Value *AllocaPtr, const TargetLibraryInfo *TLI)
 {
   SmallPtrSet<const Value *, 16> Visited;
   SmallVector<const Value *, 8> WorkList;
@@ -5053,9 +5056,6 @@ needFixup(Function &F)
 		  Name == "Perl_re_op_compile" ||
 		  Name == "Perl_regexec_flags" ||
 			Name == "S_find_byclass" ||
-			Name == "linear_regression_map" ||
-			//Name == "linear_regression_combiner" ||
-			Name == "linear_regression_reduce" ||
 			Name == "Perl_re_intuit_start") {
 		return true;
 	}
@@ -5068,7 +5068,8 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 	DenseSet<Value*> &TmpSet,
 	DominatorTree &DT, DenseMap<Value*, Value*> &ReplacementMap, const TargetLibraryInfo *TLI,
 	DenseSet<Value*> &InteriorPointersSet,
-	DenseSet<Value*> &LargerThanBase)
+	DenseSet<Value*> &LargerThanBase,
+	DenseSet<Value*> &SizeInvPtrs)
 {
   const DataLayout &DL = F.getParent()->getDataLayout();
 
@@ -5093,6 +5094,9 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 		PtrToBaseMap[V] = Base;
 
 		if (Offset >= 0) {
+			if (NoSizeInv && FasanHack) {
+				SizeInvPtrs.insert(V->stripPointerCasts());
+			}
 			bool Static = false;
 			uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
 			Offset += TypeSize;
@@ -6917,7 +6921,7 @@ static bool checkLowerBound(Function &F, Value *Base, Value *Ptr)
 	return true;
 }
 
-static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
+static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB, DenseSet<Value*> &SizeInvPtrs)
 {
 	auto InsertPt = CI->getNextNode();
 	IRBuilder<> IRB(InsertPt);
@@ -6926,6 +6930,12 @@ static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB)
 	auto PtrLimit = CI->getArgOperand(2);
 	auto Limit = CI->getArgOperand(3);
 	auto Int8PtrTy = IRB.getInt8PtrTy();
+
+
+	if (SizeInvPtrs.count(Ptr->stripPointerCasts())) {
+		assert(NoSizeInv);
+		return;
+	}
 
 	bool checkLower = checkLowerBound(F, Base, Ptr);
 
@@ -8180,7 +8190,8 @@ optimizePtrMask(Function &F, AAResults *AA)
 static void optimizeHandlers(Function &F,
 	std::map<Value*, std::pair<const Value*, int64_t>> &UnsafeMap, AAResults *AA,
 	AssumptionCache *AC, const TargetLibraryInfo *TLI,
-	DenseMap<Value*, Value*> &BaseToLenMap)
+	DenseMap<Value*, Value*> &BaseToLenMap,
+	DenseSet<Value*> &SizeInvPtrs)
 {
 	DenseSet<CallInst*> Limits;
 	DenseSet<CallInst*> LimitsMayNull;
@@ -8377,7 +8388,7 @@ static void optimizeHandlers(Function &F,
 	if (!FBounds.empty()) {
 		BasicBlock *TrapBB = getTrapBB(&F);
 		for (auto FBound : FBounds) {
-			optimizeFBound(F, FBound, TrapBB);
+			optimizeFBound(F, FBound, TrapBB, SizeInvPtrs);
 		}
 	}
 
@@ -8635,6 +8646,13 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 																								 AAResults *AA,
 																								 AssumptionCache *AC) {
 	simplifyAll(F, TLI, AC);
+
+  for (Argument &Arg : F.args()) {
+		if (!isAllocaCallSafe(&Arg, TLI)) {
+			copyArgsByValToAllocas1(F, Arg);
+		}
+	}
+
 	//FIXME: only if used in phi
 	//copyArgsByValToAllocas1(F);
 	//errs() << "Printing function\n" << F << "\n";
@@ -8668,6 +8686,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
 	DenseSet<Value*> InteriorPointersSet;
 	DenseSet<Value*> LargerThanBase;
+	DenseSet<Value*> SizeInvPtrs;
 	DenseSet<CallInst*> MemCalls;
 	bool HasIndefiniteBase = false;
 
@@ -8691,7 +8710,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 	DominatorTree DT(F);
 	//LoopInfo LI(DT);
 
-	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, PtrToBaseMap, TmpSet, DT, ReplacementMap, TLI, InteriorPointersSet, LargerThanBase);
+	findAllBaseAndOffsets(F, UnsafePointers, UnsafeMap, PtrToBaseMap, TmpSet, DT, ReplacementMap,
+		TLI, InteriorPointersSet, LargerThanBase, SizeInvPtrs);
 	removeRedundentAccesses(F, UnsafeMap, TmpSet, DT, AA);
 
 
@@ -9047,7 +9067,7 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
     report_fatal_error("verification of newFunction failed1!");
   }*/
 
-	optimizeHandlers(F, UnsafeMap, AA, AC, TLI, BaseToLenMap);
+	optimizeHandlers(F, UnsafeMap, AA, AC, TLI, BaseToLenMap, SizeInvPtrs);
 
 
 	if (!UnsafeAllocas.empty()) {
