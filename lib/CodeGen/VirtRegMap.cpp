@@ -260,6 +260,23 @@ bool VirtRegRewriter::runOnMachineFunction(MachineFunction &fn) {
   // replaced. Remove the virtual registers and release all the transient data.
   VRM->clearAllVirt();
   MRI->clearVirtRegs();
+
+	DenseSet<MachineInstr*> toDelete;
+	for (auto &MB : fn) {
+		for (auto &Mi : MB) {
+			MachineInstr *MI = &Mi;
+			for (auto &MMO : MI->memoperands()) {
+				if (MMO->hasBaseOffset() && MMO->getBaseOffset() == 0x200000000ULL) {
+					MMO->resetBaseOffset();
+					toDelete.insert(MI);
+					break;
+				}
+			}
+		}
+	}
+	for (auto MI : toDelete) {
+		MI->eraseFromParent();
+	}
   return true;
 }
 

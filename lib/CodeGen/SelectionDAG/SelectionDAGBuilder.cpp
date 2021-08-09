@@ -6790,6 +6790,10 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
                                              0, /* align */
                                              Flags);
 
+		if (I.hasMetadata(LLVMContext::MD_sizeinv_offset)) {
+			cast<MemSDNode>(Result)->setBaseOffset(0x200000000ULL);
+		}
+
     // Chain the prefetch in parallell with any pending loads, to stay out of
     // the way of later optimizations.
     PendingLoads.push_back(Result);
