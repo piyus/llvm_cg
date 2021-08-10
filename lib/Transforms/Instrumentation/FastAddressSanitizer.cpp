@@ -2879,7 +2879,9 @@ fetchMallocSize(Value *V, const TargetLibraryInfo *TLI)
 				return 128 * sizeof(int);
 			}*/
 		}
-		if (CI->getCalledFunction() && CI->getCalledFunction()->getName() == "__errno_location") {
+		if (CI->getCalledFunction() && 
+			(CI->getCalledFunction()->getName() == "__errno_location" ||
+			 CI->getCalledFunction()->getName() == "__h_errno_location")) {
 			return 4;
 		}
 	}
