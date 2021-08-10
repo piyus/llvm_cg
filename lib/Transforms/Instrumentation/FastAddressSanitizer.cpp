@@ -5093,10 +5093,10 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 
 		PtrToBaseMap[V] = Base;
 
+		if (NoSizeInv && FasanHack) {
+			SizeInvPtrs.insert(V->stripPointerCasts());
+		}
 		if (Offset >= 0) {
-			if (NoSizeInv && FasanHack) {
-				SizeInvPtrs.insert(V->stripPointerCasts());
-			}
 			bool Static = false;
 			uint64_t BaseSize = getKnownObjSize(Base, DL, Static, TLI);
 			Offset += TypeSize;
