@@ -5094,7 +5094,7 @@ static void findAllBaseAndOffsets(Function &F, DenseMap<Value*, uint64_t> &Unsaf
 		PtrToBaseMap[V] = Base;
 
 		if (NoSizeInv && FasanHack) {
-			SizeInvPtrs.insert(V->stripPointerCasts());
+			//SizeInvPtrs.insert(V->stripPointerCasts());
 		}
 		if (Offset >= 0) {
 			bool Static = false;
@@ -6932,7 +6932,7 @@ static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB, DenseS
 	auto Int8PtrTy = IRB.getInt8PtrTy();
 
 
-	if (SizeInvPtrs.count(Ptr->stripPointerCasts())) {
+	if (FasanHack) {
 		assert(NoSizeInv);
 		return;
 	}
