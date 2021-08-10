@@ -8641,17 +8641,22 @@ static bool checkIfRegisterationIsRequired(DenseSet<AllocaInst*> &UnsafeAllocas,
 	return false;
 }
 
+static bool checkByValArg(DenseSet<std::pair<Value*, Value*>> &NewAllocas, Value *Arg)
+{
+	for (auto Pair : NewAllocas) {
+		if (Pair.second == Arg) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
                                                  const TargetLibraryInfo *TLI,
 																								 AAResults *AA,
 																								 AssumptionCache *AC) {
 	simplifyAll(F, TLI, AC);
 
-  for (Argument &Arg : F.args()) {
-		if (!isAllocaCallSafe(&Arg, TLI)) {
-			copyArgsByValToAllocas1(F, Arg);
-		}
-	}
 
 	//FIXME: only if used in phi
 	//copyArgsByValToAllocas1(F);
@@ -8741,6 +8746,19 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 			PhiOrSelBaseToOrig[PhiAndSelectMap[Base]] = Base;
 			addUnsafeAllocas(F, PhiAndSelectMap[Base], UnsafeAllocas, NewAllocas);
 			//errs() << "SRC: " << *It.first << "  BASE: " << *PhiAndSelectMap[Base] << "\n";
+		}
+	}
+
+  for (Argument &Arg : F.args()) {
+		if (Arg.hasByValAttr()) {
+			if (checkByValArg(NewAllocas, &Arg) && !isAllocaCallSafe(&Arg, TLI)) {
+				//errs() << "BYVAL in " << F.getName() << "\n";
+				auto AI = copyArgsByValToAllocas1(F, Arg);
+				if (AI) {
+					UnsafeAllocas.insert(AI);
+					NewAllocas.insert(std::make_pair(AI, &Arg));
+				}
+			}
 		}
 	}
 
