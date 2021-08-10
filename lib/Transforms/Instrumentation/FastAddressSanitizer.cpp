@@ -8751,8 +8751,8 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
 
   for (Argument &Arg : F.args()) {
 		if (Arg.hasByValAttr()) {
-			if (checkByValArg(NewAllocas, &Arg) && !isAllocaCallSafe(&Arg, TLI)) {
-				//errs() << "BYVAL in " << F.getName() << "\n";
+			if (!checkByValArg(NewAllocas, &Arg) && !isAllocaCallSafe(&Arg, TLI)) {
+				errs() << "BYVAL in " << F.getName() << "\n";
 				auto AI = copyArgsByValToAllocas1(F, Arg);
 				if (AI) {
 					UnsafeAllocas.insert(AI);
