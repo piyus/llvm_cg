@@ -6935,7 +6935,7 @@ static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB, DenseS
 
 
 	if (FasanHack) {
-		assert(NoSizeInv);
+		//assert(NoSizeInv);
 		return;
 	}
 
@@ -8475,6 +8475,12 @@ FastAddressSanitizer::insertChecksForMemCalls(Function &F,
 		assert(0);
 	}
 
+	// FIXME: other cases
+	if (cast<IntegerType>(Len->getType())->getSignBit() && isa<CastInst>(Len)) {
+		IRBuilder<> IRB(CI);
+		Len = IRB.CreateZExt(cast<CastInst>(Len)->getOperand(0), Int64Ty);
+	}
+
 	if (!BaseToLenMap.count(Base)) {
 		const DataLayout &DL = F.getParent()->getDataLayout();
 		auto Size = getStaticBaseSize(F, Base, DL, TLI);
@@ -9088,7 +9094,6 @@ bool FastAddressSanitizer::instrumentFunctionNew(Function &F,
   }*/
 
 	optimizeHandlers(F, UnsafeMap, AA, AC, TLI, BaseToLenMap, SizeInvPtrs);
-
 
 	if (!UnsafeAllocas.empty()) {
 		//DominatorTree DT(F);

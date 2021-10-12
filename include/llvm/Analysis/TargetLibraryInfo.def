@@ -731,6 +731,7 @@ TLI_DEFINE_STRING_INTERNAL("epoll_ctl")
 TLI_DEFINE_ENUM_INTERNAL(epoll_wait)
 TLI_DEFINE_STRING_INTERNAL("epoll_wait")
 
+
 /// int execl(const char *path, const char *arg, ...);
 TLI_DEFINE_ENUM_INTERNAL(execl)
 TLI_DEFINE_STRING_INTERNAL("execl")
@@ -1593,6 +1594,11 @@ TLI_DEFINE_STRING_INTERNAL("siprintf")
 /// int snprintf(char *s, size_t n, const char *format, ...);
 TLI_DEFINE_ENUM_INTERNAL(snprintf)
 TLI_DEFINE_STRING_INTERNAL("snprintf")
+
+
+TLI_DEFINE_ENUM_INTERNAL(socketpair)
+TLI_DEFINE_STRING_INTERNAL("socketpair")
+
 /// int sprintf(char *str, const char *format, ...);
 TLI_DEFINE_ENUM_INTERNAL(sprintf)
 TLI_DEFINE_STRING_INTERNAL("sprintf")

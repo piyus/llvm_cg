@@ -392,6 +392,9 @@ static bool isInteriorConstant(Value *V) {
 	if (!C) {
 		return false;
 	}
+	if (C->getBitWidth() > 64) {
+		return false;
+	}
 	//errs() << "Constant: " << C->getZExtValue() << "\n";
 	return (C->getZExtValue() >> 48) > 0;
 }
@@ -499,6 +502,7 @@ static void insertCheck2(Function &F, CallInst *CI, LibFunc Func, const TargetLi
 
 static void checkAllMemIntrinsics(Function &F, const TargetLibraryInfo *TLI)
 {
+
 	DenseSet<MemIntrinsic*> MISet;
 	DenseSet<std::pair<CallInst*, unsigned>> CallSet;
 
@@ -547,6 +551,12 @@ static void replaceLibcalls(Function &F, const TargetLibraryInfo *TLI)
 				}
 				else if (Name == "mmap") {
 					CS->getCalledFunction()->setName("san_mmap");
+				}
+				else if (Name == "mmap64") {
+					CS->getCalledFunction()->setName("san_mmap64");
+				}
+				else if (Name == "recv") {
+					CS->getCalledFunction()->setName("san_recv");
 				}
 				else if (Name == "unmap") {
 					CS->getCalledFunction()->setName("san_unmmap");

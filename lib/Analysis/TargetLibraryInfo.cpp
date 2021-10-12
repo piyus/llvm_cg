@@ -662,6 +662,7 @@ bool TargetLibraryInfoImpl::isInteriorSafe(LibFunc F) const {
   	case LibFunc_strtod:
   	case LibFunc_strtol:
   	case LibFunc_strtoul:
+  	case LibFunc_memmove:
 		//case LibFunc_pthread_create:
 			return true;
 		default:
@@ -756,6 +757,8 @@ bool TargetLibraryInfoImpl::isValidProtoForLibFunc(const FunctionType &FTy,
 
   switch (F) {
 
+	case LibFunc_socketpair:
+		return true;
 	case LibFunc_sigsetjmp:
 		return true;
 	case LibFunc_fcntl64:
