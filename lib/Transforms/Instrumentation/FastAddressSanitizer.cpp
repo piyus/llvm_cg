@@ -4686,7 +4686,7 @@ handleLargerThanBase(Value *V, const DataLayout &DL, const TargetLibraryInfo *TL
 			ObjSize = 1;
 		}
 		if (ObjSize < (uint64_t)PtrSize) {
-			errs() << "larger than base: " << *S << " VAL " << *V <<  " SZ1 " << ObjSize << " SZ2 " << PtrSize << "\n";
+			//errs() << "larger than base: " << *S << " VAL " << *V <<  " SZ1 " << ObjSize << " SZ2 " << PtrSize << "\n";
 			LargerThanBase.insert(V);
 			return true;
 		}
@@ -6806,7 +6806,7 @@ static bool optimizeAbortLoopHeader(Function &F, CallInst *CI, DominatorTree *DT
 		if (PDT.dominates(CI->getParent(), Header)) {
 
 			if (canMoveOutsideLoop(Ptr, L2, SE, Header, Lo, Hi, DT)) {
-				errs() << "Moving Abort:: " << *CI << "\n";
+				//errs() << "Moving Abort:: " << *CI << "\n";
 				auto InsertPt = Header->getTerminator();
   			CI->removeFromParent();
 				CI->insertBefore(InsertPt);
@@ -8645,7 +8645,7 @@ static bool checkIfRegisterationIsRequired(DenseSet<AllocaInst*> &UnsafeAllocas,
 			return true;
 		}
 	}
-	errs() << "Save Enter\n";
+	//errs() << "Save Enter\n";
 	return false;
 }
 
