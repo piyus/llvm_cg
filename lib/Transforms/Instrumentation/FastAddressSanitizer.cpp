@@ -5158,7 +5158,7 @@ static void CheckLenInSameBasicBlock(Instruction *len1, Instruction *len2)
 		}
 
 		if (isa<CallInst>(len1) && isa<CallInst>(len2)) {
-			errs() << "Replacing: call with call : " << *len2 << " :: "  << *len1 << "\n";
+			//errs() << "Replacing: call with call : " << *len2 << " :: "  << *len1 << "\n";
 		}
 	}
 }
@@ -6764,7 +6764,7 @@ static void optimizeAbortLoopHeaderHelper(Function &F, CallInst *CI, PostDominat
   	CI->removeFromParent();
 		CI->insertBefore(InsertPt);
 		optimizeAbortLoopHeaderHelper(F, CI, PDT, Hi, Lo, LI);
-		errs() << "NewMove:: " << *CI << "\n";
+		//errs() << "NewMove:: " << *CI << "\n";
 	}
 }
 
@@ -6963,7 +6963,7 @@ static void optimizeFBound(Function &F, CallInst *CI, BasicBlock *TrapBB, DenseS
 		}
 	}
 	else {
-		errs() << "Saving Lower\n";
+		//errs() << "Saving Lower\n";
 		Cmp = IRB.CreateICmpULT(Limit, PtrLimit);
 
 		if (CI->hasMetadata("san_loopind")) {
@@ -7355,8 +7355,8 @@ canReplaceHelper(CallInst *Call1, CallInst *Call2,
 		auto Call1PtrSz = cast<ConstantInt>(Call1->getArgOperand(2))->getZExtValue();
 		auto Call2PtrSz = cast<ConstantInt>(Call2->getArgOperand(2))->getZExtValue();
 		if (Call1PtrSz >= Call2PtrSz) {
-			errs() << "Replacing: " << *Call1 << " Size1:" << Call1PtrSz << "\n";
-			errs() << "With: " << *Call2 << " Size2:" << Call2PtrSz << "\n";
+			//errs() << "Replacing: " << *Call1 << " Size1:" << Call1PtrSz << "\n";
+			//errs() << "With: " << *Call2 << " Size2:" << Call2PtrSz << "\n";
 			return true;
 		}
 	}
@@ -7825,9 +7825,9 @@ static CallInst* ReplaceInterior(Function &F, CallInst *Call)
 		Call->getType(), Base->getType(), Ptr->getType(), TySize->getType(), Int64Ty, Int8PtrTy);
 	auto Ret = IRB.CreateCall(Fn, {Base, Ptr, TySize, ConstantInt::get(Int64Ty, 0), Constant::getNullValue(Int8PtrTy)});
 	Call->replaceAllUsesWith(Ret);
-	errs() << "Replacing Interior -- \n";
-	errs() << "Orig: " << *Call << "\n";
-	errs() << "New: " << *Ret << "\n";
+	//errs() << "Replacing Interior -- \n";
+	//errs() << "Orig: " << *Call << "\n";
+	//errs() << "New: " << *Ret << "\n";
 	return Ret;
 }
 

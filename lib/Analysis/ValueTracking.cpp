@@ -4129,7 +4129,7 @@ static bool maybeIntArith(Value *OP)
 			return false;
 		}
 	}
-	errs() << "MAYINTERIOR: " << *OP << "\n";
+	//errs() << "MAYINTERIOR: " << *OP << "\n";
 	return true;
 }
 
