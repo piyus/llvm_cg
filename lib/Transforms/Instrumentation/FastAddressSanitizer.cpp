@@ -6642,7 +6642,7 @@ canMoveOutsideLoop(Value *V, Loop *L, ScalarEvolution &SE,
 				if (!isIndVarArith(cast<Instruction>(Op), IndVar, L)) {
 					return false;
 				}
-				errs() << "IndVarArith:: " << *Op << "\n";
+				//errs() << "IndVarArith:: " << *Op << "\n";
 				//auto Aux = dyn_cast<PHINode>(Op);
 				//if (!Aux || !L->isAuxiliaryInductionVariable(*Aux, SE)) {
 				//}
